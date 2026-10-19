@@ -53,7 +53,7 @@ export function DictionaryPage({ tab }: { tab?: string | null }) {
       <PageHeader
         title={t("dictionary.title")}
         subtitle={current === "vocab" ? t("vocab.subtitle") : t("dictionary.subtitle")}
-        actions={current === "terms" ? <TermsActions onImported={onImported} /> : undefined}
+        actions={current === "terms" ? <TermsActions onImported={onImported} exportDisabled={count === 0} /> : undefined}
       />
       <Tabs
         value={current}
@@ -80,10 +80,10 @@ export function DictionaryPage({ tab }: { tab?: string | null }) {
 }
 
 /** Кнопки над списком терминов: импорт/экспорт и «Добавить термин» (открывает редактор). */
-function TermsActions({ onImported }: { onImported: () => void }) {
+function TermsActions({ onImported, exportDisabled }: { onImported: () => void; exportDisabled: boolean }) {
   return (
     <>
-      <ImportExport onImported={onImported} />
+      <ImportExport onImported={onImported} exportDisabled={exportDisabled} />
       <Button
         variant="primary"
         icon={<Plus className="size-4" />}
@@ -249,7 +249,7 @@ function TermsTab({ list, journal }: { list: Loadable<DictItem[]>; journal: Load
                 transition={{ duration: 0.2 }}
                 className="overflow-hidden"
               >
-                <Card padded={false} className="mb-3 border-accent/40 shadow-glow">
+                <Card padded={false} className="mb-3">
                   <DictEditor fuzzy={fuzzy} onSave={(term, v) => save(undefined, term, v)} onCancel={() => setEditing(null)} />
                 </Card>
               </motion.div>

@@ -66,7 +66,7 @@ export async function downloadExport(): Promise<void> {
   setTimeout(() => URL.revokeObjectURL(url), 2000);
 }
 
-export function ImportExport({ onImported }: { onImported: () => void }) {
+export function ImportExport({ onImported, exportDisabled = false }: { onImported: () => void; exportDisabled?: boolean }) {
   const toast = useToast();
   const fileRef = useRef<HTMLInputElement>(null);
   const [pending, setPending] = useState<{ name: string; data: ExportData } | null>(null);
@@ -123,6 +123,7 @@ export function ImportExport({ onImported }: { onImported: () => void }) {
       <Button
         variant="ghost"
         icon={<Download className="size-4" />}
+        disabled={exportDisabled}
         onClick={() =>
           downloadExport().then(
             () => toast({ tone: "success", title: t("transfer.exported") }),

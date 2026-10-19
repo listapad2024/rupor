@@ -66,7 +66,7 @@ export function SnippetsPage() {
         subtitle={t("snippets.subtitle")}
         actions={
           <>
-            <ImportExport onImported={list.reload} />
+            <ImportExport onImported={list.reload} exportDisabled={count === 0} />
             <Button variant="primary" icon={<Plus className="size-4" />} onClick={() => setEditing("new")}>
               {t("snippets.add")}
             </Button>
@@ -119,7 +119,7 @@ export function SnippetsPage() {
                 transition={{ duration: 0.2 }}
                 className="overflow-hidden"
               >
-                <Card padded={false} className="mb-3 border-accent/40 shadow-glow">
+                <Card padded={false} className="mb-3">
                   <SnippetEditor onSave={(tr, tx) => save(undefined, tr, tx)} onCancel={() => setEditing(null)} />
                 </Card>
               </motion.div>

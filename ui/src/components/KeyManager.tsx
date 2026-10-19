@@ -178,7 +178,7 @@ export function KeyManager({ provider, compact }: { provider: KeyProvider; compa
             exit={{ opacity: 0, height: 0 }}
             className="overflow-hidden"
           >
-            <div className="flex gap-2 pt-0.5">
+            <div className="flex gap-2 p-1">
               <Input
                 className="flex-1"
                 type="password"

@@ -210,7 +210,7 @@ export function HomePage() {
                   <button
                     type="button"
                     onClick={() => navigate("history")}
-                    className="flex w-full gap-3 px-5 py-2.5 text-left transition-colors hover:bg-surface-2/70"
+                    className="flex w-full gap-3 px-5 py-2.5 text-left transition-colors hover:bg-surface-2/70 focus-visible:-outline-offset-2!"
                   >
                     <AppIcon process={it.app} size={28} />
                     <div className="min-w-0 flex-1">

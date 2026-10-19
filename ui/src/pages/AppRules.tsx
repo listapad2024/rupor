@@ -290,7 +290,7 @@ function AddAppDialog({
                 type="button"
                 disabled={added}
                 onClick={() => onPick(a.process)}
-                className="flex w-full items-center gap-3 border-b border-line px-3.5 py-2.5 text-left transition-colors last:border-b-0 hover:bg-surface-2 disabled:opacity-50"
+                className="flex w-full items-center gap-3 border-b border-line px-3.5 py-2.5 text-left transition-colors last:border-b-0 hover:bg-surface-2 disabled:opacity-50 focus-visible:-outline-offset-2!"
               >
                 <AppIcon process={a.process} size={28} />
                 <div className="min-w-0 flex-1">
