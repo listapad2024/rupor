@@ -2,6 +2,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import { Check, ChevronDown } from "lucide-react";
 import {
   useCallback,
+  useContext,
   useEffect,
   useLayoutEffect,
   useRef,
@@ -11,6 +12,7 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { cn } from "../../lib/cn";
+import { ModalContext } from "./overlay";
 
 export interface SelectOption<T> {
   value: T;
@@ -49,6 +51,7 @@ export function Select<T extends string | number | null>({
   minWidth?: number;
   align?: "left" | "right";
 }) {
+  const inModal = useContext(ModalContext);
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(0);
   const [pos, setPos] = useState<Pos | null>(null);
@@ -183,7 +186,11 @@ export function Select<T extends string | number | null>({
                 ...(pos.up ? { bottom: window.innerHeight - pos.top } : { top: pos.top }),
                 transformOrigin: pos.up ? "bottom" : "top",
               }}
-              className="z-[80] overflow-y-auto rounded-xl border border-line-strong bg-surface p-1 shadow-pop"
+              // Only modal lists go above Modal (90); background lists stay below its backdrop.
+              className={cn(
+                inModal ? "z-[95]" : "z-[80]",
+                "overflow-y-auto rounded-xl border border-line-strong bg-surface p-1 shadow-pop",
+              )}
             >
               {options.map((o, i) => {
                 const selected = o.value === value;

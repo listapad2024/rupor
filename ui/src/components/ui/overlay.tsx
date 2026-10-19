@@ -18,6 +18,8 @@ import { Button } from "./controls";
 
 // ——— Модальное окно ———
 
+export const ModalContext = createContext(false);
+
 const FOCUSABLE =
   'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
@@ -120,22 +122,24 @@ export function Modal({
             style={{ width }}
             className="relative max-w-full rounded-2xl border border-line-strong bg-surface p-6 shadow-pop outline-none"
           >
-            <button
-              type="button"
-              data-modal-close=""
-              onClick={onClose}
-              aria-label={t("common.close")}
-              className="absolute right-3 top-3 flex size-8 items-center justify-center rounded-lg text-subtle hover:bg-surface-2 hover:text-fg"
-            >
-              <X className="size-4" />
-            </button>
-            {title && (
-              <div id={titleId} className="mb-2 pr-8 text-[17px] font-semibold tracking-[-0.01em] text-fg">
-                {title}
-              </div>
-            )}
-            <div className="text-[13.5px] leading-relaxed text-muted">{children}</div>
-            {footer && <div className="mt-6 flex justify-end gap-2">{footer}</div>}
+            <ModalContext.Provider value={true}>
+              <button
+                type="button"
+                data-modal-close=""
+                onClick={onClose}
+                aria-label={t("common.close")}
+                className="absolute right-3 top-3 flex size-8 items-center justify-center rounded-lg text-subtle hover:bg-surface-2 hover:text-fg"
+              >
+                <X className="size-4" />
+              </button>
+              {title && (
+                <div id={titleId} className="mb-2 pr-8 text-[17px] font-semibold tracking-[-0.01em] text-fg">
+                  {title}
+                </div>
+              )}
+              <div className="text-[13.5px] leading-relaxed text-muted">{children}</div>
+              {footer && <div className="mt-6 flex justify-end gap-2">{footer}</div>}
+            </ModalContext.Provider>
           </motion.div>
         </motion.div>
       )}
