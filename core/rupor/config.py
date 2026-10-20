@@ -20,6 +20,7 @@ import ntpath
 import os
 import re
 import threading
+import time
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Any, Callable
@@ -685,7 +686,8 @@ def _migrate_hotkeys(s: Settings, raw: dict[str, Any]) -> None:
         d.ptt_key, d.broadcast_modifier, d.command_modifier)
     try:
         _check_hotkeys(cand)
-    except ValueError as e:
+    except (ValueError, TypeError, AttributeError) as e:
+        # значения из файла ещё не проверены (validate — позже): cancel_key: null и т. п.
         log.warning("Хоткеи не переведены на новые умолчания: %s", e)
         return
     s.ptt_key, s.broadcast_modifier, s.command_modifier = (
@@ -717,13 +719,34 @@ def _migrate_broadcast(s: Settings) -> None:
              len(targets), len(wins))
 
 
+def _keep_broken(p: Path) -> None:
+    """Нечитаемый settings.json не затираем умолчаниями молча: откладываем рядом копию
+    (settings.broken-<время>.json) — правила, хоткеи и цели рассылки можно вернуть руками."""
+    dst = p.with_name(f"{p.stem}.broken-{time.strftime('%Y%m%d-%H%M%S')}{p.suffix}")
+    try:
+        p.replace(dst)
+        log.error("Испорченный файл настроек сохранён как %s", dst)
+    except OSError as e:
+        log.error("Испорченный файл настроек не отложен (%s)", e)
+
+
 def load() -> Settings:
     p = settings_path()
     s = Settings()
     migrate_rdp = False
+    write = True
+    text: str | None = None
     if p.exists():
         try:
-            raw: Any = json.loads(p.read_text(encoding="utf-8"))
+            text = p.read_text(encoding="utf-8")
+        except OSError as e:
+            # файл занят (антивирус, OneDrive) — работаем на умолчаниях, но файл не трогаем:
+            # иначе временная блокировка стёрла бы все настройки пользователя
+            log.error("Не удалось прочитать %s: %s — беру настройки по умолчанию", p, e)
+            write = False
+    if text is not None:
+        try:
+            raw: Any = json.loads(text)
             if not isinstance(raw, dict):
                 raise ValueError(tr("cfg.expect_json_object"))
             known = {f.name for f in fields(Settings)}
@@ -736,14 +759,16 @@ def load() -> Settings:
                 # Файл этапов 1–2: дописываем стили по приложениям, не трогая правила пользователя
                 for proc, rule in DEFAULT_APP_RULES.items():
                     s.app_rules.setdefault(proc, dict(rule))
-        except (OSError, ValueError) as e:
+        except ValueError as e:
             log.error("Не удалось прочитать %s: %s — беру настройки по умолчанию", p, e)
             s = Settings()
             migrate_rdp = False
+            _keep_broken(p)
     s.validate()
     if migrate_rdp:
         _migrate_broadcast(s)
-    save(s)  # дописать новые ключи со значениями по умолчанию
+    if write:
+        save(s)  # дописать новые ключи со значениями по умолчанию
     return s
 
 

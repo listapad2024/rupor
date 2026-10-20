@@ -108,6 +108,15 @@ def test_dictionary_russian_case_endings() -> None:
     # отпадающая буква: «графана» → «графаной», «графане»
     assert apply_dictionary("с графаной и в графане", DICT) == "с Grafana и в Grafana"
     assert apply_dictionary("графан", DICT) == "графан"      # голая основа без окончания
+    # заимствования на -о/-е/-и не склоняются: обычные слова с той же основой не трогаем
+    miro = [{"term": "Miro", "variants": ["миро"]}, {"term": "Wiki", "variants": ["вики"]},
+            {"term": "Vite", "variants": ["вите"]}]
+    assert apply_dictionary("лучший в мире, с миром, миру мир", miro) == \
+        "лучший в мире, с миром, миру мир"
+    assert apply_dictionary("Вика пришла, позвони Вике, с Витей", miro) == \
+        "Вика пришла, позвони Вике, с Витей"
+    assert apply_dictionary("доска в миро, в вики", miro) == "доска в Miro, в Wiki"
+    assert apply_dictionary("в экселе", [{"term": "Excel", "variants": ["эксель"]}]) == "в Excel"
     # кириллический термин получает окончание
     assert apply_dictionary("в сбер банке", DICT) == "в Сбербанке"
     assert apply_dictionary("сбербанком", DICT) == "Сбербанком"
