@@ -609,6 +609,26 @@ def test_mouse_escape_in_stop_pending(ca: GestureMachine) -> None:
     assert kinds(ca.mouse_up(3100)) == []
 
 
+def test_mouse_escape_during_hold_keeps_mouse_working(ca: GestureMachine) -> None:
+    # Esc посреди записи кнопкой мыши: ptt не нажимали — ждать его отпускания нечего
+    ca.mouse_down(1000)
+    assert kinds(ca.key_down(ESC, 2000)) == [Kind.CANCEL]
+    assert kinds(ca.mouse_up(2500)) == []
+    assert kinds(ca.mouse_down(5000)) == [Kind.START]
+    assert kinds(ca.mouse_up(7000)) == [Kind.STOP]
+
+
+def test_combo_during_mouse_hold_keeps_mouse_working(ca: GestureMachine) -> None:
+    ca.mouse_down(1000)
+    assert kinds(ca.key_down(C, 2000)) == [Kind.DISCARD]
+    ca.key_up(C, 2050)
+    assert kinds(ca.mouse_up(2500)) == []
+    assert kinds(ca.mouse_down(5000)) == [Kind.START]
+    assert kinds(ca.mouse_up(7000)) == [Kind.STOP]
+    assert kinds(ca.key_down(LCTRL, 8000)) == []               # и клавиатура тоже
+    assert kinds(ca.key_down(LALT, 8010)) == [Kind.START]
+
+
 def test_pill_click_toggles(ca: GestureMachine) -> None:
     assert kinds(ca.external_toggle(1000)) == [Kind.START, Kind.HANDS_FREE]
     assert kinds(ca.key_down(ord("A"), 2000)) == []
