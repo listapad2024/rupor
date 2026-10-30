@@ -934,6 +934,7 @@ class Engine:
         elif k is Kind.STOP:
             t_release = time.perf_counter()
             held_s = time.monotonic() - sess.started
+            target = winutil.foreground()   # окно в момент отпускания, не после хвоста
             # Звук компьютера — после хвоста записи, иначе вернувшаяся музыка попадёт в него
             self._end_session(restore_sound=False)
             audio_data = self.recorder.stop(audio.TAIL_S)
@@ -959,7 +960,6 @@ class Engine:
             if len(audio_data) < self.s.min_record_ms * SAMPLE_RATE / 1000:
                 self._refresh_state()
                 return
-            target = winutil.foreground()
             if target is not None and self._is_foreign(target):
                 self._remember_window(target)
             with self._lock:
