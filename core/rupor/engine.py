@@ -395,7 +395,7 @@ class RecorderLike(Protocol):
     def open(self) -> None: ...
     def close(self) -> None: ...
     def start(self) -> None: ...
-    def stop(self) -> np.ndarray: ...
+    def stop(self, tail_s: float = ...) -> np.ndarray: ...
     def snapshot(self) -> np.ndarray: ...
 
 
@@ -932,10 +932,14 @@ class Engine:
                 self.notice(tr("eng.cancelled"))
             self._refresh_state()
         elif k is Kind.STOP:
-            self._end_session()
-            audio_data = self.recorder.stop()
             t_release = time.perf_counter()
             held_s = time.monotonic() - sess.started
+            target = winutil.foreground()   # окно в момент отпускания, не после хвоста
+            # Звук компьютера — после хвоста записи, иначе вернувшаяся музыка попадёт в него
+            self._end_session(restore_sound=False)
+            audio_data = self.recorder.stop(audio.TAIL_S)
+            with self._lock:
+                self._duck_off()
             log.info("Жест: стоп, удержание %.1f с, аудио %.1f с", held_s,
                      len(audio_data) / SAMPLE_RATE)
             if sess.broadcast:
@@ -956,7 +960,6 @@ class Engine:
             if len(audio_data) < self.s.min_record_ms * SAMPLE_RATE / 1000:
                 self._refresh_state()
                 return
-            target = winutil.foreground()
             if target is not None and self._is_foreign(target):
                 self._remember_window(target)
             with self._lock:
@@ -964,15 +967,16 @@ class Engine:
             self._refresh_state()
             self._jobs.put(("transcribe", _Job(sess, audio_data, t_release, target)))
 
-    def _end_session(self) -> None:
+    def _end_session(self, restore_sound: bool = True) -> None:
         """Запись кончилась (стоп, отмена, выброс, лимит, пауза, смена микрофона): таймеры
-        сессии — прочь, звук компьютера — вернуть."""
+        сессии — прочь, звук компьютера — вернуть (restore_sound=False — вернёт вызывающий)."""
         with self._lock:
             if self._session:
                 for t in self._session.timers:
                     t.cancel()
             self._session = None
-            self._duck_off()
+            if restore_sound:
+                self._duck_off()
 
     # ---------- звук компьютера во время записи (duck.py) ----------
 

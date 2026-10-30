@@ -59,7 +59,7 @@ class FakeRecorder:
     def snapshot(self) -> np.ndarray:
         return self._upto()
 
-    def stop(self) -> np.ndarray:
+    def stop(self, tail_s: float = 0.0) -> np.ndarray:
         self.recording = False
         return self._upto()
 

@@ -96,3 +96,26 @@ def test_low_confidence_keeps_the_more_confident() -> None:
     # мусорный повтор не заменяет просто неуверенный первый проход
     r, _ = _rec(("ДИНАМИЧНАЯ МУЗЫКА", [(0.0, -0.5)]))
     assert r._second_opinion(AUDIO, "ru", "Тихая речь.", [(0.0, -1.7)]) == "Тихая речь."
+
+
+@pytest.mark.parametrize("text, expected", [
+    ("Проверь тесты и собери релиз. Продолжение следует...",
+     "Проверь тесты и собери релиз."),
+    ("Проверь тесты, Продолжение следует…", "Проверь тесты"),
+    ("Отправь отчёт. Субтитры сделал DimaTorzok", "Отправь отчёт."),
+    ("Send the report. Thanks for watching!", "Send the report."),
+    ("Отправь отчёт. Редактор субтитров А.Синецкая Корректор А.Егорова",
+     "Отправь отчёт."),
+])
+def test_tail_hallucination_is_cut(text: str, expected: str) -> None:
+    assert asr.strip_tail_hallucination(text) == expected
+
+
+@pytest.mark.parametrize("text", [
+    "Продолжение следует...",                  # весь текст — это забота garbage_reason
+    "Напиши, что продолжение следует завтра",  # фраза внутри, не в конце
+    "Сериал хороший и продолжение следует",    # без конца предложения перед ней
+    "Обычная фраза без мусора.",
+])
+def test_tail_hallucination_keeps_text(text: str) -> None:
+    assert asr.strip_tail_hallucination(text) == text
