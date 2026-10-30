@@ -70,6 +70,18 @@ _HALLUCINATIONS = frozenset((
     "редактор субтитров а синецкая корректор а егорова", "thank you for watching",
     "thanks for watching", "subtitles by the amara org community",
 ))
+# Служебные фразы субтитров, которые Whisper дописывает в КОНЕЦ длинной записи (≈30 с:
+# конец окна модели) — «…и проверь тесты. Продолжение следует...». Срезаются с конца текста.
+_TAIL_HALLUCINATIONS = (
+    "продолжение следует", "спасибо за просмотр", "субтитры сделал dimatorzok",
+    "субтитры создавал dimatorzok", "субтитры делал dimatorzok",
+    "редактор субтитров а синецкая корректор а егорова", "thank you for watching",
+    "thanks for watching", "subtitles by the amara org community",
+)
+_TAIL_RE = re.compile(
+    r"(?:^|(?<=[.!?…,;:]))\s*(?:" + "|".join(
+        r"[\W_]*".join(re.escape(w) for w in ph.split()) for ph in _TAIL_HALLUCINATIONS)
+    + r")[\W_]*$", re.IGNORECASE)
 GUESS_TEMPERATURE = 0.6    # сегмент с такой температурой и выше — угадывание
 LOW_LOGPROB = -1.5         # средняя уверенность сегмента ниже — повторить без подсказки
 REPEAT_RATIO = 2.4         # сжимаемость текста выше (как у Whisper) — зацикленный повтор
@@ -104,6 +116,16 @@ def garbage_reason(text: str) -> str | None:
     if _repetitive(text):
         return "зацикленный повтор"
     return None
+
+
+def strip_tail_hallucination(text: str) -> str:
+    """Срезать служебную фразу субтитров в конце текста («…тесты. Продолжение следует...»),
+    если перед ней конец предложения или запятая. Текст целиком из такой фразы не трогается —
+    его отбрасывает ``garbage_reason``."""
+    m = _TAIL_RE.search(text.replace("ё", "е").replace("Ё", "Е"))
+    if m is None or m.start() == 0:
+        return text
+    return text[:m.start()].rstrip(" ,;:")
 
 
 def _mean(stats: list[tuple[float | None, float]]) -> float:
@@ -357,6 +379,11 @@ class Recognizer:
             prompt = adapt_prompt(prompt, lang)
             text, stats = self._decode(audio, lang, prompt, guess=True)
             text = self._second_opinion(audio, lang, text, stats)
+        cut = strip_tail_hallucination(text)
+        if cut != text:
+            log.warning("Срезана фраза субтитров в конце распознанного (%d → %d симв.)",
+                        len(text), len(cut))
+            text = cut
         ms = (time.perf_counter() - t0) * 1000
         r = Result(text, lang, len(audio) / SAMPLE_RATE, ms)
         log.info("ASR %.1f с аудио → %.0f мс, язык %s, %d симв.", r.audio_s, ms, lang, len(text))

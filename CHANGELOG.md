@@ -6,6 +6,17 @@ All notable changes to Rupor are listed here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **The last word of a phrase is no longer cut off.** Recording stopped the instant you released
+  the keys, while the microphone driver still held the last ~0.2 s of speech; the clipped word
+  came back as a guess, often a word from the recognition hints ("ловить баги" → "ловить
+  Blacky"). Rupor now records 0.3 s more after you release the keys and turns the computer
+  sound back up only after that.
+- **"Продолжение следует..." and other subtitle phrases are removed from the end of a long
+  dictation.** Whisper sometimes appends them near the 30-second mark; before, they were caught
+  only when they were the whole text.
+
 ## [0.4.3] — 2026-10-18
 
 ### Fixed

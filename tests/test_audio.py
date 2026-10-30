@@ -71,3 +71,34 @@ def test_inactive_stream_is_stale(fake_sd: None) -> None:
     assert not rec.stale()
     FakeStream.created[0].active = False          # PortAudio остановил поток сам
     assert rec.stale()
+
+
+def test_stop_with_tail_records_after_release(fake_sd: None) -> None:
+    """Отпустили клавишу на последнем слоге: stop(tail_s) дописывает ещё tail_s секунд,
+    которые приходят в callback уже после вызова stop."""
+    import threading
+    rec = audio.Recorder(preroll_ms=0)
+    rec.open()
+    stream = FakeStream.created[0]
+    rec.start()
+    stream.feed(1.0)
+    before = len(rec.snapshot())
+    feeder = threading.Timer(0.05, stream.feed, (0.5,))
+    feeder.start()
+    got = rec.stop(tail_s=0.3)
+    feeder.join()
+    assert len(got) >= before + 0.3 * audio.SAMPLE_RATE
+    assert not rec.recording
+
+
+def test_stop_with_tail_does_not_hang_on_silent_stream(fake_sd: None) -> None:
+    """Поток перестал звать callback: stop(tail_s) отдаёт записанное через tail + запас."""
+    import time as _time
+    rec = audio.Recorder(preroll_ms=0)
+    rec.open()
+    rec.start()
+    FakeStream.created[0].feed(0.5)
+    t0 = _time.monotonic()
+    got = rec.stop(tail_s=0.1)
+    assert _time.monotonic() - t0 < 0.1 + audio.TAIL_GRACE_S + 0.2
+    assert len(got) >= 0.4 * audio.SAMPLE_RATE

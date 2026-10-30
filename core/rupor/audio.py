@@ -8,6 +8,10 @@
 Отвалившийся поток: если USB/Bluetooth-гарнитуру переподключили или сменился её профиль,
 поток MME перестаёт вызывать callback, но ошибки не даёт. Поэтому время последнего
 callback запоминается, и ``start()`` переоткрывает поток, который молчит дольше STALE_S.
+
+Хвост после отпускания: ``stop(tail_s)`` дописывает ещё tail_s секунд. Звук приходит в callback
+с задержкой буфера MME (у USB-микрофонов ~0,2 с), и клавишу часто отпускают на последнем слоге:
+без хвоста конец последнего слова терялся, а Whisper достраивал обрывок словом из подсказки.
 """
 from __future__ import annotations
 
@@ -26,6 +30,8 @@ log = logging.getLogger(__name__)
 
 BLOCK = 512  # 32 мс
 STALE_S = 1.0  # callback раз в 32 мс; тишина дольше секунды — поток мёртв
+TAIL_S = 0.3   # сколько дописывать после отпускания (stop(tail_s)): буфер MME + последний слог
+TAIL_GRACE_S = 0.2  # сверх хвоста ждём callback не дольше этого (поток умер — не висим)
 _MME = 0     # индекс host API MME: сам ресемплирует в 16 кГц (WASAPI shared — нет)
 
 
@@ -73,6 +79,8 @@ class Recorder:
         self._chunks: list[np.ndarray] = []
         self._recording = False
         self._lock = threading.Lock()
+        self._tail_left = 0          # сэмплов хвоста ещё дописать (stop с tail_s)
+        self._tail_done = threading.Event()
         self._on_level = on_level
         self._stream: Any = None
         self._last_cb = 0.0   # monotonic последнего callback (или открытия потока)
@@ -120,6 +128,10 @@ class Recorder:
         with self._lock:
             if self._recording:
                 self._chunks.append(block)
+                if self._tail_left > 0:
+                    self._tail_left -= len(block)
+                    if self._tail_left <= 0:
+                        self._tail_done.set()
             else:
                 self._pre.append(block)
         if (self._recording or self.monitor) and self._on_level:
@@ -147,8 +159,20 @@ class Recorder:
         with self._lock:
             return np.concatenate(self._chunks) if self._chunks else np.zeros(0, np.float32)
 
-    def stop(self) -> np.ndarray:
+    def stop(self, tail_s: float = 0.0) -> np.ndarray:
+        """Остановить запись и отдать её. tail_s > 0 — сначала дописать столько секунд после
+        вызова (блокирует до tail_s + TAIL_GRACE_S; поток молчит — отдаём, что есть)."""
+        if tail_s > 0:
+            with self._lock:
+                wait = self._recording and self._stream is not None
+                if wait:
+                    self._tail_left = max(1, int(tail_s * SAMPLE_RATE))
+                    self._tail_done.clear()
+            if wait and not self._tail_done.wait(tail_s + TAIL_GRACE_S):
+                log.warning("Хвост записи не дописан за %.1f с — микрофон молчит",
+                            tail_s + TAIL_GRACE_S)
         with self._lock:
+            self._tail_left = 0
             self._recording = False
             audio = np.concatenate(self._chunks) if self._chunks else np.zeros(0, np.float32)
             self._chunks = []
