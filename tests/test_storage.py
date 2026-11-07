@@ -218,6 +218,18 @@ def test_search_cyrillic_case_insensitive(st: Storage) -> None:
     assert len(found("   ")) == 4
 
 
+def test_search_with_very_long_query(st: Storage) -> None:
+    """Вставили в поиск абзац из тысячи слов: SQLite не падает «Expression tree is too large»,
+    поиск идёт по первым словам запроса."""
+    text = " ".join(f"слово{i}" for i in range(2000))
+    st.add_history(item(text))
+    st.add_history(item("другое"))
+    items, total = st.list_history(text, 50, 0)
+    assert total == 1 and items[0]["text"] == text
+    items, total = st.list_history("слово1 слово1 слово12", 50, 0)  # повторы и вложенные слова
+    assert total == 1
+
+
 def test_clear_history_periods(st: Storage) -> None:
     ages_h = [1, 23, 25, 24 * 6, 24 * 8, 24 * 29, 24 * 31, 24 * 400]
     for a in ages_h:

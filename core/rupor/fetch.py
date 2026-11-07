@@ -1367,7 +1367,8 @@ def _download_wheel(w: _Wheel, part: Path, report: Callable[[int], None]) -> Non
                                     reason=_reason(e))) from e
             err = e
         except (urllib.error.URLError, http.client.HTTPException, TimeoutError,
-                ConnectionError) as e:
+                ConnectionError, ssl.SSLError) as e:
+            # ssl.SSLError посреди тела (обрыв TLS) — тот же обрыв связи, а не ошибка записи
             err = e
         now = _part_size(part)
         if now > best:  # попытка продвинула загрузку — обрыв не в счёт, считаем заново

@@ -310,6 +310,34 @@ def test_retry_after_connection_drop(isolated: Path, monkeypatch: pytest.MonkeyP
     assert (dest / "foo64_1.dll").exists()
 
 
+def test_retry_after_tls_drop(isolated: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Обрыв TLS посреди тела (ssl.SSLError) — повтор с места обрыва, а не «не удалось
+    сохранить в папку»."""
+    wheel = make_wheel()
+    net = FakeNet(wheel)
+    monkeypatch.setattr(fetch, "_CHUNK", 4096)
+    dropped = {"done": False}
+
+    def tls_drop(url: str, headers: dict[str, str] | None = None, timeout: float = 30) -> Any:
+        resp = net(url, headers, timeout)
+        if url == WHEEL_URL and not dropped["done"]:
+            dropped["done"] = True
+            real = resp.read
+
+            def read(n: int | None = -1) -> bytes:
+                if resp.tell() >= len(wheel) // 3:
+                    raise ssl.SSLError("DECRYPTION_FAILED_OR_BAD_RECORD_MAC")
+                return real(n)
+            resp.read = read  # type: ignore[method-assign]
+        return resp
+    monkeypatch.setattr(fetch, "_urlopen", tls_drop)
+    dest = isolated / "cuda"
+    fetch.download_cuda(lambda p, t: None, dest=dest, packages=[PKG])
+    reqs = net.wheel_requests()
+    assert len(reqs) == 2 and reqs[1]["Range"].startswith("bytes=")
+    assert (dest / "foo64_1.dll").exists()
+
+
 def test_gives_up_after_retries(isolated: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Обрывы подряд без прогресса: _RETRIES попыток с нарастающими паузами, затем ошибка."""
     wheel = make_wheel()
