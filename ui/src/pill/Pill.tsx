@@ -789,6 +789,14 @@ function Notice({ n }: { n: NoticeEvent }) {
         <MonitorSmartphone className="size-3" />
         {t("pill.chooseSessions")}
       </button>
+    ) : n.action === "open_recordings" ? (
+      <button
+        type="button"
+        onClick={() => void showMain("history/recordings")}
+        className="flex h-6 shrink-0 items-center rounded-full bg-white px-2.5 text-[11px] font-semibold text-[#15151a] transition-transform hover:scale-[1.03] active:scale-95"
+      >
+        {t("pill.openRecordings")}
+      </button>
     ) : null;
   const icon = (
     <span

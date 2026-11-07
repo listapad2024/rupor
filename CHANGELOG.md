@@ -24,6 +24,11 @@ All notable changes to Rupor are listed here. The format follows
   report a balance through its API, so you can enter the balance from the Console and Rupor shows
   an estimate: that amount minus what Rupor has spent through the key since. The AI spending card
   shows the balance of the key that is first in line.
+- **The last 30 voice recordings are kept on disk** (`%APPDATA%\Rupor\recordings`, WAV,
+  up to 300 MB in total; both limits are in Settings → History, 0 keeps none). Each dictation
+  is saved before recognition, so a dictation whose text was lost can be transcribed again
+  under the new **History → Recordings** tab. The result goes to History and to *Insert last*.
+  A long recording that produced no text now says it was saved and links to it.
 
 ### Changed
 
@@ -36,6 +41,13 @@ All notable changes to Rupor are listed here. The format follows
 
 - Claude Haiku 5.5 works for cleanup: Rupor no longer sends it `temperature`, which the model
   rejects (before, every call failed and went to the next key).
+- **Long dictations no longer vanish as "garbage".** The loop detector measured how well the
+  whole text compressed; ordinary Russian text longer than about 2,000 characters
+  (2.5 minutes of speech) compresses past Whisper's threshold with no repetition at all, so a
+  153-second dictation was thrown away as "No speech detected". Compression is now checked in
+  400-character windows, like Whisper's own 30-second segments. And when both passes still look
+  like garbage only because of a stray foreign glyph, the text is cleaned and inserted instead
+  of dropped.
 
 ## [0.4.3] — 2026-10-18
 

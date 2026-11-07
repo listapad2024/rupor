@@ -257,7 +257,9 @@ function Bridge({ navigate }: { navigate: (to: string) => void }) {
           ? { label: t("notice.openAiSettings"), onClick: () => navigate("settings/ai") }
           : n.action === "open_settings_insert"
             ? { label: t("notice.openRdpSettings"), onClick: () => navigate(RDP_SESSIONS_ROUTE) }
-            : undefined;
+            : n.action === "open_recordings"
+              ? { label: t("notice.openRecordings"), onClick: () => navigate("history/recordings") }
+              : undefined;
     toast({
       tone: n.level === "error" ? "error" : n.level === "warn" ? "warn" : "info",
       title: n.text,

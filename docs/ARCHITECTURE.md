@@ -92,6 +92,11 @@ URL: `ws://127.0.0.1:<port>/?token=<token>`. Без верного токена 
 | `history_clear` | `{period: "day"\|"week"\|"month"\|"all"}` | `{deleted: int}` — удалить записи **за** последний период («за день» = последние 24 ч) |
 | `history_reinsert` | `{id}` | `null` — активировать последнее «чужое» окно (не Рупора) и вставить `text` |
 | `last_insert` | — | `null` — вставить последний результат в последнее чужое окно |
+| `recordings_list` | — | `{items: [RecordingItem], total_bytes, keep, max_bytes}` — сохранённые записи голоса, новые сверху. `RecordingItem`: `{id, ts, duration_s, bytes, app, status: "pending"\|"ok"\|"empty"\|"error", chars, history_id}` (текста в нём нет — он в истории) |
+| `recording_transcribe` | `{id}` | `{id, text, raw, language, duration_s, ai}` — распознать запись заново (словарь, сниппеты, ИИ со стилем по умолчанию); результат — в историю и в «Вставить последнее», в окно не вставляется, статистика не пополняется. `text` пустой — речи нет. Нет записи — ошибка «Запись голоса не найдена…» |
+| `recording_delete` | `{id}` | `null` |
+| `recordings_clear` | — | `{deleted: int}` |
+| `recording_reveal` | `{id?}` | `null` — проводник: с `id` — файл записи выделен, без — папка записей |
 | `dict_list` | — | `[DictItem]` |
 | `dict_upsert` | `{id?, term, variants: [str]}` | `DictItem` |
 | `dict_delete` | `{id}` | `null` |
@@ -258,6 +263,8 @@ type Stats = {
   "default_style": "normal",
   "history_enabled": true,
   "history_retention_days": 0,      // 0 — хранить всегда
+  "recordings_keep": 30,             // последние записи голоса на диске (0 — не сохранять)
+  "recordings_max_mb": 300,         // …и не больше стольких МБ на все
   "pill_enabled": true,
   "pill_position": null,            // [x, y] физические пиксели или null — снизу по центру
   "theme": "system",                // system | dark | light
