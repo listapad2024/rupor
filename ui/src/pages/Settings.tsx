@@ -296,10 +296,11 @@ function Dictation({ s, set }: SectionProps) {
     { k: "command_modifier", title: t("settings.dictation.command"), hint: t("settings.dictation.commandHint") },
     { k: "cancel_key", title: t("settings.dictation.cancel"), hint: t("settings.dictation.cancelHint") },
   ];
-  // «Вставить последнее» / «Скопировать последнее» — сочетания с модификаторами (ТЗ)
-  const chords: { k: "insert_last_hotkey" | "copy_last_hotkey"; title: string; hint: string }[] = [
+  // «Вставить последнее» / «Скопировать последнее» / «Сменить раскладку» — сочетания с модификаторами (ТЗ)
+  const chords: { k: "insert_last_hotkey" | "copy_last_hotkey" | "convert_layout_hotkey"; title: string; hint: string }[] = [
     { k: "insert_last_hotkey", title: t("settings.dictation.insertLast"), hint: t("settings.dictation.insertLastHint") },
     { k: "copy_last_hotkey", title: t("settings.dictation.copyLast"), hint: t("settings.dictation.copyLastHint") },
+    { k: "convert_layout_hotkey", title: t("settings.dictation.convertLayout"), hint: t("settings.dictation.convertLayoutHint") },
   ];
   const values = keys.map((x) => String(s[x.k] ?? ""));
   const dup = values.find((v, i) => v && values.indexOf(v) !== i);

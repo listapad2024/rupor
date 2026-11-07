@@ -258,7 +258,8 @@
       "command": "Command mode",
       "cancel": "Cancel recording",
       "insertLast": "Paste last",
-      "copyLast": "Copy last"
+      "copyLast": "Copy last",
+      "convertLayout": "Switch layout of selection"
     },
     "system": {
       "title": "Status",
@@ -624,6 +625,8 @@
       "insertLastHint": "Inserts the last transcribed text into the active window.",
       "copyLast": "Copy last",
       "copyLastHint": "Puts the last transcribed text on the clipboard.",
+      "convertLayout": "Switch layout of selection",
+      "convertLayoutHint": "Selected text typed in the wrong keyboard layout is fixed in place: “ghbdtn” ↔ the Russian word it was meant to be. No AI.",
       "chordSaved": "Shortcut “{key}” saved",
       "chordOff": "Shortcut turned off",
       "keySaved": "Key “{key}” saved",
@@ -838,7 +841,9 @@
       "insertLast": "Paste last",
       "insertLastText": "Insert the last transcribed text again — for example, if it went to the wrong window.",
       "copyLast": "Copy last",
-      "copyLastText": "Put the last transcribed text on the clipboard."
+      "copyLastText": "Put the last transcribed text on the clipboard.",
+      "convertLayout": "Switch layout of selection",
+      "convertLayoutText": "Typed a password or phrase in the wrong layout (English ↔ Russian)? Select it and press the shortcut to retype it in the other layout. The direction is detected automatically, no AI."
     },
     "modesTitle": "Insert methods",
     "modes": {

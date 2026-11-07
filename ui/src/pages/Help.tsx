@@ -8,6 +8,7 @@ import {
   Cpu,
   Hand,
   Keyboard,
+  Languages,
   Maximize,
   Mic,
   MicOff,
@@ -36,6 +37,7 @@ export function HelpPage() {
     cancel: "esc",
     insert_last: "ctrl+alt+shift+v",
     copy_last: "ctrl+alt+shift+c",
+    convert_layout: "shift+pause",
   };
 
   const steps: { icon: ReactNode; title: TKey; text: TKey; keys?: string[] }[] = [
@@ -55,6 +57,16 @@ export function HelpPage() {
       : []),
     ...(hk.copy_last
       ? [{ icon: <Copy />, title: "help.hotkeys.copyLast" as TKey, text: "help.hotkeys.copyLastText" as TKey, keys: [hk.copy_last] }]
+      : []),
+    ...(hk.convert_layout
+      ? [
+          {
+            icon: <Languages />,
+            title: "help.hotkeys.convertLayout" as TKey,
+            text: "help.hotkeys.convertLayoutText" as TKey,
+            keys: [hk.convert_layout],
+          },
+        ]
       : []),
   ];
 

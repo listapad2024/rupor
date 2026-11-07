@@ -229,6 +229,7 @@ const DEFAULT_SETTINGS: Settings = {
   double_tap_ms: 400,
   insert_last_hotkey: "ctrl+alt+shift+v",
   copy_last_hotkey: "ctrl+alt+shift+c",
+  convert_layout_hotkey: "shift+pause",
   mouse_button: "",
   input_device: null,
   min_record_ms: 300,
@@ -499,6 +500,7 @@ export class MockBackend implements Backend {
       cancel: this.settings.cancel_key,
       insert_last: this.settings.insert_last_hotkey,
       copy_last: this.settings.copy_last_hotkey,
+      convert_layout: this.settings.convert_layout_hotkey,
     };
   }
 
