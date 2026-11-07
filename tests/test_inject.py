@@ -128,3 +128,25 @@ def test_typing_stops_when_focus_changes(monkeypatch: pytest.MonkeyPatch) -> Non
 def test_paste_and_copy_keys_have_scan_codes() -> None:
     assert inject._key(ord("V")).scan == 0x2F
     assert inject._key(w.VK_INSERT) == KeyEvent(w.VK_INSERT, 0x52, w.KEYEVENTF_EXTENDEDKEY)
+
+
+def test_paste_restores_clipboard_when_send_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    """SendInput отказал (экран заблокирован, secure desktop): прежний буфер возвращается,
+    а не остаётся занятым диктовкой."""
+    restored: list[object] = []
+    saved = [(13, b"o\0l\0d\0\0\0")]
+    monkeypatch.setattr(inject, "wait_modifiers_released", lambda: None)
+    monkeypatch.setattr(inject, "clipboard_snapshot", lambda: saved)
+    monkeypatch.setattr(inject, "_clip_owner", lambda: None)
+    monkeypatch.setattr(inject, "clipboard_set_text", lambda text, private=False: None)
+    monkeypatch.setattr(inject, "clipboard_restore", restored.append)
+    monkeypatch.setattr(inject, "_before_packet", lambda hwnd: None)
+    monkeypatch.setattr(w.user32, "GetClipboardSequenceNumber", lambda: 7)
+
+    def fail(vk: int) -> None:
+        raise OSError("SendInput: доступ запрещён")
+
+    monkeypatch.setattr(inject, "_send_ctrl_vk", fail)
+    with pytest.raises(OSError):
+        inject.paste_text("диктовка", restore_ms=0)
+    assert restored == [saved]

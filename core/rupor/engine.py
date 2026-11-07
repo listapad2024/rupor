@@ -630,7 +630,10 @@ class Engine:
             # печать ждёт, пока пользователь держит клавишу диктовки (следующая фраза)
             inject.set_hold_probe(self.machine.is_held)
             self.hook.mouse_button = self.s.mouse_button
-            self.hook.start()
+            try:
+                self.hook.start()
+            except OSError as e:
+                self.notice(tr("eng.hook_failed", error=e), level="error")
         if self.storage.recovered is not None:
             self.notice(tr("eng.db_recovered"), level="warn")
 

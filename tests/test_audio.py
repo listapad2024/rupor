@@ -71,3 +71,30 @@ def test_inactive_stream_is_stale(fake_sd: None) -> None:
     assert not rec.stale()
     FakeStream.created[0].active = False          # PortAudio остановил поток сам
     assert rec.stale()
+
+
+def test_stream_is_closed_when_stop_fails(fake_sd: None) -> None:
+    """Микрофон выдернули: stop() бросает, но поток всё равно закрывается."""
+    rec = audio.Recorder()
+    rec.open()
+    st = FakeStream.created[0]
+
+    def fail() -> None:
+        raise OSError("PortAudio: устройство недоступно")
+
+    st.stop = fail  # type: ignore[method-assign]
+    with pytest.raises(OSError):
+        rec.close()
+    assert st.closed and not rec.is_open
+
+
+def test_stream_is_closed_when_start_fails(fake_sd: None,
+                                           monkeypatch: pytest.MonkeyPatch) -> None:
+    def fail(self: FakeStream) -> None:
+        raise OSError("PortAudio: устройство занято")
+
+    monkeypatch.setattr(FakeStream, "start", fail)
+    rec = audio.Recorder()
+    with pytest.raises(OSError):
+        rec.open()
+    assert FakeStream.created[0].closed and not rec.is_open

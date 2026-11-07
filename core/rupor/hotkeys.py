@@ -707,6 +707,7 @@ class KeyboardHook:
         self._deskproc = w.WINEVENTPROC(self._desktop_event)
         self.paused = False
         self._alive_t = -1e9
+        self.error: str | None = None  # хук не поставился — текст ошибки для пользователя
 
     @property
     def running(self) -> bool:
@@ -715,7 +716,10 @@ class KeyboardHook:
     def start(self) -> None:
         self._thread = threading.Thread(target=self._run, name="rupor-hook", daemon=True)
         self._thread.start()
-        self._ready.wait(5)
+        if not self._ready.wait(5):
+            log.error("Хук клавиатуры не ответил за 5 с")
+        if self.error:
+            raise OSError(self.error)
         if self._rehook_when:
             threading.Thread(target=self._rdp_watch, name="rupor-rehook", daemon=True).start()
 
@@ -776,7 +780,18 @@ class KeyboardHook:
 
     def _run(self) -> None:
         self._tid = w.kernel32.GetCurrentThreadId()
-        self._install()
+        for attempt in range(3):
+            try:
+                self._install()
+                break
+            except OSError as e:
+                log.error("Хук клавиатуры не установлен (попытка %d): %s", attempt + 1, e)
+                if attempt == 2:
+                    # без хука поток не нужен; start() поднимет ошибку, ядро её покажет
+                    self.error = str(e)
+                    self._ready.set()
+                    return
+                time.sleep(0.2)
         win_hook = None
         if self._rehook_when:
             win_hook = w.user32.SetWinEventHook(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND,
@@ -789,7 +804,12 @@ class KeyboardHook:
         msg = wt.MSG()
         while w.user32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
             if msg.message == WM_APP_REHOOK:
-                self._install()
+                # Не вышло перевесить — работает прежний хук; падение здесь завершило бы
+                # поток и молча сняло все хоткеи
+                try:
+                    self._install()
+                except OSError as e:
+                    log.warning("Не удалось перевесить хук клавиатуры: %s", e)
                 continue
             if msg.message == WM_APP_MOUSEHOOK:
                 self._install_mouse()

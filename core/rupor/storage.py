@@ -47,6 +47,7 @@ PERIOD_DAYS = {"day": 1, "week": 7, "month": 30}   # «за день» = пос�
 TYPING_WPM = 40          # база для «сэкономленного времени» (ТЗ)
 DAILY_DAYS = 30          # точек в графике на главной
 WEEK_DAYS = 7            # «за неделю» = последние 7 дней, включая сегодня
+MAX_SEARCH_WORDS = 50
 MAX_PAGE = 1000
 BUSY_TIMEOUT_S = 10.0    # ждать чужую блокировку записи (второй экземпляр, внешний просмотрщик)
 LEARN_JOURNAL_KEY = "learn_journal"   # kv: журнал выученных правок (для «Отменить»)
@@ -440,9 +441,14 @@ class Storage:
         Служебные записи (проверка распознавания, рассылка в RDP) находятся и по подписям,
         которые показывает интерфейс, на любом языке: «Рупор», «Rupor», «Recognition test»
         (в базе у них нейтральные app/title — engine.history_display)."""
-        tokens = textproc.fold(query or "").split()
+        tokens = list(dict.fromkeys(textproc.fold(query or "").split()))
         if not tokens:
             return "", []
+        # Слово, входящее в другое слово запроса, ничего не сужает (instr). Длинный запрос
+        # (вставили абзац) — первые MAX_SEARCH_WORDS слов: иначе SQLite отвечает
+        # «Expression tree is too large», а пользователь видит «внутреннюю ошибку».
+        tokens = [t for t in tokens if not any(t != o and t in o for o in tokens)]
+        tokens = tokens[:MAX_SEARCH_WORDS]
         # CAST AS BLOB: запись с битым UTF-8 не роняет поиск (py_fold декодирует с заменой)
         hay = ("py_fold(CAST(coalesce(text, '') || char(10) || coalesce(raw, '') || char(10) || "
                "coalesce(app, '') || char(10) || coalesce(title, '') || char(10) || "

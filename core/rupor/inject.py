@@ -559,13 +559,18 @@ def paste_text(text: str, restore_ms: int = 300, expect_hwnd: int | None = None)
         if owner is None:
             clipboard_set_text(text, private=True)
         seq = w.user32.GetClipboardSequenceNumber()
+        # Вставка сорвалась (фокус ушёл; SendInput отказал на заблокированном экране, UAC) —
+        # прежний буфер возвращаем сразу, иначе в нём останется диктовка.
         try:
             _before_packet(expect_hwnd)
-        except FocusLost:
+            _send_ctrl_vk(ord("V"))
+        except BaseException:
             if saved is not None:
-                clipboard_restore(saved)
+                try:
+                    clipboard_restore(saved)
+                except OSError as e:
+                    log.warning("Не удалось восстановить буфер: %s", e)
             raise
-        _send_ctrl_vk(ord("V"))
         if owner is not None:
             if not owner.rendered.wait(RENDER_WAIT_S):
                 log.info("Окно не прочитало вставку за %.0f с — возвращаю прежний буфер",

@@ -163,6 +163,14 @@ def test_dictionary_capitalizes_lowercase_term_at_sentence_start() -> None:
         "Эквайринг работает. А эквайринг нет"
 
 
+def test_dictionary_keeps_inner_case_at_sentence_start() -> None:
+    """«Айфон сломался» → «iPhone», не «IPhone»: у термина регистр задан внутри слова."""
+    items = [{"term": "iPhone", "variants": ["айфон"]}, {"term": "macOS", "variants": ["мак ос"]}]
+    assert apply_dictionary("Айфон сломался. Мак ос тоже", items) == \
+        "iPhone сломался. macOS тоже"
+    assert apply_dictionary("у меня айфон", items) == "у меня iPhone"
+
+
 def test_dictionary_special_characters_are_literal() -> None:
     items = [{"term": "C++", "variants": ["си плюс плюс"]}, {"term": "Node.js", "variants": []}]
     assert apply_dictionary("пишу на си плюс плюс", items) == "пишу на C++"

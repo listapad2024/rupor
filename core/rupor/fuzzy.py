@@ -611,8 +611,8 @@ def _replacement(a: _Anchor, ending: str, src: str) -> str:
         if fold(out[-1:]) in "аяоеиыйь":
             out = out[:-1]                        # «Госуслуг|и» + «ах», «Зенк|а» + «у»
         out += ending
-    if out[:1].islower() and src[:1].isupper():
-        out = out[:1].upper() + out[1:]
+    if out[:1].islower() and src[:1].isupper() and a.term == a.term.lower():
+        out = out[:1].upper() + out[1:]  # «iPhone», «macOS» не поднимаем: регистр задан
     return out
 
 

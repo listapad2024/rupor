@@ -741,3 +741,62 @@ def test_hook_ignores_mstsc_sync_copies(cw: GestureMachine,
     event(LCTRL, MSTSC_SYNC_EXTRA)
     event(LWIN, MSTSC_SYNC_EXTRA)
     assert acts == [] and cw.presses == before
+
+
+# ---------- хук клавиатуры не снимается молча ----------
+
+def test_hook_start_reports_install_failure(m: GestureMachine,
+                                            monkeypatch: pytest.MonkeyPatch) -> None:
+    """Хук не поставился (три попытки): start() поднимает ошибку — ядро покажет её, а не
+    будет делать вид, что хоткеи работают."""
+    from rupor import _win as w
+    from rupor import hotkeys
+    from rupor.hotkeys import KeyboardHook
+
+    monkeypatch.setattr(hotkeys.time, "sleep", lambda s: None)
+    monkeypatch.setattr(w.kernel32, "GetCurrentThreadId", lambda: 1)
+    calls = []
+
+    def install(self: KeyboardHook) -> None:
+        calls.append(1)
+        raise OSError("SetWindowsHookEx: ошибка 5")
+
+    monkeypatch.setattr(KeyboardHook, "_install", install)
+    hook = KeyboardHook(m, lambda a: None)
+    with pytest.raises(OSError, match="SetWindowsHookEx"):
+        hook.start()
+    assert len(calls) == 3
+
+
+def test_failed_rehook_keeps_hook_thread_alive(m: GestureMachine,
+                                               monkeypatch: pytest.MonkeyPatch) -> None:
+    """Перевесить хук (RDP впереди) не вышло — цикл сообщений продолжает работать на прежнем
+    хуке, а не завершает поток вместе со всеми хоткеями."""
+    from rupor import _win as w
+    from rupor.hotkeys import WM_APP_REHOOK, KeyboardHook
+
+    installs: list[int] = []
+
+    def install(self: KeyboardHook) -> None:
+        installs.append(1)
+        if len(installs) > 1:
+            raise OSError("SetWindowsHookEx: ошибка 1428")
+        self._hook = None
+
+    msgs = [WM_APP_REHOOK, WM_APP_REHOOK, None]
+
+    def get_message(ref: object, *_a: object) -> int:
+        msg = msgs.pop(0)
+        if msg is None:
+            return 0
+        ref._obj.message = msg  # type: ignore[attr-defined]
+        return 1
+
+    monkeypatch.setattr(KeyboardHook, "_install", install)
+    monkeypatch.setattr(w.kernel32, "GetCurrentThreadId", lambda: 1)
+    monkeypatch.setattr(w.user32, "GetMessageW", get_message)
+    monkeypatch.setattr(w.user32, "SetWinEventHook", lambda *a: 0)
+    monkeypatch.setattr(w.user32, "UnhookWinEvent", lambda *a: 1)
+    hook = KeyboardHook(m, lambda a: None)
+    hook._run()                                  # не бросает
+    assert len(installs) == 3 and msgs == [] and hook.error is None

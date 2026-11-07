@@ -293,7 +293,9 @@ def _replace(text: str, alts: tuple[_Alt, ...]) -> str:
         if end_group is not None and keep:
             out += m.group(end_group) or ""
         src = m.group(0)
-        if out[:1].islower() and src[:1].isupper():
+        # заглавная в начале предложения — но не для «iPhone», «macOS»: у них регистр
+        # внутри слова задан, «IPhone» хуже, чем строчная в начале
+        if out[:1].islower() and src[:1].isupper() and term == term.lower():
             out = out[:1].upper() + out[1:]
         return out
 

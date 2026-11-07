@@ -200,6 +200,35 @@ def test_load_unreadable_file_is_not_overwritten(tmp_path: Path,
     assert not list(d.glob("settings.broken-*.json"))
 
 
+def test_load_survives_locked_settings_file(tmp_path: Path,
+                                          monkeypatch: pytest.MonkeyPatch) -> None:
+    """settings.json держит антивирус или OneDrive: запись ждёт и повторяет, а если файл так
+    и не освободился — ядро всё равно стартует с прочитанными настройками."""
+    monkeypatch.setenv("APPDATA", str(tmp_path))
+    monkeypatch.setattr(config.time, "sleep", lambda s: None)
+    d = tmp_path / "Rupor"
+    d.mkdir()
+    p = d / "settings.json"
+    p.write_text(json.dumps({"default_style": "code", "app_rules": {}}), encoding="utf-8")
+    real = Path.replace
+    busy = {"left": 2}
+
+    def replace(self: Path, target: object) -> Path:
+        if Path(str(target)) == p and busy["left"]:
+            busy["left"] -= 1
+            raise PermissionError(32, "файл занят")
+        return real(self, target)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(Path, "replace", replace)
+    s = config.load()                           # два отказа, потом получилось
+    assert s.default_style == "code" and busy["left"] == 0
+    assert "ptt_key" in json.loads(p.read_text(encoding="utf-8"))  # дописан
+
+    busy["left"] = 100                          # занят надолго
+    s = config.load()
+    assert s.default_style == "code"            # не упал, настройки пользователя на месте
+
+
 def test_load_old_file_with_bad_cancel_key(tmp_path: Path,
                                            monkeypatch: pytest.MonkeyPatch) -> None:
     # миграция хоткеев v1 видит ещё не проверенные значения: cancel_key: null не роняет ядро
