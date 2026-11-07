@@ -6,6 +6,8 @@ All notable changes to Rupor are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.4.4] — 2026-11-08
+
 ### Added
 
 - **Switch the layout of selected text.** Typed a password or a phrase in the wrong keyboard
@@ -29,6 +31,8 @@ All notable changes to Rupor are listed here. The format follows
   is saved before recognition, so a dictation whose text was lost can be transcribed again
   under the new **History → Recordings** tab. The result goes to History and to *Insert last*.
   A long recording that produced no text now says it was saved and links to it.
+- **Play a recording.** History → Recordings has *Play / Stop* on every recording, and each
+  dictation in History that still has its recording gets a play button.
 
 ### Changed
 
@@ -41,6 +45,23 @@ All notable changes to Rupor are listed here. The format follows
 
 - Claude Haiku 5.5 works for cleanup: Rupor no longer sends it `temperature`, which the model
   rejects (before, every call failed and went to the next key).
+- **The AI no longer adds its own notes to the text.** A model could append "Note: …" explaining
+  why it did not apply a rule. The prompt now forbids it, and such a trailing note that you did
+  not dictate is removed.
+- The clipboard is restored when pasting fails (focus lost, locked screen, UAC), instead of
+  keeping the dictation in it.
+- Shortcuts no longer stop working silently: if the keyboard hook can't be installed, Rupor
+  retries and then says so.
+- A settings file held by an antivirus or OneDrive no longer stops the engine or resets the
+  settings; a broken settings file is kept next to it (`settings.broken-<time>.json`), and the AI
+  keys stay in the list.
+- A microphone that disappears while recording no longer leaves the audio stream open; a sound
+  that can't be played no longer breaks a recording.
+- Dictionary terms with their own capitalisation ("iPhone", "macOS") are no longer turned into
+  "IPhone" at the start of a sentence.
+- The mouse button used for dictation works again after Esc; "Miro" is no longer heard as «мир».
+- Searching History with a long query (a pasted paragraph) no longer fails, and a TLS drop
+  during the CUDA download is retried like any other dropped connection.
 - **Long dictations no longer vanish as "garbage".** The loop detector measured how well the
   whole text compressed; ordinary Russian text longer than about 2,000 characters
   (2.5 minutes of speech) compresses past Whisper's threshold with no repetition at all, so a
@@ -237,6 +258,7 @@ First public release.
 - Tray icon, start with Windows, light and dark themes, first-run wizard; a per-user NSIS
   installer without administrator rights.
 
+[0.4.4]: https://github.com/listapad2024/rupor/compare/v0.4.3...v0.4.4
 [0.4.3]: https://github.com/listapad2024/rupor/compare/v0.4.2...v0.4.3
 [0.4.2]: https://github.com/listapad2024/rupor/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/listapad2024/rupor/compare/v0.4.0...v0.4.1
