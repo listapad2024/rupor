@@ -37,6 +37,7 @@ import type {
   ModelRecommend,
   NoticeEvent,
   RdpWindow,
+  RecordingItem,
   Settings,
   SettingsPatch,
   Snippet,
@@ -266,6 +267,8 @@ const DEFAULT_SETTINGS: Settings = {
   default_style: "normal",
   history_enabled: true,
   history_retention_days: 0,
+  recordings_keep: 30,
+  recordings_max_mb: 300,
   pill_enabled: true,
   pill_position: null,
   theme: "system",
@@ -310,6 +313,8 @@ export class MockBackend implements Backend {
   private settings: Settings;
   private state: CoreState;
   private history: HistoryItem[] = [];
+  /** Демо «История → Записи»: записи голоса строятся из первых диктовок истории. */
+  private recordings: RecordingItem[] | null = null;
   private daily = new Map<string, DayStat>();
   private baseWords = 48_214;
   private baseSpeech = 48_214 / WORDS_PER_SEC;
@@ -480,6 +485,29 @@ export class MockBackend implements Backend {
   /** Как ядро: language="system" → язык Windows (здесь — ?lang или navigator.language). */
   private uiLanguage(pref: LanguagePref = this.settings.language): Locale {
     return pref === "ru" || pref === "en" ? pref : this.sysLang;
+  }
+
+  /** Демо-записи голоса: по одной на первые диктовки истории, последняя — «речь не распознана». */
+  private recordingsDemo(): RecordingItem[] {
+    if (this.recordings === null) {
+      const src = this.history.slice(0, 7);
+      this.recordings = src.map((h, i) => {
+        const empty = i === 2;
+        const d = empty ? 153.2 : h.duration_s;
+        const ts = h.ts;
+        const dt = new Date(ts * 1000);
+        const p2 = (n: number) => String(n).padStart(2, "0");
+        const id =
+          `${dt.getFullYear()}${p2(dt.getMonth() + 1)}${p2(dt.getDate())}-` +
+          `${p2(dt.getHours())}${p2(dt.getMinutes())}${p2(dt.getSeconds())}-${String(i).padStart(3, "0")}`;
+        return {
+          id, ts, duration_s: d, bytes: Math.round(d * 32000) + 44, app: h.app,
+          status: empty ? "empty" : "ok", chars: empty ? 0 : h.text.length,
+          history_id: empty ? null : h.id,
+        };
+      });
+    }
+    return this.recordings;
   }
 
   /** Тексты «ядра» на текущем языке интерфейса. */
@@ -1624,6 +1652,40 @@ export class MockBackend implements Backend {
           };
         });
       }
+      case "recordings_list": {
+        const items = this.recordingsDemo();
+        return sleep(160).then(() => ({
+          items: structuredClone(items),
+          total_bytes: items.reduce((n, r) => n + r.bytes, 0),
+          keep: this.settings.recordings_keep,
+          max_bytes: this.settings.recordings_max_mb * 1024 * 1024,
+        }));
+      }
+      case "recording_transcribe": {
+        const a = rawArgs as CommandArgs<"recording_transcribe">;
+        const rec = this.recordingsDemo().find((r) => r.id === a.id);
+        if (!rec) throw new BackendError(this.tx.recordingNotFound, cmd);
+        const h = this.history.find((x) => x.id === rec.history_id) ?? this.history[0];
+        const text = h?.text ?? "";
+        rec.status = text ? "ok" : "empty";
+        rec.chars = text.length;
+        return sleep(900).then(() => ({
+          id: rec.id, text, raw: h?.raw ?? "", language: h?.language ?? "ru",
+          duration_s: rec.duration_s, ai: Boolean(h?.ai),
+        }));
+      }
+      case "recording_delete": {
+        const a = rawArgs as CommandArgs<"recording_delete">;
+        this.recordings = this.recordingsDemo().filter((r) => r.id !== a.id);
+        return null;
+      }
+      case "recordings_clear": {
+        const n = this.recordingsDemo().length;
+        this.recordings = [];
+        return { deleted: n };
+      }
+      case "recording_reveal":
+        return null;
       case "open_logs":
         return null;
       case "title_rules_list":

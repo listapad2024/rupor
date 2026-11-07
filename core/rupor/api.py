@@ -14,7 +14,7 @@ import logging
 import os
 from typing import Any, Callable
 
-from . import ai, broadcast, config, credman, fetch, winutil
+from . import ai, broadcast, config, credman, fetch, recordings, winutil
 from .config import app_dir
 from .engine import Engine, history_display, styles_localized
 from .i18n import tr
@@ -75,6 +75,13 @@ def _bool(a: dict[str, Any], name: str) -> bool:
     return v
 
 
+def _rec_id(a: dict[str, Any]) -> str:
+    rid = _str(a, "id")
+    if not recordings.valid_id(rid):
+        raise ApiError(tr("api.recording_not_found"))
+    return rid
+
+
 def _provider(a: dict[str, Any]) -> str:
     p = _str(a, "provider")
     if p not in KEY_PROVIDERS:
@@ -116,6 +123,11 @@ class Api:
             "history_clear": self._history_clear,
             "history_reinsert": self._history_reinsert,
             "last_insert": self._last_insert,
+            "recordings_list": lambda a: self.e.recordings_list(),
+            "recording_transcribe": lambda a: self.e.recording_transcribe(_rec_id(a)),
+            "recording_delete": self._recording_delete,
+            "recordings_clear": lambda a: {"deleted": self.e.recordings_clear()},
+            "recording_reveal": self._recording_reveal,
             "dict_list": lambda a: self.storage.dict_list(),
             "dict_upsert": self._dict_upsert,
             "dict_delete": self._dict_delete,
@@ -256,6 +268,23 @@ class Api:
 
     def _last_insert(self, a: dict[str, Any]) -> None:
         self.e.insert_last()
+        return None
+
+    # ---------- сохранённые записи голоса ----------
+
+    def _recording_delete(self, a: dict[str, Any]) -> None:
+        self.e.recording_delete(_rec_id(a))
+        return None
+
+    def _recording_reveal(self, a: dict[str, Any]) -> None:
+        """Проводник: с id — выделить файл записи, без id — открыть папку записей."""
+        rid = a.get("id")
+        if rid is None:
+            os.startfile(self.e.recording_path(None))
+            return None
+        path = self.e.recording_path(_rec_id(a))
+        import subprocess
+        subprocess.Popen(["explorer.exe", "/select,", str(path)])
         return None
 
     # ---------- словарь, сниппеты, импорт ----------
