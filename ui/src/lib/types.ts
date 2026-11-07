@@ -95,7 +95,7 @@ export interface CoreHotkeys {
   insert_last: string;
   /** Сочетание «Скопировать последнее» (ctrl+alt+shift+c), "" — выключено. */
   copy_last: string;
-  /** Сочетание «Сменить раскладку выделенного» (ctrl+alt+shift+l), "" — выключено. */
+  /** Сочетание «Сменить раскладку выделенного» (shift+pause), "" — выключено. */
   convert_layout: string;
 }
 

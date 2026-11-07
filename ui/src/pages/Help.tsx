@@ -37,7 +37,7 @@ export function HelpPage() {
     cancel: "esc",
     insert_last: "ctrl+alt+shift+v",
     copy_last: "ctrl+alt+shift+c",
-    convert_layout: "ctrl+alt+shift+l",
+    convert_layout: "shift+pause",
   };
 
   const steps: { icon: ReactNode; title: TKey; text: TKey; keys?: string[] }[] = [

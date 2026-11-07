@@ -9,7 +9,7 @@ All notable changes to Rupor are listed here. The format follows
 ### Added
 
 - **Switch the layout of selected text.** Typed a password or a phrase in the wrong keyboard
-  layout? Select it and press **Ctrl+Alt+Shift+L**: the text is retyped in place as if it had
+  layout? Select it and press **Shift+Pause**: the text is retyped in place as if it had
   been typed in the other layout (US English ↔ Russian ЙЦУКЕН), "ghbdtn" ↔ "привет". The
   direction is detected for each word; pressing again brings the original back. It is purely
   mechanical — no AI, nothing goes to history or *Paste last*. The shortcut can be changed or
