@@ -16,6 +16,8 @@ dependencies = [
     "nvidia-cudnn-cu12>=9,<10",
     "websockets>=13",
     "comtypes>=1.4",   # UI Automation: обучение словаря на правках (rupor.uia)
+    # 2.x перешёл с httpx на httpx2 (без certifi): fetch._hf_client_factory строит httpx.Client
+    "huggingface_hub>=0.21,<2",
 ]
 
 [project.optional-dependencies]

@@ -1804,8 +1804,9 @@ class Engine:
                       tokens_in=saved["tokens_in"] or 0, tokens_out=saved["tokens_out"] or 0,
                       today_cost_usd=today)
         if err is None and provider == "openrouter":
-            with self._balance_lock:
-                stale = time.monotonic() - self._balance_at >= BALANCE_TTL_S
+            with self._balance_lock:  # monotonic на Windows — с загрузки: пустой кэш не «свежий»
+                stale = (self._balance is None
+                         or time.monotonic() - self._balance_at >= BALANCE_TTL_S)
             if stale:
                 threading.Thread(target=self._balance_refresh, name="rupor-balance",
                                  daemon=True).start()
