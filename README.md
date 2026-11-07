@@ -189,6 +189,7 @@ use the model that is already there.
 | Cancel recording | **Esc** while recording |
 | Paste last | **Ctrl+Alt+Shift+V** (or the tray menu item) |
 | Copy last | **Ctrl+Alt+Shift+C** |
+| Switch layout of selection | select text typed in the wrong layout (English ↔ Russian) and press **Ctrl+Alt+Shift+L** to retype it in the other one (no AI) |
 
 All keys can be changed in Settings → Dictation and apply immediately, without a restart. The
 dictation key can be a combination of modifiers (Ctrl+Alt…) or a single key (Right Ctrl, F13…).

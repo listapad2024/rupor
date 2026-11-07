@@ -68,7 +68,7 @@ DEFAULT_APP_RULES: dict[str, dict[str, str | None]] = {
 
 HOTKEY_FIELDS = ("ptt_key", "broadcast_modifier", "command_modifier", "cancel_key",
                  "tap_max_ms", "double_tap_ms", "insert_last_hotkey", "copy_last_hotkey",
-                 "mouse_button")
+                 "convert_layout_hotkey", "mouse_button")
 KEY_FIELDS = ("ptt_key", "broadcast_modifier", "command_modifier", "cancel_key")
 # Смена любого из них — перезагрузка модели в фоне (model_dir: модель ищется в новой папке,
 # нет там — качается туда, прежняя распознаёт, пока новая не готова)
@@ -101,6 +101,8 @@ class Settings:
     # Сочетания «Вставить последнее» / «Скопировать последнее» (пустая строка — выключено)
     insert_last_hotkey: str = "ctrl+alt+shift+v"
     copy_last_hotkey: str = "ctrl+alt+shift+c"
+    # «Сменить раскладку выделенного»: ghbdtn ↔ привет (механически, без ИИ)
+    convert_layout_hotkey: str = "ctrl+alt+shift+l"
 
     # Аудио
     input_device: str | None = None  # имя или индекс устройства; None — по умолчанию
@@ -552,6 +554,7 @@ _VALIDATORS: dict[str, Callable[[Any], Any]] = {
     "insert_last_hotkey": _chord,
     "mouse_button": _choice(("", "middle", "x1", "x2")),
     "copy_last_hotkey": _chord,
+    "convert_layout_hotkey": _chord,
     "input_device": _input_device,
     "min_record_ms": _int(0, 5000),
     "model": _text(max_len=300),
@@ -614,7 +617,7 @@ def label(name: str) -> str:
 def _check_hotkeys(s: Settings) -> None:
     """Клавиши жестов не должны пересекаться: «правый Alt» конфликтует и с «alt»,
     и с сочетанием «ctrl+alt»."""
-    from .hotkeys import key_group, key_label, parse_keyset
+    from .hotkeys import key_group, key_label, parse_chord, parse_keyset
     names = {"ptt_key": s.ptt_key, "broadcast_modifier": s.broadcast_modifier,
              "command_modifier": s.command_modifier, "cancel_key": s.cancel_key}
     seen: dict[int, str] = {}
@@ -625,8 +628,16 @@ def _check_hotkeys(s: Settings) -> None:
                 raise ValueError(tr("cfg.hotkey_conflict", label=label(k),
                                     other=label(seen[vk]), key=key_label(v)))
             seen[vk] = k
-    if s.insert_last_hotkey and s.insert_last_hotkey == s.copy_last_hotkey:
-        raise ValueError(tr("cfg.chords_same"))
+    chords = {"insert_last_hotkey": s.insert_last_hotkey, "copy_last_hotkey": s.copy_last_hotkey,
+              "convert_layout_hotkey": s.convert_layout_hotkey}
+    used: dict[Any, str] = {}
+    for k, v in chords.items():
+        if not v:
+            continue
+        ch = parse_chord(v)
+        if ch in used:
+            raise ValueError(tr("cfg.chords_same", a=label(used[ch]), b=label(k)))
+        used[ch] = k
 
 
 def apply_patch(s: Settings, patch: Any) -> list[str]:
