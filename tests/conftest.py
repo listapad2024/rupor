@@ -20,7 +20,7 @@ from typing import Any
 
 import pytest
 
-from rupor import duck, i18n, uia, winutil
+from rupor import duck, i18n, keys, uia, winutil
 
 
 @pytest.fixture(autouse=True)
@@ -31,6 +31,14 @@ def _no_user_windows(monkeypatch: pytest.MonkeyPatch) -> None:
         return None
 
     monkeypatch.setattr(uia, "caret_context", no_context)
+
+
+@pytest.fixture(autouse=True)
+def _fresh_key_queue() -> Iterator[None]:
+    """Паузы ключей ИИ после ошибок (rupor.keys) — у каждого теста свои."""
+    keys.reset()
+    yield
+    keys.reset()
 
 
 @pytest.fixture(autouse=True)

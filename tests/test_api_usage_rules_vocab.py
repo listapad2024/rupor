@@ -111,7 +111,8 @@ def test_ai_balance_cache_force_and_no_key(env: Env) -> None:
     r = c.call("ai_balance")
     assert r == {"balance_usd": None, "usage_usd": None, "limit_usd": None,
                  "checked_at": None,
-                 "error": "Ключ OpenRouter не задан — добавьте его в Настройках → ИИ"}
+                 "error": "Ключей ИИ нет — добавьте ключ в Настройках → ИИ",
+                 "key_id": None, "provider": None, "label": None, "estimate": False}
     c.call("ai_key_set", {"provider": "openrouter", "key": FAKE_KEY})
     r = c.call("ai_balance")
     assert r["balance_usd"] == 12.34 and r["usage_usd"] == 1.0 and r["error"] is None
@@ -531,11 +532,12 @@ def test_ai_balance_skips_network_when_openrouter_unused(env: Env) -> None:
     c.mark()
     r = c.call("ai_balance")
     assert r["balance_usd"] is None and r["checked_at"] is None
-    assert "не используется" in r["error"] and env.calls.balance_checks == []
-    # кнопка «Обновить» (force) ключ проверяет, но «пополните» не говорит
-    assert c.call("ai_balance", {"force": True})["balance_usd"] == 0.42
+    assert "не используются" in r["error"] and env.calls.balance_checks == []
+    # и кнопка «Обновить» (force) в сеть не ходит: ключ ни во что не идёт
+    assert c.call("ai_balance", {"force": True})["balance_usd"] is None
     time.sleep(0.2)
     assert not [e for e in c.events("notice") if "меньше $1" in e["text"]]
+    assert env.calls.balance_checks == []
     c.call("set_settings", {"patch": {"command_provider": "openrouter"}})
     c.call("ai_balance", {"force": True})
     c.wait_event("notice", lambda d: "меньше $1" in d["text"])

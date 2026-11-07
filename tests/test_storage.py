@@ -47,7 +47,7 @@ def test_wal_and_schema_version(st: Storage, tmp_path: Path) -> None:
     con = sqlite3.connect(tmp_path / "rupor.db")
     try:
         assert con.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
-        assert con.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION == 3
+        assert con.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION == 4
         tables = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         assert {"history", "dictionary", "snippets", "stats_daily", "kv", "ai_usage", "vocab",
                 "vocab_excluded"} <= tables
