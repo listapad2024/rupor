@@ -775,6 +775,9 @@ def test_log_formatter_scrubs_keys_from_tracebacks() -> None:
     ("claude-haiku-4-5", (1.0, 5.0)),
     ("claude-haiku-4-5-20251001", (1.0, 5.0)),       # датированный id
     ("claude-haiku-4-5@20251001", (1.0, 5.0)),
+    ("claude-haiku-5-5", (0.1, 0.5)),
+    ("claude-sonnet-5-5", (2.0, 10.0)),
+    ("claude-opus-5-5", (4.0, 20.0)),               # не цена семейства claude-opus-5
     ("Claude-Sonnet-5-latest", (2.0, 10.0)),
     ("claude-sonnet-5-1", None),                     # другая версия модели — цена неизвестна
     ("claude-opus-5-2-20260101", None),
