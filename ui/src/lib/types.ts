@@ -473,6 +473,8 @@ export interface CommandMap {
   /** Распознать сохранённую запись заново: результат — в историю и «Вставить последнее». */
   recording_transcribe: { args: { id: string }; result: RetranscribeResult };
   recording_delete: { args: { id: string }; result: null };
+  /** Звук записи для прослушивания: WAV целиком в base64. */
+  recording_audio: { args: { id: string }; result: { mime: string; data: string } };
   recordings_clear: { args: void; result: { deleted: number } };
   /** Проводник: с id — выделить файл записи, без id — открыть папку записей. */
   recording_reveal: { args: { id?: string }; result: null };
