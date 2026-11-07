@@ -49,6 +49,7 @@ import { Tabs } from "../components/ui/tabs";
 import { useToast } from "../components/ui/toast";
 import { languageName, NATIVE_NAMES, systemLocale, t, tp, type TKey } from "../i18n";
 import { cn } from "../lib/cn";
+import { fmtMb } from "../lib/format";
 import { useLoad, useMicMonitor } from "../lib/hooks";
 import { errorText } from "../lib/hub";
 import { comboParts, keyLabel } from "../lib/keys";
@@ -955,6 +956,8 @@ function Ai({ s, set }: SectionProps) {
 
 function HistorySection({ s, set }: SectionProps) {
   const days = [0, 7, 30, 90, 180, 365];
+  const keeps = [0, 10, 30, 50, 100];
+  const limits = [100, 300, 500, 1000, 2000];
   return (
     <section>
       <SectionTitle>{t("settings.history.title")}</SectionTitle>
@@ -977,6 +980,25 @@ function HistorySection({ s, set }: SectionProps) {
               value: d,
               label: d === 0 ? t("settings.history.forever") : tp("units.days", d),
             }))}
+          />
+        </SettingRow>
+        <SettingRow title={t("settings.history.recKeep")} description={t("settings.history.recKeepHint")}>
+          <Select
+            value={keeps.includes(s.recordings_keep) ? s.recordings_keep : 30}
+            onChange={(v) => void set({ recordings_keep: v })}
+            className="w-[200px]"
+            align="right"
+            options={keeps.map((n) => ({ value: n, label: n === 0 ? t("settings.history.recOff") : String(n) }))}
+          />
+        </SettingRow>
+        <SettingRow title={t("settings.history.recLimit")} description={t("settings.history.recLimitHint")}>
+          <Select
+            value={limits.includes(s.recordings_max_mb) ? s.recordings_max_mb : 300}
+            onChange={(v) => void set({ recordings_max_mb: v })}
+            className="w-[200px]"
+            align="right"
+            disabled={s.recordings_keep === 0}
+            options={limits.map((mb) => ({ value: mb, label: fmtMb(mb) }))}
           />
         </SettingRow>
         <SettingRow title={t("settings.history.clear")} description={t("settings.history.clearHint")}>

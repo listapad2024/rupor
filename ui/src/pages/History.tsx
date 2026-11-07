@@ -1,10 +1,12 @@
 import { AnimatePresence, motion } from "framer-motion";
 import {
+  AudioWaveform,
   Check,
   ClipboardPaste,
   Clock,
   Copy,
   Eraser,
+  FolderOpen,
   Mic,
   MonitorSmartphone,
   NotebookPen,
@@ -14,6 +16,7 @@ import {
   Sparkles,
   Terminal,
   Trash,
+  Wand2,
   X,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -26,26 +29,27 @@ import { Tabs } from "../components/ui/tabs";
 import { useToast } from "../components/ui/toast";
 import { t, tp, useLocale } from "../i18n";
 import { cn } from "../lib/cn";
-import { appName, countWords, dayKey, fmtDayLabel, fmtSeconds, fmtTime } from "../lib/format";
+import { appName, countWords, dayKey, fmtDayLabel, fmtMb, fmtSeconds, fmtTime } from "../lib/format";
 import { useDebounced, useEvent } from "../lib/hooks";
 import { errorText } from "../lib/hub";
 import { navigate } from "../lib/router";
 import { useCore, useStyleName } from "../lib/store";
-import type { ClearPeriod, HistoryItem } from "../lib/types";
+import type { ClearPeriod, HistoryItem, RecordingItem, RetranscribeResult } from "../lib/types";
 import { call } from "../lib/ws";
 
 const PAGE = 50;
 
 export function HistoryPage({ tab }: { tab: string | null }) {
-  const current = tab === "draft" ? "draft" : "feed";
+  const current = tab === "draft" ? "draft" : tab === "recordings" ? "recordings" : "feed";
   return (
     <div>
       <PageHeader title={t("history.title")} subtitle={t("history.subtitle")} />
       <Tabs
         value={current}
-        onChange={(v) => navigate(v === "draft" ? "history/draft" : "history")}
+        onChange={(v) => navigate(v === "feed" ? "history" : `history/${v}`)}
         items={[
           { value: "feed", label: t("history.tabs.feed"), icon: <Clock /> },
+          { value: "recordings", label: t("history.tabs.recordings"), icon: <AudioWaveform /> },
           { value: "draft", label: t("history.tabs.draft"), icon: <NotebookPen /> },
         ]}
         className="mb-6"
@@ -58,7 +62,7 @@ export function HistoryPage({ tab }: { tab: string | null }) {
           exit={{ opacity: 0, y: -4 }}
           transition={{ duration: 0.18 }}
         >
-          {current === "draft" ? <Draft /> : <Feed />}
+          {current === "draft" ? <Draft /> : current === "recordings" ? <Recordings /> : <Feed />}
         </motion.div>
       </AnimatePresence>
     </div>
@@ -460,6 +464,235 @@ function HistoryRow({ item, onDelete }: { item: HistoryItem; onDelete: () => voi
           </Tooltip>
           <Tooltip content={t("history.actions.delete")} side="right">
             <IconButton label={t("history.actions.delete")} size="sm" tone="danger" onClick={onDelete}>
+              <Trash className="size-4" />
+            </IconButton>
+          </Tooltip>
+        </div>
+      </div>
+    </motion.div>
+  );
+}
+
+// ——— Записи голоса ———
+
+const MIB = 1024 * 1024;
+
+function Recordings() {
+  const { status, settings } = useCore();
+  const toast = useToast();
+  const confirm = useConfirm();
+  const [items, setItems] = useState<RecordingItem[]>([]);
+  const [totalBytes, setTotalBytes] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [tick, setTick] = useState(0);
+
+  const reload = () => setTick((x) => x + 1);
+
+  useEffect(() => {
+    if (status !== "open") return;
+    let alive = true;
+    call("recordings_list")
+      .then((r) => {
+        if (!alive) return;
+        setItems(r.items);
+        setTotalBytes(r.total_bytes);
+        setLoadError(null);
+      })
+      .catch((e: unknown) => alive && setLoadError(errorText(e)))
+      .finally(() => alive && setLoading(false));
+    return () => {
+      alive = false;
+    };
+  }, [status, tick]);
+
+  // Новая диктовка — новая запись (и, возможно, ротация старых): перечитать список
+  useEvent("history", () => reload());
+  useEvent("result", () => reload());
+
+  const fail = (e: unknown) => toast({ tone: "error", title: t("errors.generic"), description: errorText(e) });
+
+  const remove = async (it: RecordingItem) => {
+    setItems((xs) => xs.filter((x) => x.id !== it.id));
+    setTotalBytes((n) => Math.max(0, n - it.bytes));
+    try {
+      await call("recording_delete", { id: it.id });
+    } catch (e) {
+      fail(e);
+      reload();
+    }
+  };
+
+  const clearAll = async () => {
+    const ok = await confirm({
+      title: t("history.rec.clearConfirm"),
+      body: t("history.rec.clearBody"),
+      confirmLabel: t("history.rec.clear"),
+      danger: true,
+    });
+    if (!ok) return;
+    try {
+      await call("recordings_clear");
+    } catch (e) {
+      fail(e);
+    }
+    reload();
+  };
+
+  const keep = settings?.recordings_keep ?? 30;
+  const maxMb = settings?.recordings_max_mb ?? 300;
+
+  return (
+    <div>
+      <p className="mb-4 text-[13px] leading-relaxed text-muted">{t("history.rec.intro")}</p>
+      <div className="mb-5 flex flex-wrap items-center gap-2">
+        <span className="flex-1 text-[12.5px] text-subtle tabular">
+          {keep > 0 &&
+            t("history.rec.usage", {
+              n: items.length,
+              keep,
+              size: fmtMb(totalBytes / MIB),
+              max: fmtMb(maxMb),
+            })}
+        </span>
+        <Button size="sm" variant="ghost" icon={<FolderOpen className="size-4" />} onClick={() => void call("recording_reveal", {}).catch(fail)}>
+          {t("history.rec.folder")}
+        </Button>
+        <Button size="sm" variant="secondary" onClick={() => navigate("settings/history")}>
+          {t("history.rec.settings")}
+        </Button>
+        {items.length > 0 && (
+          <Button size="sm" variant="danger" icon={<Trash className="size-4" />} onClick={() => void clearAll()}>
+            {t("history.rec.clear")}
+          </Button>
+        )}
+      </div>
+
+      {keep === 0 && (
+        <div className="mb-4 flex items-center gap-3 rounded-xl border border-warn/30 bg-warn/8 px-4 py-3 text-[13px] text-fg">
+          <span className="flex-1">{t("history.rec.off")}</span>
+          <Button size="sm" variant="secondary" onClick={() => navigate("settings/history")}>
+            {t("history.disabledAction")}
+          </Button>
+        </div>
+      )}
+
+      {loading ? (
+        <FeedSkeleton />
+      ) : loadError && items.length === 0 ? (
+        <LoadError error={loadError} onRetry={reload} />
+      ) : items.length === 0 ? (
+        <EmptyState icon={<AudioWaveform />} title={t("history.rec.emptyTitle")} text={t("history.rec.emptyText")} />
+      ) : (
+        <Card padded={false} className="overflow-hidden">
+          <AnimatePresence initial={false}>
+            {items.map((it) => (
+              <RecordingRow key={it.id} item={it} onDelete={() => void remove(it)} onChanged={reload} />
+            ))}
+          </AnimatePresence>
+        </Card>
+      )}
+    </div>
+  );
+}
+
+function RecordingRow({ item, onDelete, onChanged }: { item: RecordingItem; onDelete: () => void; onChanged: () => void }) {
+  const toast = useToast();
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<RetranscribeResult | null>(null);
+  const [copied, setCopied] = useState(false);
+
+  const transcribe = async () => {
+    setBusy(true);
+    try {
+      const r = await call("recording_transcribe", { id: item.id });
+      setResult(r);
+      toast(r.text ? { tone: "success", title: t("history.rec.result") } : { tone: "warn", title: t("history.rec.resultEmpty") });
+      onChanged();
+    } catch (e) {
+      toast({ tone: "error", title: t("errors.generic"), description: errorText(e) });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const copy = async () => {
+    if (!result?.text) return;
+    try {
+      await copyText(result.text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1400);
+    } catch (e) {
+      toast({ tone: "error", title: t("errors.copy"), description: errorText(e) });
+    }
+  };
+
+  const status =
+    item.status === "ok" ? (
+      <Badge tone="success">{t("history.rec.statusOk", { n: item.chars })}</Badge>
+    ) : item.status === "empty" ? (
+      <Badge tone="warn">{t("history.rec.statusEmpty")}</Badge>
+    ) : item.status === "error" ? (
+      <Badge tone="danger">{t("history.rec.statusError")}</Badge>
+    ) : (
+      <Badge>{t("history.rec.statusPending")}</Badge>
+    );
+
+  return (
+    <motion.div
+      layout
+      initial={{ opacity: 0, height: 0 }}
+      animate={{ opacity: 1, height: "auto" }}
+      exit={{ opacity: 0, height: 0 }}
+      transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
+      className="group overflow-hidden border-b border-line last:border-b-0"
+    >
+      <div className="flex items-start gap-3.5 px-5 py-4 transition-colors duration-150 hover:bg-surface-2/50">
+        <AppIcon process={item.app} size={32} className="mt-0.5" />
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2 text-[12px] text-subtle">
+            <span className="font-medium text-muted">{item.app ? appName(item.app) : "—"}</span>
+            <span className="ml-auto shrink-0 tabular">
+              {fmtDayLabel(item.ts)}, {fmtTime(item.ts)}
+            </span>
+          </div>
+          <div className="mt-2 flex flex-wrap items-center gap-1.5">
+            <Badge>{fmtSeconds(item.duration_s)}</Badge>
+            <Badge>{fmtMb(item.bytes / MIB)}</Badge>
+            {status}
+          </div>
+          {result?.text && (
+            <div className="selectable mt-2.5 whitespace-pre-wrap break-words rounded-lg bg-surface-2/60 px-3 py-2 text-[14px] leading-relaxed text-fg">
+              {result.text}
+            </div>
+          )}
+          <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
+            <Button size="sm" variant="soft" icon={<Wand2 className="size-4" />} loading={busy} onClick={() => void transcribe()}>
+              {busy ? t("history.rec.transcribing") : t("history.rec.transcribe")}
+            </Button>
+            {result?.text && (
+              <Button size="sm" variant="ghost" icon={copied ? <Check className="size-4 text-success" /> : <Copy className="size-4" />} onClick={() => void copy()}>
+                {copied ? t("common.copied") : t("history.actions.copy")}
+              </Button>
+            )}
+          </div>
+        </div>
+        <div className="flex shrink-0 flex-col gap-1 opacity-0 transition-opacity duration-150 group-hover:opacity-100 focus-within:opacity-100">
+          <Tooltip content={t("history.rec.reveal")} side="right">
+            <IconButton
+              label={t("history.rec.reveal")}
+              size="sm"
+              onClick={() =>
+                void call("recording_reveal", { id: item.id }).catch((e: unknown) =>
+                  toast({ tone: "error", title: t("errors.generic"), description: errorText(e) }),
+                )
+              }
+            >
+              <FolderOpen className="size-4" />
+            </IconButton>
+          </Tooltip>
+          <Tooltip content={t("history.rec.delete")} side="right">
+            <IconButton label={t("history.rec.delete")} size="sm" tone="danger" onClick={onDelete}>
               <Trash className="size-4" />
             </IconButton>
           </Tooltip>

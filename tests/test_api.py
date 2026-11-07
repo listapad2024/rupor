@@ -471,6 +471,86 @@ def test_history_disabled_but_stats_counted(env: Env) -> None:
     c.close()
 
 
+# ---------- сохранённые записи голоса ----------
+
+def test_recordings_saved_rotated_and_retranscribed(env: Env) -> None:
+    c = env.client()
+    c.call("set_settings", {"patch": {"recordings_keep": 2}})
+    c.mark()
+    env.dictate("первая")
+    c.wait_event("history")
+    env.dictate("вторая")
+    c.wait_event("history")
+    env.dictate("третья")
+    h3 = c.wait_event("history")
+    got = c.call("recordings_list")
+    assert got["keep"] == 2 and got["max_bytes"] == 300 * 1024 * 1024
+    items = got["items"]
+    assert len(items) == 2 and got["total_bytes"] == sum(i["bytes"] for i in items)
+    assert set(items[0]) >= {"id", "ts", "duration_s", "bytes", "app", "status", "chars",
+                             "history_id"}
+    newest = items[0]
+    assert newest["status"] == "ok" and newest["chars"] == len("третья")
+    assert newest["history_id"] == h3["id"] and newest["app"] == "notepad.exe"
+    assert (env.tmp / "recordings" / f"{newest['id']}.wav").exists()
+    # распознать заново: в историю и в «Вставить последнее», но не в окно и не в статистику
+    words = c.call("stats_get")["words_today"]
+    env.calls.delivered.clear()
+    env.rec.texts.append("третья, но целиком")
+    r = c.call("recording_transcribe", {"id": newest["id"]})
+    assert r["text"] == "третья, но целиком" and r["raw"] == "третья, но целиком"
+    assert r["id"] == newest["id"] and r["duration_s"] == 1.0
+    assert c.call("history_list")["items"][0]["text"] == "третья, но целиком"
+    assert env.calls.delivered == []
+    assert c.call("stats_get")["words_today"] == words
+    assert env.eng.last_text == "третья, но целиком"
+    # ошибки и удаление
+    assert "не найдена" in c.error("recording_transcribe", {"id": "20200101-000000-000"})
+    assert "не найдена" in c.error("recording_transcribe", {"id": "../rupor.db"})
+    c.call("recording_delete", {"id": newest["id"]})
+    assert [i["id"] for i in c.call("recordings_list")["items"]] == [items[1]["id"]]
+    assert c.call("recordings_clear") == {"deleted": 1}
+    assert c.call("recordings_list")["items"] == []
+    c.call("recording_reveal", {})
+    assert env.calls.opened and env.calls.opened[-1].endswith("recordings")
+    c.close()
+
+
+def test_lost_long_dictation_is_kept_on_disk(env: Env) -> None:
+    """Длинная запись без текста (распознавание выбросило) — не пропадает: запись на диске,
+    уведомление ведёт к ней."""
+    c = env.client()
+    env.recorder.seconds = 6.0
+    c.mark()
+    env.dictate("")
+    n = c.wait_event("notice", lambda d: d.get("action") == "open_recordings")
+    assert "Запись сохранена" in n["text"] and n["level"] == "warn"
+    [item] = c.call("recordings_list")["items"]
+    assert item["status"] == "empty" and item["duration_s"] == 6.0
+    env.rec.texts.append("вот она, длинная мысль")
+    assert c.call("recording_transcribe", {"id": item["id"]})["text"] == "вот она, длинная мысль"
+    assert c.call("recordings_list")["items"][0]["status"] == "ok"
+    c.close()
+
+
+def test_recordings_off_saves_nothing_and_deletes(env: Env) -> None:
+    c = env.client()
+    c.mark()
+    env.dictate("раз")
+    c.wait_event("history")
+    assert len(c.call("recordings_list")["items"]) == 1
+    c.call("set_settings", {"patch": {"recordings_keep": 0}})
+    deadline = time.monotonic() + 5
+    while c.call("recordings_list")["items"] and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert c.call("recordings_list")["items"] == []
+    env.dictate("два")
+    c.wait_event("history")
+    assert c.call("recordings_list")["items"] == []
+    assert "от 0 до 500" in c.error("set_settings", {"patch": {"recordings_keep": 501}})
+    c.close()
+
+
 # ---------- конвейер диктовки ----------
 
 def _enable_ai(c: Client, **extra: Any) -> None:

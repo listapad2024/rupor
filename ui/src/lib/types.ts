@@ -226,6 +226,10 @@ export interface Settings {
   default_style: string;
   history_enabled: boolean;
   history_retention_days: number;
+  /** Сколько последних записей голоса хранить на диске (0 — не сохранять), 0–500; по умолчанию 30. */
+  recordings_keep: number;
+  /** Сколько места записи голоса могут занять всего, МБ (20–20000); по умолчанию 300. */
+  recordings_max_mb: number;
   pill_enabled: boolean;
   pill_position: [number, number] | null;
   theme: ThemeMode;
@@ -462,6 +466,16 @@ export interface CommandMap {
   history_clear: { args: { period: ClearPeriod }; result: { deleted: number } };
   history_reinsert: { args: { id: number }; result: null };
   last_insert: { args: void; result: null };
+  recordings_list: {
+    args: void;
+    result: { items: RecordingItem[]; total_bytes: number; keep: number; max_bytes: number };
+  };
+  /** Распознать сохранённую запись заново: результат — в историю и «Вставить последнее». */
+  recording_transcribe: { args: { id: string }; result: RetranscribeResult };
+  recording_delete: { args: { id: string }; result: null };
+  recordings_clear: { args: void; result: { deleted: number } };
+  /** Проводник: с id — выделить файл записи, без id — открыть папку записей. */
+  recording_reveal: { args: { id?: string }; result: null };
   dict_list: { args: void; result: DictItem[] };
   dict_upsert: { args: { id?: number; term: string; variants: string[] }; result: DictItem };
   dict_delete: { args: { id: number }; result: null };
@@ -533,12 +547,41 @@ export interface ResultEvent {
   style: string;
 }
 
+/** Сохранённая запись голоса (последние N на диске, см. recordings_keep). Текста в ней нет. */
+export interface RecordingItem {
+  /** Имя файла без расширения: 20261107-183305-581. */
+  id: string;
+  /** Unix-время начала записи, с. */
+  ts: number;
+  duration_s: number;
+  bytes: number;
+  /** Процесс окна, куда диктовали ("" — неизвестно). */
+  app: string;
+  /** pending — распознаётся (или ядро упало посреди), ok — текст есть, empty — речи нет, error — сбой. */
+  status: "pending" | "ok" | "empty" | "error";
+  /** Сколько символов распознано. */
+  chars: number;
+  /** Запись истории с этим текстом (null — нет: история выключена или текста не было). */
+  history_id: number | null;
+}
+
+export interface RetranscribeResult {
+  id: string;
+  /** После словаря, сниппетов и ИИ; "" — речи нет. */
+  text: string;
+  raw: string;
+  language: string;
+  duration_s: number;
+  ai: boolean;
+}
+
 export type NoticeLevel = "info" | "warn" | "error";
 export type NoticeAction =
   | null
   | "relaunch_admin"
   | "open_settings_ai"
   | "open_settings_insert"
+  | "open_recordings"
   | "dict_undo"
   | "dict_add";
 
