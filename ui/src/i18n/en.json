@@ -326,6 +326,9 @@
     "moreError": "Couldn't load older dictations",
     "reinserted": "Text inserted into the last active window",
     "rec": {
+      "play": "Play",
+      "stop": "Stop",
+      "playError": "Couldn't play the recording",
       "intro": "Recent voice recordings are kept on disk: if a dictation wasn't recognized or the text got lost, you can transcribe it again.",
       "usage": "{n} of {keep} · {size} of {max}",
       "off": "Saving recordings is off: new dictations don't show up here.",
@@ -358,6 +361,7 @@
       "test": "Test"
     },
     "actions": {
+      "play": "Play the recording",
       "copy": "Copy",
       "reinsert": "Insert again",
       "delete": "Delete"

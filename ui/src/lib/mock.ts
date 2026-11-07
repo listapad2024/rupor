@@ -166,6 +166,31 @@ function fmtGb(mb: number): string {
   return fmtDecimal(mb / 1024, 1);
 }
 
+/** Демо-звук записи: тихий тон, WAV 16 кГц моно 16 бит в base64. */
+function demoWav(seconds: number): string {
+  const rate = 16000;
+  const n = Math.max(1, Math.round(rate * seconds));
+  const buf = new DataView(new ArrayBuffer(44 + n * 2));
+  const str = (o: number, s: string) => [...s].forEach((ch, i) => buf.setUint8(o + i, ch.charCodeAt(0)));
+  str(0, "RIFF");
+  buf.setUint32(4, 36 + n * 2, true);
+  str(8, "WAVEfmt ");
+  buf.setUint32(16, 16, true);
+  buf.setUint16(20, 1, true);
+  buf.setUint16(22, 1, true);
+  buf.setUint32(24, rate, true);
+  buf.setUint32(28, rate * 2, true);
+  buf.setUint16(32, 2, true);
+  buf.setUint16(34, 16, true);
+  str(36, "data");
+  buf.setUint32(40, n * 2, true);
+  for (let i = 0; i < n; i++) buf.setInt16(44 + i * 2, Math.round(1500 * Math.sin((2 * Math.PI * 220 * i) / rate)), true);
+  let bin = "";
+  const bytes = new Uint8Array(buf.buffer);
+  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+  return btoa(bin);
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
@@ -1660,6 +1685,12 @@ export class MockBackend implements Backend {
           keep: this.settings.recordings_keep,
           max_bytes: this.settings.recordings_max_mb * 1024 * 1024,
         }));
+      }
+      case "recording_audio": {
+        const a = rawArgs as CommandArgs<"recording_audio">;
+        const rec = this.recordingsDemo().find((r) => r.id === a.id);
+        if (!rec) throw new BackendError(this.tx.recordingNotFound, cmd);
+        return sleep(60).then(() => ({ mime: "audio/wav", data: demoWav(Math.min(rec.duration_s, 3)) }));
       }
       case "recording_transcribe": {
         const a = rawArgs as CommandArgs<"recording_transcribe">;
