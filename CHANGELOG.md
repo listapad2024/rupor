@@ -6,7 +6,7 @@ All notable changes to Rupor are listed here. The format follows
 
 ## [Unreleased]
 
-## [0.4.4] — 2026-11-08
+## [0.6.0] — 2026-11-08
 
 ### Added
 
@@ -258,7 +258,7 @@ First public release.
 - Tray icon, start with Windows, light and dark themes, first-run wizard; a per-user NSIS
   installer without administrator rights.
 
-[0.4.4]: https://github.com/listapad2024/rupor/compare/v0.4.3...v0.4.4
+[0.6.0]: https://github.com/listapad2024/rupor/compare/v0.4.3...v0.6.0
 [0.4.3]: https://github.com/listapad2024/rupor/compare/v0.4.2...v0.4.3
 [0.4.2]: https://github.com/listapad2024/rupor/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/listapad2024/rupor/compare/v0.4.0...v0.4.1
