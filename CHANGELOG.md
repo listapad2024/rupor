@@ -26,6 +26,11 @@ All notable changes to Rupor are listed here. The format follows
 - Spending for Claude Haiku 5.5, Sonnet 5.5 and Opus 5.5 is now counted at their own prices
   (Opus 5.5 was priced as Opus 5 before, Haiku 5.5 was not counted at all).
 
+### Fixed
+
+- Claude Haiku 5.5 works for cleanup: Rupor no longer sends it `temperature`, which the model
+  rejects (before, every call failed and went to the next key).
+
 ## [0.4.3] — 2026-10-18
 
 ### Fixed

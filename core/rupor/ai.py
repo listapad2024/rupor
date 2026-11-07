@@ -97,7 +97,7 @@ def anthropic_price(model: str) -> tuple[float, float] | None:
     return ANTHROPIC_PRICES[best] if best else None
 
 # Модели Anthropic, которые не принимают temperature/top_p (API отвечает 400)
-_NO_SAMPLING_RE = re.compile(r"^claude-(?:opus-4-[78]|opus-5|sonnet-5|fable|mythos)")
+_NO_SAMPLING_RE = re.compile(r"^claude-(?:opus-4-[78]|opus-5|sonnet-5|haiku-5|fable|mythos)")
 
 # ---------- промпты ----------
 
