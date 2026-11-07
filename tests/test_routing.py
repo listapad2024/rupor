@@ -172,6 +172,9 @@ def test_load_broken_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> No
     d.mkdir()
     (d / "settings.json").write_text("{не json", encoding="utf-8")
     s = config.load()
+    # умолчания, а ключи ИИ (они в Credential Manager, не в файле) — прежние цели в списке
+    assert [e["id"] for e in s.ai_keys] == ["openrouter", "anthropic"]
+    s.ai_keys = []
     assert s == Settings()
     # испорченный файл отложен рядом, а не затёрт умолчаниями
     kept = list(d.glob("settings.broken-*.json"))

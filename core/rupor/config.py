@@ -879,6 +879,9 @@ def load() -> Settings:
             s = Settings()
             migrate_rdp = False
             _keep_broken(p)
+            # ключи ИИ лежат в Credential Manager и пережили порчу файла: прежние цели — в
+            # список (записи без секрета движок уберёт при запуске)
+            _migrate_ai_keys(s)
     s.validate()
     if migrate_rdp:
         _migrate_broadcast(s)
