@@ -721,7 +721,7 @@ def test_convert_layout_nothing_to_do(env: Env, selection: str | None, text: str
 
 def test_convert_layout_hotkey_in_state(env: Env) -> None:
     c = env.client()
-    assert c.call("get_state")["hotkeys"]["convert_layout"] == "ctrl+alt+shift+l"
+    assert c.call("get_state")["hotkeys"]["convert_layout"] == "shift+pause"
     c.call("set_settings", {"patch": {"convert_layout_hotkey": ""}})   # выключить
     assert c.call("get_state")["hotkeys"]["convert_layout"] == ""
     assert all(k is not Kind.CONVERT_LAYOUT for k, _ in env.eng.machine._chords)

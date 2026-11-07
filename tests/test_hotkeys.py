@@ -122,7 +122,7 @@ def mc() -> GestureMachine:
                           command_mod=RALT,
                           insert_last=parse_chord("ctrl+alt+shift+v"),
                           copy_last=parse_chord("ctrl+alt+shift+c"),
-                          convert_layout=parse_chord("ctrl+alt+shift+l"))
+                          convert_layout=parse_chord("shift+pause"))
 
 
 def test_command_modifier_during_hold_is_swallowed(mc: GestureMachine) -> None:
@@ -207,10 +207,9 @@ def test_insert_last_chord(mc: GestureMachine) -> None:
 
 
 def test_convert_layout_chord(mc: GestureMachine) -> None:
-    for vk, t in ((LCTRL, 1000), (LALT, 1010), (LSHIFT, 1020)):
-        assert kinds(mc.key_down(vk, t)) == []
-    assert kinds(mc.key_down(ord("L"), 1030)) == [Kind.CONVERT_LAYOUT]
-    assert mc.swallow is True   # «L» в окно не уходит
+    assert kinds(mc.key_down(LSHIFT, 1000)) == []
+    assert kinds(mc.key_down(0x13, 1010)) == [Kind.CONVERT_LAYOUT]   # Pause
+    assert mc.swallow is True   # Pause в окно не уходит
 
 
 def test_copy_last_chord_with_ptt_ctrl_discards_recording(mc: GestureMachine) -> None:

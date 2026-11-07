@@ -100,8 +100,9 @@ class Settings:
     # Сочетания «Вставить последнее» / «Скопировать последнее» (пустая строка — выключено)
     insert_last_hotkey: str = "ctrl+alt+shift+v"
     copy_last_hotkey: str = "ctrl+alt+shift+c"
-    # «Сменить раскладку выделенного»: ghbdtn ↔ привет (механически, без ИИ)
-    convert_layout_hotkey: str = "ctrl+alt+shift+l"
+    # «Сменить раскладку выделенного»: ghbdtn ↔ привет (механически, без ИИ);
+    # Shift+Pause — как в Punto Switcher, ни с чем в Windows и программах не конфликтует
+    convert_layout_hotkey: str = "shift+pause"
 
     # Аудио
     input_device: str | None = None  # имя или индекс устройства; None — по умолчанию

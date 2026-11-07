@@ -229,7 +229,7 @@ const DEFAULT_SETTINGS: Settings = {
   double_tap_ms: 400,
   insert_last_hotkey: "ctrl+alt+shift+v",
   copy_last_hotkey: "ctrl+alt+shift+c",
-  convert_layout_hotkey: "ctrl+alt+shift+l",
+  convert_layout_hotkey: "shift+pause",
   mouse_button: "",
   input_device: null,
   min_record_ms: 300,
