@@ -372,6 +372,8 @@
   "setting.first_run_done": "Мастер первого запуска",
   "setting.history_enabled": "Сохранять историю",
   "setting.history_retention_days": "Срок хранения истории",
+  "setting.recordings_keep": "Последние записи голоса",
+  "setting.recordings_max_mb": "Место под записи",
   "setting.hotkeys_version": "Версия схемы горячих клавиш",
   "setting.input_device": "Микрофон",
   "setting.insert_last_hotkey": "Сочетание «Вставить последнее»",

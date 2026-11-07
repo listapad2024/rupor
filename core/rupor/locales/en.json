@@ -364,6 +364,8 @@
   "setting.first_run_done": "Setup wizard",
   "setting.history_enabled": "Keep history",
   "setting.history_retention_days": "History retention",
+  "setting.recordings_keep": "Recent voice recordings",
+  "setting.recordings_max_mb": "Space for recordings",
   "setting.hotkeys_version": "Shortcut scheme version",
   "setting.input_device": "Microphone",
   "setting.insert_last_hotkey": "“Paste last” shortcut",
