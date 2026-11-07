@@ -538,6 +538,35 @@ def test_clean_output(out: str, src: str, expected: str) -> None:
     assert ai.clean_output(out, src) == expected
 
 
+@pytest.mark.parametrize("out, src, expected", [
+    # Haiku 5.5, 07.11.2026: «во-вторых» без «во-первых» — модель объяснила, почему нет списка
+    ("Во-первых, распознать что-то.\n\nЗаметка: по правилам перечисления «во-первых… "
+     "во-вторых…» нужно оформить нумерованным списком, но здесь «во-вторых» отсутствует.",
+     "во-вторых перспознать что-то", "Во-первых, распознать что-то."),
+    ("Созвонимся завтра. (Примечание: исправил «завтро» на «завтра».)",
+     "созвонимся завтро", "Созвонимся завтра."),
+    ("We'll ship it.\n\n**Note:** I removed the filler words.", "so we'll ship it",
+     "We'll ship it."),
+    # продиктовал сам — остаётся
+    ("Купить хлеб.\nПримечание: без глютена.", "купить хлеб примечание без глютена",
+     "Купить хлеб.\nПримечание: без глютена."),
+    # весь ответ — приписка: не трогаем (его отсеют другие проверки)
+    ("Заметка: ничего не исправлено.", "привет", "Заметка: ничего не исправлено."),
+    # «note» внутри предложения — не приписка
+    ("Make a note: buy milk.", "make a note buy milk", "Make a note: buy milk."),
+    ("Код ошибки: 500.", "код ошибки 500", "Код ошибки: 500."),
+])
+def test_strip_model_notes(out: str, src: str, expected: str) -> None:
+    assert ai.strip_model_notes(out, src) == expected
+
+
+def test_cleanup_drops_model_note(rec: Recorder) -> None:
+    rec.reply = lambda req: or_reply("Во-первых, распознать что-то.\n\nЗаметка: список не "
+                                     "формировал, «во-первых» нет.")
+    assert ai.cleanup("во-вторых перспознать что-то", "normal", settings(),
+                      []).text == "Во-первых, распознать что-то."
+
+
 # ---------- Anthropic и Ollama ----------
 
 def test_anthropic_direct(rec: Recorder, monkeypatch: pytest.MonkeyPatch) -> None:
