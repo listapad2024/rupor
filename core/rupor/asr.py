@@ -74,6 +74,11 @@ GUESS_TEMPERATURE = 0.6    # сегмент с такой температуро
 LOW_LOGPROB = -1.5         # средняя уверенность сегмента ниже — повторить без подсказки
 REPEAT_RATIO = 2.4         # сжимаемость текста выше (как у Whisper) — зацикленный повтор
 REPEAT_MIN_CHARS = 40
+# Сжимаемость считается окнами: у Whisper порог 2.4 — для одного сегмента (≤ 30 с), а
+# обычный русский текст в UTF-8 длиннее ~2000 символов (2,5 минуты речи) сжимается сильнее
+# 2.4 и без всякого повтора — так длинная диктовка целиком уходила в «мусор».
+REPEAT_WINDOW = 400
+SALVAGE_MIN_WORDS = 4      # оба прохода — мусор, но после чистки осталось столько слов — вставить
 
 
 def _foreign(text: str) -> bool:
@@ -85,12 +90,40 @@ def _norm_phrase(text: str) -> str:
     return " ".join(words)
 
 
-def _repetitive(text: str) -> bool:
+def _ratio(text: str) -> float:
     import zlib
     data = text.encode("utf-8")
+    return len(data) / max(1, len(zlib.compress(data)))
+
+
+def _repetitive(text: str) -> bool:
+    """Зацикленный повтор где-то в тексте: сжимаемость окна REPEAT_WINDOW символов (шаг —
+    половина окна) выше REPEAT_RATIO. Короткий текст — целиком."""
     if len(text) < REPEAT_MIN_CHARS:
         return False
-    return len(data) / max(1, len(zlib.compress(data))) > REPEAT_RATIO
+    if len(text) <= REPEAT_WINDOW:
+        return _ratio(text) > REPEAT_RATIO
+    step = REPEAT_WINDOW // 2
+    starts = list(range(0, len(text) - REPEAT_WINDOW + 1, step))
+    if starts[-1] + REPEAT_WINDOW < len(text):
+        starts.append(len(text) - REPEAT_WINDOW)
+    return any(_ratio(text[i:i + REPEAT_WINDOW]) > REPEAT_RATIO for i in starts)
+
+
+def salvage(text: str) -> str:
+    """Что можно спасти из мусорного текста: убрать символы чужих алфавитов (Whisper вставляет
+    иероглиф посреди нормальной длинной фразы). Осталось меньше SALVAGE_MIN_WORDS слов или
+    остаток — всё равно мусор → пустая строка."""
+    if not text:
+        return ""
+    out = "".join(" " if any(lo <= ord(ch) <= hi for lo, hi in _FOREIGN_RANGES) else ch
+                  for ch in text)
+    out = re.sub(r"\s+([,.!?;:])", r"\1", out)
+    out = re.sub(r"([,;:])(?:\s*[,;:])+", r"\1", out)
+    out = re.sub(r"\s{2,}", " ", out).strip(" ,;:")
+    if len(re.findall(r"[^\W\d_]{2,}", out)) < SALVAGE_MIN_WORDS or garbage_reason(out):
+        return ""
+    return out
 
 
 def garbage_reason(text: str) -> str | None:
@@ -377,6 +410,13 @@ class Recognizer:
         again = garbage_reason(text2)
         if again:
             if bad or guessed:
+                # Длинная диктовка с одним «иероглифом» — не мусор целиком: спасти текст
+                for cand in (text2, text):
+                    saved = salvage(cand)
+                    if saved:
+                        log.warning("Повтор тоже мусор (%s) — вставляю очищенный текст "
+                                    "(%d из %d симв.)", again, len(saved), len(cand))
+                        return saved
                 log.warning("Повтор тоже мусор (%s) — текст не вставляю", again)
                 return ""
             return text

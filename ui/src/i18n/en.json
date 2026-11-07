@@ -89,7 +89,8 @@
   "notice": {
     "relaunchAdmin": "Restart as administrator",
     "openAiSettings": "Open AI settings",
-    "openRdpSettings": "Choose sessions"
+    "openRdpSettings": "Choose sessions",
+    "openRecordings": "Open recordings"
   },
   "tray": {
     "aiLine": "AI: today {today} · balance {balance}",
@@ -278,7 +279,8 @@
     "subtitle": "Every dictation — searchable and ready to insert again — plus a draft for longer notes.",
     "tabs": {
       "feed": "Timeline",
-      "draft": "Draft"
+      "draft": "Draft",
+      "recordings": "Recordings"
     },
     "search": "Search text and apps",
     "clear": {
@@ -324,6 +326,28 @@
     "end": "That's everything",
     "moreError": "Couldn't load older dictations",
     "reinserted": "Text inserted into the last active window",
+    "rec": {
+      "intro": "Recent voice recordings are kept on disk: if a dictation wasn't recognized or the text got lost, you can transcribe it again.",
+      "usage": "{n} of {keep} · {size} of {max}",
+      "off": "Saving recordings is off: new dictations don't show up here.",
+      "settings": "Settings",
+      "folder": "Open folder",
+      "clear": "Delete all",
+      "clearConfirm": "Delete all saved voice recordings?",
+      "clearBody": "The files will be deleted permanently. Dictation history stays.",
+      "transcribe": "Transcribe again",
+      "transcribing": "Transcribing…",
+      "reveal": "Show in Explorer",
+      "delete": "Delete",
+      "statusPending": "Not transcribed",
+      "statusOk": "{n} chars",
+      "statusEmpty": "No speech detected",
+      "statusError": "Recognition error",
+      "result": "Transcribed: the text is in History and in “Insert last”",
+      "resultEmpty": "No speech detected this time either",
+      "emptyTitle": "No recordings yet",
+      "emptyText": "Your recent voice recordings will appear here."
+    },
     "expand": "Show more",
     "collapse": "Show less",
     "processed": "Cleaned up",
@@ -799,7 +823,13 @@
       "forever": "Forever",
       "clear": "Clear history",
       "clearHint": "Delete entries from the last day, week, month, or everything at once.",
-      "openHistory": "Open history"
+      "openHistory": "Open history",
+      "recKeep": "Keep recent voice recordings",
+      "recKeepHint": "So a failed dictation isn't lost: transcribe it again under History → Recordings. “Don't keep” deletes the saved ones right away.",
+      "recOff": "Don't keep",
+      "recLimit": "Space for recordings",
+      "recLimitHint": "Older recordings are deleted when there are more of them or they take more space. A minute of audio ≈ 1.9 MB.",
+      "openRecordings": "Open recordings"
     },
     "about": {
       "tagline": "Local voice dictation into any Windows app, including RDP.",
@@ -1178,7 +1208,8 @@
     "chooseSessions": "Choose sessions",
     "command": "command",
     "relaunchAdmin": "Restart as administrator",
-    "openSettings": "AI settings"
+    "openSettings": "AI settings",
+    "openRecordings": "Recordings"
   },
   "aiKeys": {
     "add": "Add key",

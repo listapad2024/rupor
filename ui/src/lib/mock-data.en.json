@@ -399,6 +399,7 @@
     "learnNotFound": "The term “{term}” is no longer in the dictionary",
     "learnEmpty": "Empty term — nothing to add",
     "noTargets": "No RDP sessions selected for broadcast",
+    "recordingNotFound": "Voice recording not found. It may have been rotated out already",
     "sentRdp": {
       "one": "Sent to {n} RDP session",
       "other": "Sent to {n} RDP sessions"

@@ -399,7 +399,10 @@ OpenRouter. With Ollama everything stays on your computer.
 
 ## Privacy and data
 
-- **Recognition is local.** Microphone audio is processed on your computer and never stored.
+- **Recognition is local.** Microphone audio is processed on your computer and never leaves it.
+  The last 30 recordings (up to 300 MB in total) are kept on disk so that a failed dictation
+  isn't lost: you can transcribe it again under History → Recordings. Set the count to 0 in
+  Settings → History to keep none.
 - **No telemetry or analytics.** Rupor goes online only for the model (Hugging Face) and cuBLAS
   (PyPI) on first launch, and to your AI provider if AI is on.
 - **Dictated text isn't written to logs**: only text lengths, timings and program names.
@@ -412,6 +415,7 @@ OpenRouter. With Ollama everything stays on your computer.
 | Settings | `%APPDATA%\Rupor\settings.json` |
 | History, dictionary, snippets, stats, draft, AI spending, frequent words | `%APPDATA%\Rupor\rupor.db` (SQLite) |
 | Logs (rotated; log messages are in Russian) | `%APPDATA%\Rupor\logs\` (`rupor.log`, `ui.log`, `crash.log`) |
+| Recent voice recordings (WAV, rotated) | `%APPDATA%\Rupor\recordings\` |
 | Volume of lowered apps (only while recording) | `%APPDATA%\Rupor\duck.json` |
 | Speech model | `%USERPROFILE%\.cache\huggingface\hub` or your own folder (`model_dir`, see [Model folder](#model-folder)) |
 | CUDA libraries | `%LOCALAPPDATA%\Rupor\cuda` |
@@ -450,6 +454,7 @@ Everything is configured in the Rupor window. You can also edit
 | `duck_mode`, `duck_level` | other apps' audio while recording: `duck` (lower to `duck_level` percent, 15 by default) / `mute` / `off` |
 | `unload_after_min` | unload the model from video memory after N minutes idle (0 — never) |
 | `history_enabled`, `history_retention_days` | history and how long to keep it (0 — forever) |
+| `recordings_keep`, `recordings_max_mb` | how many recent voice recordings to keep on disk (30; 0 — none) and how much space they may take in total (300 MB) |
 | `default_style`, `ai_enabled`, `ai_provider`, `ai_model`, `ai_mode`, `ai_min_words`, `ai_timeout_s` | AI cleanup |
 | `ai_provider_order` | preferred providers inside OpenRouter, e.g. `["google-vertex", "amazon-bedrock"]` |
 | `command_provider` | command mode: `openrouter` or `claude_cli` |
