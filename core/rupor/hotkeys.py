@@ -520,6 +520,16 @@ class GestureMachine:
             self.replay = [*mods, vk]
             self._swallowed -= set(mods)  # их физическое отпускание пусть дойдёт
 
+    def _end_held(self) -> None:
+        """Жест HELD прерван (Esc, чужое сочетание). Клавиатурный ждёт отпускания ptt;
+        начатый кнопкой мыши — сразу в покой: ptt никто не держит, и WAIT_UP не кончился бы
+        никогда (кнопка мыши в WAIT_UP ничего не делает)."""
+        if self._by_mouse:
+            self._by_mouse = False
+            self.state = _S.IDLE
+        else:
+            self.state = _S.WAIT_UP
+
     def _down(self, vk: int, t: int, became: bool) -> list[Action]:
         st = self.state
         if st is _S.IDLE:
@@ -540,7 +550,7 @@ class GestureMachine:
             if vk in self.cancel:
                 # Esc глотаем: с зажатым Ctrl система получила бы Ctrl+Esc и открыла «Пуск»
                 self._swallow(vk)
-                self.state = _S.WAIT_UP
+                self._end_held()
                 return [Action(Kind.CANCEL)]
             if vk in self.bmod:
                 self._swallow(vk)
@@ -559,7 +569,7 @@ class GestureMachine:
                 self.state = _S.HANDS_FREE
                 return []
             # сочетание (Ctrl+C и т. п.), а не диктовка
-            self.state = _S.WAIT_UP
+            self._end_held()
             self._last_tap_up = None
             return [Action(Kind.DISCARD)]
         if st is _S.HANDS_FREE:
