@@ -55,7 +55,7 @@ from typing import Any, Callable, Protocol
 import numpy as np
 
 from . import (ai, audio, broadcast, config, credman, duck, fetch, fuzzy, i18n, inject,
-               learn, recommend, sounds, spell, textproc, uia, vocab, winutil)
+               layout, learn, recommend, sounds, spell, textproc, uia, vocab, winutil)
 from . import _win
 from ._win import VK_RIGHT
 from .asr import (SAMPLE_RATE, ModelMissing, Recognizer, Result, cuda_compute_types,
@@ -572,12 +572,13 @@ class Engine:
     # ---------- жизненный цикл ----------
 
     def _machine_args(self) -> tuple[tuple[KeyGroup, ...], KeyGroup, KeyGroup, int, int,
-                                     KeyGroup, Chord | None, Chord | None]:
+                                     KeyGroup, Chord | None, Chord | None, Chord | None]:
         s = self.s
         il = parse_chord(s.insert_last_hotkey) if s.insert_last_hotkey else None
         cl = parse_chord(s.copy_last_hotkey) if s.copy_last_hotkey else None
+        lc = parse_chord(s.convert_layout_hotkey) if s.convert_layout_hotkey else None
         return (parse_ptt(s.ptt_key), key_group(s.broadcast_modifier), key_group(s.cancel_key),
-                s.tap_max_ms, s.double_tap_ms, key_group(s.command_modifier), il, cl)
+                s.tap_max_ms, s.double_tap_ms, key_group(s.command_modifier), il, cl, lc)
 
     def start(self, hook: bool = True, track_focus: bool = True) -> None:
         if self._started:
@@ -718,7 +719,8 @@ class Engine:
             "ui_language": i18n.current(),
             "hotkeys": {"ptt": s.ptt_key, "broadcast": s.broadcast_modifier,
                         "command": s.command_modifier, "cancel": s.cancel_key,
-                        "insert_last": s.insert_last_hotkey, "copy_last": s.copy_last_hotkey},
+                        "insert_last": s.insert_last_hotkey, "copy_last": s.copy_last_hotkey,
+                        "convert_layout": s.convert_layout_hotkey},
         }
 
     def notice(self, text: str, level: str = "info", action: str | None = None,
@@ -865,6 +867,10 @@ class Engine:
                 self.copy_last()
             except (ValueError, OSError) as e:
                 self.notice(str(e), level="warn")
+            return
+        if k is Kind.CONVERT_LAYOUT:
+            # копирование выделения ждёт буфер до 0,4 с — не в потоке управления
+            self._jobs.put(("layout", None))
             return
         if k is Kind.START:
             # Новая диктовка: наблюдение за прошлой вставкой заканчивается (с оценкой правок)
@@ -1105,6 +1111,8 @@ class Engine:
                     self._insert_to(*payload)
                 elif kind == "replace":
                     self._do_replace(*payload)
+                elif kind == "layout":
+                    self.convert_layout()
             except ModelMissing as e:
                 if self.s.sounds:
                     sounds.play("error")
@@ -2333,6 +2341,50 @@ class Engine:
             raise ValueError(tr("eng.copy_nothing_yet"))
         inject.clipboard_set_text(text)
         self.notice(tr("eng.copied"), toast=False)
+
+    def convert_layout(self) -> bool:
+        """Выделенный текст активного окна — в другую раскладку (ghbdtn ↔ привет), поверх
+        выделения. Механически, без ИИ; в историю и «Вставить последнее» не попадает.
+        True — текст заменён."""
+        s = self.s
+        target = winutil.foreground()
+        if target is None or not self._is_foreign(target):
+            self.notice(tr("eng.layout_no_window"), level="warn")
+            return False
+        if winutil.is_terminal(target):
+            # в терминале ввод не заменяет выделение — текст дописался бы в командную строку
+            self.notice(tr("eng.layout_terminal"), level="warn")
+            return False
+        if winutil.blocked_by_uipi(target):
+            self.notice(tr("eng.window_admin", name=target.title or target.process),
+                        level="warn", action="relaunch_admin")
+            return False
+        # Правки пользователя до смены раскладки — обучению словаря; саму замену оно не видит
+        self._learn_stop("смена раскладки")
+        try:
+            selected = read_selection(target, s)
+        except OSError as e:  # буфер занят — копирование даже не отправлялось
+            self.notice(tr("eng.layout_error", error=e), level="warn")
+            return False
+        if selected is None or not selected.strip():
+            if selected is None and _is_rdp_info(target, s):
+                self.notice(tr("eng.cmd_rdp_selection"), level="warn")
+            else:
+                self.notice(tr("eng.layout_select"), level="warn")
+            return False
+        out = layout.convert(selected)
+        if out == selected:
+            self.notice(tr("eng.layout_nothing"), level="warn")
+            return False
+        fg = winutil.foreground()
+        if fg is None or fg.hwnd != target.hwnd:
+            self.notice(tr("eng.layout_window_changed"), level="warn")
+            return False
+        d = self._safe_deliver(out, False)
+        if d.ok:
+            log.info("Раскладка выделенного сменена: %d симв. (%s)", len(out),
+                     layout.detect(selected))
+        return d.ok
 
     def _insert_to(self, text: str, target: winutil.WindowInfo) -> None:
         fg = winutil.foreground()

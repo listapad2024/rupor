@@ -690,6 +690,44 @@ def test_command_mode_without_selection(env: Env) -> None:
     c.close()
 
 
+def test_convert_layout_of_selection(env: Env) -> None:
+    env.calls.selection = "Ghbdtn? vbh/"
+    c = env.client()
+    c.mark()
+    env.eng._on_actions([Action(Kind.CONVERT_LAYOUT)])
+    assert env.calls.event.wait(5)
+    # поверх выделения, без пробела в конце; без ИИ, не в историю и не в «Вставить последнее»
+    assert env.calls.delivered == [("Привет, мир.", False)]
+    assert env.calls.commands == [] and env.calls.cleanup == []
+    assert env.eng.last_text == ""
+    c.close()
+
+
+@pytest.mark.parametrize("selection, text", [
+    (None, "Выделите текст, раскладку которого нужно сменить"),
+    ("   ", "Выделите текст, раскладку которого нужно сменить"),
+    ("123 + 456", "В выделенном тексте нечего переводить в другую раскладку"),
+])
+def test_convert_layout_nothing_to_do(env: Env, selection: str | None, text: str) -> None:
+    env.calls.selection = selection
+    c = env.client()
+    c.mark()
+    env.eng._on_actions([Action(Kind.CONVERT_LAYOUT)])
+    n = c.wait_event("notice", lambda d: d["level"] == "warn")
+    assert n["text"] == text
+    assert env.calls.delivered == []
+    c.close()
+
+
+def test_convert_layout_hotkey_in_state(env: Env) -> None:
+    c = env.client()
+    assert c.call("get_state")["hotkeys"]["convert_layout"] == "ctrl+alt+shift+l"
+    c.call("set_settings", {"patch": {"convert_layout_hotkey": ""}})   # выключить
+    assert c.call("get_state")["hotkeys"]["convert_layout"] == ""
+    assert all(k is not Kind.CONVERT_LAYOUT for k, _ in env.eng.machine._chords)
+    c.close()
+
+
 def test_recording_event_and_cancel(env: Env) -> None:
     c = env.client()
     c.mark()
