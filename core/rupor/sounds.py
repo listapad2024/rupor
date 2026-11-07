@@ -49,8 +49,10 @@ def prepare() -> None:
 
 
 def play(name: str) -> None:
+    """Звук — не главное: никакая ошибка здесь (диск полон, папка занята, нет устройства
+    вывода) не должна сорвать запись или убить поток, который его вызвал."""
     try:
         winsound.PlaySound(str(_path(name)), winsound.SND_FILENAME | winsound.SND_ASYNC
                            | winsound.SND_NODEFAULT)
-    except RuntimeError as e:
+    except (RuntimeError, OSError, wave.Error) as e:
         log.debug("звук %s: %s", name, e)

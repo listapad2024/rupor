@@ -85,7 +85,16 @@ class Recorder:
         stream = sd.InputStream(samplerate=SAMPLE_RATE, channels=1, dtype="float32",
                                 blocksize=BLOCK, device=dev, callback=self._cb)
         self._last_cb = time.monotonic()
-        stream.start()
+        try:
+            stream.start()
+        except BaseException:
+            # не запустился (микрофон выдернули, занят) — закрыть, иначе поток PortAudio
+            # останется висеть и держать устройство
+            try:
+                stream.close()
+            except Exception as e:
+                log.debug("закрытие незапущенного потока: %s", e)
+            raise
         self._stream = stream
         log.info("Микрофон открыт: %s", sd.query_devices(stream.device)["name"])
 
@@ -102,11 +111,12 @@ class Recorder:
 
     def close(self) -> None:
         if self._stream is not None:
+            stream, self._stream = self._stream, None
             try:
-                self._stream.stop()
-                self._stream.close()
+                stream.stop()
             finally:
-                self._stream = None
+                # stop() бросил (устройство пропало) — поток всё равно закрываем
+                stream.close()
 
     @property
     def is_open(self) -> bool:

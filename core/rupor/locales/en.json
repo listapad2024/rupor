@@ -176,6 +176,7 @@
   "eng.db_recovered": "The history database was damaged. A new one was created and the old one was kept next to it",
   "eng.download_failed": "Download failed ({name}): {error}",
   "eng.error": "Error: {error}",
+  "eng.hook_failed": "Keyboard shortcuts don't work: {error}. Restart Rupor",
   "eng.insert_failed": "Couldn't insert the text: {error}. It's saved: use “Paste last” to insert it",
   "eng.insert_nothing_yet": "Nothing to paste yet. Dictate something first",
   "eng.layout_error": "Layout switch: {error}. Try again",

@@ -882,11 +882,16 @@ def load() -> Settings:
     if migrate_rdp:
         _migrate_broadcast(s)
     if write:
-        save(s)  # дописать новые ключи со значениями по умолчанию
+        try:
+            save(s)  # дописать новые ключи со значениями по умолчанию
+        except OSError as e:
+            # файл держит антивирус или OneDrive — ядро всё равно стартует, настройки в памяти
+            log.error("Не удалось записать %s: %s — сохраню при следующем изменении", p, e)
     return s
 
 
 _SAVE_LOCK = threading.Lock()
+_REPLACE_PAUSES_S = (0.1, 0.25, 0.5, 1.0)  # антивирус держит свежий файл доли секунды
 
 
 def save(s: Settings) -> None:
@@ -895,4 +900,11 @@ def save(s: Settings) -> None:
     with _SAVE_LOCK:
         tmp = p.with_suffix(".tmp")
         tmp.write_text(data, encoding="utf-8")
+        for pause in _REPLACE_PAUSES_S:
+            try:
+                tmp.replace(p)
+                return
+            except PermissionError as e:
+                log.debug("%s занят (%s), жду %.2f с", p.name, e, pause)
+                time.sleep(pause)
         tmp.replace(p)
