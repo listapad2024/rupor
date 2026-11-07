@@ -14,10 +14,58 @@ export type CoreStateName =
 
 export type InsertMode = "auto" | "type" | "clipboard";
 export type ThemeMode = "system" | "dark" | "light";
-export type AiProvider = "openrouter" | "anthropic" | "ollama";
+/**
+ * keys — облачные ключи из Settings.ai_keys по приоритету (переход на следующий при ошибке);
+ * openrouter / anthropic — только ключи этого провайдера из того же списка; ollama — офлайн.
+ */
+export type AiProvider = "keys" | "openrouter" | "anthropic" | "ollama";
 export type KeyProvider = "openrouter" | "anthropic";
 export type AiMode = "wait" | "raw_first";
-export type CommandProvider = "openrouter" | "claude_cli" | "anthropic" | "ollama";
+export type CommandProvider = "keys" | "openrouter" | "claude_cli" | "anthropic" | "ollama";
+
+/** Запись списка ключей ИИ (Settings.ai_keys); порядок списка — приоритет. Секрета тут нет. */
+export interface AiKeyEntry {
+  id: string;
+  provider: KeyProvider;
+  label: string;
+  enabled: boolean;
+  /** Остаток, введённый вручную (для провайдеров без API баланса), $; null — не введён. */
+  balance_usd: number | null;
+  /** Когда введён остаток, unix сек. */
+  balance_at: number | null;
+}
+
+/** Строка списка ключей в настройках (ai_keys_list): запись + маска и расход, без сети. */
+export interface AiKeyItem extends AiKeyEntry {
+  /** Подпись для людей: своя или «Anthropic #2». */
+  title: string;
+  has_key: boolean;
+  masked: string | null;
+  /** Расход Рупора через ключ: всего и с момента ввода остатка. */
+  spent_usd: number;
+  calls: number;
+  spent_since_usd: number | null;
+  /** Ключ после ошибки стоит в конце очереди — до (unix сек) и почему (AIError.kind). */
+  paused_until: number | null;
+  paused_reason: string | null;
+}
+
+/** Проверка и баланс одного ключа (ai_key_info; кэш ядра 5 мин, force — сейчас). */
+export interface AiKeyInfo {
+  id: string;
+  provider: KeyProvider;
+  valid: boolean;
+  balance_usd: number | null;
+  /** api — баланс от провайдера; estimate — введённый остаток минус расход Рупора. */
+  balance_source: "api" | "estimate" | null;
+  usage_usd: number | null;
+  limit_usd: number | null;
+  spent_usd: number;
+  calls: number;
+  spent_since_usd: number | null;
+  checked_at: number | null;
+  error: string | null;
+}
 export type ClearPeriod = "day" | "week" | "month" | "all";
 /** Словарь учится на правках: auto — сразу добавлять, suggest — спрашивать, off — выключено. */
 export type LearnMode = "auto" | "suggest" | "off";
@@ -243,6 +291,7 @@ export interface Settings {
 
   ai_enabled: boolean;
   ai_provider: AiProvider;
+  ai_keys: AiKeyEntry[];
   ai_model: string;
   anthropic_model: string;
   ollama_model: string;
@@ -391,7 +440,7 @@ export interface AiUsageStats {
   by_model: { model: string; calls: number; cost_usd: number; unknown_cost_calls?: number }[];
 }
 
-/** Баланс ключа OpenRouter (кэш ядра 5 мин; force — проверить сейчас). */
+/** Баланс ключа, который сейчас первым в очереди (кэш ядра 5 мин; force — проверить сейчас). */
 export interface AiBalance {
   balance_usd: number | null;
   usage_usd: number | null;
@@ -400,6 +449,12 @@ export interface AiBalance {
   checked_at: number | null;
   /** Причина на языке интерфейса (нет ключа, ключ отвергнут, нет сети) или null. */
   error: string | null;
+  /** Чей это баланс. */
+  key_id?: string | null;
+  provider?: KeyProvider | null;
+  label?: string | null;
+  /** true — оценка (введённый остаток минус расход), не ответ провайдера. */
+  estimate?: boolean;
 }
 
 /** Событие после каждого вызова ИИ (в том числе неудачного — cost 0). */
@@ -508,6 +563,19 @@ export interface CommandMap {
   ai_key_set: { args: { provider: KeyProvider; key: string }; result: { masked: string } };
   ai_key_delete: { args: { provider: KeyProvider }; result: null };
   ai_key_check: { args: void; result: KeyCheck };
+  ai_keys_list: { args: void; result: AiKeyItem[] };
+  ai_key_add: {
+    args: { provider: KeyProvider; key: string; label?: string; balance_usd?: number | null };
+    result: AiKeyItem;
+  };
+  ai_key_update: {
+    args: { id: string; label?: string; enabled?: boolean; balance_usd?: number | null };
+    result: AiKeyItem;
+  };
+  ai_key_replace: { args: { id: string; key: string }; result: AiKeyItem };
+  ai_key_remove: { args: { id: string }; result: null };
+  ai_keys_reorder: { args: { ids: string[] }; result: AiKeyItem[] };
+  ai_key_info: { args: { id: string; force?: boolean }; result: AiKeyInfo };
   ai_test: { args: { text: string; style: string }; result: AiTestResult };
   open_logs: { args: void; result: null };
 }

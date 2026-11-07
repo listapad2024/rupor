@@ -28,9 +28,17 @@ def ui_ru() -> Iterator[None]:
     i18n.set_language(prev)
 
 
+# Список ключей по умолчанию — как после перехода со старых настроек: прежние цели
+# Rupor/openrouter и Rupor/anthropic, OpenRouter первым
+LEGACY_KEYS = [{"id": "openrouter", "provider": "openrouter", "label": "", "enabled": True,
+                "balance_usd": None, "balance_at": None},
+               {"id": "anthropic", "provider": "anthropic", "label": "", "enabled": True,
+                "balance_usd": None, "balance_at": None}]
+
+
 def settings(**kw: Any) -> Settings:
     s = Settings()
-    for k, v in {**ai.DEFAULTS, **kw}.items():
+    for k, v in {**ai.DEFAULTS, "ai_keys": LEGACY_KEYS, **kw}.items():
         setattr(s, k, v)
     return s
 
@@ -551,13 +559,15 @@ def test_anthropic_direct(rec: Recorder, monkeypatch: pytest.MonkeyPatch) -> Non
     assert res.cost_usd == pytest.approx((1000 * 1 + 100 * 5) / 1e6)
 
 
+@pytest.mark.parametrize("model", ["claude-sonnet-5", "claude-haiku-5-5"])
 def test_anthropic_new_models_without_temperature(rec: Recorder,
-                                                  monkeypatch: pytest.MonkeyPatch) -> None:
+                                                  monkeypatch: pytest.MonkeyPatch,
+                                                  model: str) -> None:
     monkeypatch.setattr(ai.credman, "read", lambda t: "sk-ant-api03-zzz")
     rec.reply = lambda req: {"content": [{"type": "text", "text": "Ок."}], "stop_reason": "end_turn",
                              "usage": {"input_tokens": 10, "output_tokens": 2}}
     ai.cleanup("проверка связи", "normal",
-               settings(ai_provider="anthropic", anthropic_model="claude-sonnet-5"), [])
+               settings(ai_provider="anthropic", anthropic_model=model), [])
     assert "temperature" not in rec.calls[0]["body"]
 
 
@@ -767,6 +777,9 @@ def test_log_formatter_scrubs_keys_from_tracebacks() -> None:
     ("claude-haiku-4-5", (1.0, 5.0)),
     ("claude-haiku-4-5-20251001", (1.0, 5.0)),       # датированный id
     ("claude-haiku-4-5@20251001", (1.0, 5.0)),
+    ("claude-haiku-5-5", (0.1, 0.5)),
+    ("claude-sonnet-5-5", (2.0, 10.0)),
+    ("claude-opus-5-5", (4.0, 20.0)),               # не цена семейства claude-opus-5
     ("Claude-Sonnet-5-latest", (2.0, 10.0)),
     ("claude-sonnet-5-1", None),                     # другая версия модели — цена неизвестна
     ("claude-opus-5-2-20260101", None),

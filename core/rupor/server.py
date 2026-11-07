@@ -50,7 +50,7 @@ MAX_MESSAGE = 32 * 1024 * 1024  # импорт словаря может быт�
 # Команды, которые ждут сеть, модель, NVML или диск (model_dir_set создаёт папку и пишет
 # пробный файл — на недоступном сетевом пути это десятки секунд): идут параллельно, не держат
 # очередь соединения
-LONG_COMMANDS = frozenset({"ai_test", "ai_key_check", "ai_balance", "test_record_stop",
+LONG_COMMANDS = frozenset({"ai_test", "ai_key_check", "ai_balance", "ai_key_info", "test_record_stop",
                            "cuda_check", "model_recommend", "model_dir_set"})
 
 # Окна Tauri (Windows: http(s)://tauri.localhost; macOS/Linux: tauri://localhost), dev-сервер

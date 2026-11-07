@@ -361,10 +361,17 @@ Settings → AI.
   own key) and [Ollama](https://ollama.com) — a local model, fully offline — are supported too.
   You need **your own account** with the provider: requests are billed to your balance. One
   cleanup costs around $0.001 (measurements are in [docs/BENCH.md](docs/BENCH.md)).
-- **The key** is stored only in Windows Credential Manager (entries `Rupor/openrouter`,
-  `Rupor/anthropic`). Paste it in Settings or import it from a `.env` file with an
-  `openrouter_api_key` variable. The interface shows only a mask like `sk-or-v1-…XYZ`; the key
-  never gets into logs or history.
+- **Keys in priority order.** You can add several keys: OpenRouter and Anthropic mixed,
+  including several keys for one provider. Drag to change the order. The first key does the
+  work; if it fails (out of credit, rejected, rate limit, provider outage, no network), Rupor
+  moves straight on to the next one, and the failed key waits at the end of the queue for a while.
+- **Balance** is shown for each key. OpenRouter reports it through its API. Anthropic doesn't:
+  enter the balance from the Console and Rupor shows an estimate, that amount minus what it has
+  spent through the key.
+- **Keys** are stored only in Windows Credential Manager (entries `Rupor/openrouter`,
+  `Rupor/anthropic`, and `Rupor/<provider>/<id>` for further keys). Paste a key in Settings or
+  import it from a `.env` file with an `openrouter_api_key` variable. The interface shows only a
+  mask like `sk-or-v1-…XYZ`; keys never get into logs or history.
 - **Styles**: As is (no AI), Standard, Business, Chat message, Code / prompt. The style comes
   from the app rule; otherwise the default style is used.
 - **Language**: the prompt matches the dictated text. English dictation gets an English prompt

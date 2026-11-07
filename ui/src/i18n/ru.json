@@ -760,7 +760,8 @@
       "providers": {
         "openrouter": "OpenRouter",
         "anthropic": "Anthropic",
-        "ollama": "Ollama (офлайн)"
+        "ollama": "Ollama (офлайн)",
+        "keys": "Ключи по приоритету"
       },
       "key": "Ключ API",
       "keyHint": "Ключ OpenRouter. Никогда не выводится в интерфейс, логи и историю.",
@@ -786,7 +787,16 @@
       "commandOpenrouter": "OpenRouter",
       "commandOpenrouterText": "Та же модель и ключ, что и для очистки.",
       "commandCli": "Claude Code CLI",
-      "commandCliText": "Локальная команда «claude -p», таймаут 30 секунд."
+      "commandCliText": "Локальная команда «claude -p», таймаут 30 секунд.",
+      "cloud": "Облачные ключи",
+      "keysTitle": "Ключи и порядок",
+      "keysHint": "Сверху вниз: если ключ не сработал (кончились деньги, ключ отклонён, лимит, сбой провайдера), Рупор сразу берёт следующий. Порядок меняется перетаскиванием или стрелками.",
+      "onlyProvider": "Сейчас используются только ключи {name}.",
+      "useAll": "Использовать все по порядку",
+      "modelOpenrouter": "Модель OpenRouter",
+      "modelAnthropic": "Модель Anthropic",
+      "commandKeys": "Ключи по приоритету",
+      "commandKeysText": "Те же ключи, порядок и модели, что и для очистки."
     },
     "history": {
       "title": "История диктовок",
@@ -929,12 +939,14 @@
       "text": "Здесь появится статистика после первых запросов к ИИ."
     },
     "balance": {
-      "title": "Баланс OpenRouter",
+      "title": "Баланс",
       "checked": "Проверено {ago}",
       "notChecked": "Ещё не проверялся",
       "usage": "потрачено с ключа {v}",
       "limit": "лимит ключа {v}",
-      "noLimit": "без лимита"
+      "noLimit": "без лимита",
+      "titleKey": "Баланс · {name}",
+      "estimate": "оценка: введённый остаток минус расход Рупора"
     },
     "home": {
       "title": "ИИ-очистка",
@@ -1177,5 +1189,60 @@
     "command": "команда",
     "relaunchAdmin": "Перезапустить от администратора",
     "openSettings": "Настройки ИИ"
+  },
+  "aiKeys": {
+    "add": "Добавить ключ",
+    "addTitle": "Новый ключ",
+    "provider": "Провайдер",
+    "label": "Подпись",
+    "labelPlaceholder": "Например, «Личный» или «Рабочий»",
+    "key": "Ключ API",
+    "balance": "Остаток на счёте, $",
+    "balancePlaceholder": "необязательно",
+    "balanceHint": "Anthropic не отдаёт баланс по API. Введите остаток из Console, и Рупор будет вычитать свой расход.",
+    "save": "Добавить",
+    "cancel": "Отмена",
+    "empty": "Ключей пока нет",
+    "emptyHint": "Добавьте ключ OpenRouter или Anthropic. Ключей может быть несколько, в том числе у одного провайдера.",
+    "moveUp": "Выше",
+    "moveDown": "Ниже",
+    "drag": "Перетащите, чтобы поменять приоритет",
+    "first": "Первый",
+    "off": "Выключен",
+    "noSecret": "Ключа нет в Credential Manager",
+    "paused": "Пропускается до {time}: {reason}",
+    "balanceApi": "Баланс",
+    "balanceEstimate": "≈ остаток (оценка)",
+    "balanceUnavailable": "Баланс по API недоступен",
+    "spent": "Рупор потратил {v}",
+    "spentSince": "Вы ввели остаток {balance}, с тех пор Рупор потратил {v}",
+    "setBalance": "Указать остаток",
+    "editBalance": "Изменить остаток",
+    "clearBalance": "Убрать остаток",
+    "rename": "Переименовать",
+    "replace": "Заменить ключ",
+    "enable": "Включить",
+    "disable": "Выключить",
+    "remove": "Удалить",
+    "removeTitle": "Удалить ключ «{name}»?",
+    "removeBody": "Ключ будет удалён из диспетчера учётных данных Windows.",
+    "check": "Проверить ключ и баланс",
+    "added": "Ключ добавлен",
+    "saveError": "Не удалось сохранить",
+    "actions": "Действия с ключом",
+    "invalid": "Ключ не прошёл проверку",
+    "checked": "Проверено {ago}",
+    "apply": "Сохранить",
+    "reasons": {
+      "auth": "ключ отклонён",
+      "payment": "кончились деньги",
+      "forbidden": "доступ запрещён",
+      "rate_limit": "лимит запросов",
+      "server": "сбой провайдера",
+      "network": "нет сети",
+      "timeout": "не ответил вовремя",
+      "no_key": "нет ключа",
+      "bad_request": "ошибка запроса"
+    }
   }
 }

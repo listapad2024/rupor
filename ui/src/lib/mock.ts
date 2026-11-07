@@ -10,6 +10,9 @@ import { fmtDecimal, titleRuleKey } from "./format";
 import { BackendError, EventHub, type ArgsTuple, type Backend } from "./hub";
 import type {
   AiBalance,
+  AiKeyEntry,
+  AiKeyInfo,
+  AiKeyItem,
   AiUsageKind,
   AiUsageStats,
   AiUsageTotals,
@@ -275,7 +278,11 @@ const DEFAULT_SETTINGS: Settings = {
   dictation_language: "auto",
   first_run_done: true,
   ai_enabled: true,
-  ai_provider: "openrouter",
+  ai_provider: "keys",
+  ai_keys: [
+    { id: "anthropic", provider: "anthropic", label: "", enabled: true, balance_usd: 80, balance_at: Math.floor(Date.now() / 1000) - 3 * 86400 },
+    { id: "openrouter", provider: "openrouter", label: "", enabled: true, balance_usd: null, balance_at: null },
+  ],
   ai_model: "anthropic/claude-haiku-4.5",
   anthropic_model: "claude-haiku-4-5",
   ollama_model: "qwen2.5:7b",
@@ -284,7 +291,7 @@ const DEFAULT_SETTINGS: Settings = {
   ai_mode: "wait",
   ai_min_words: 6,
   ai_timeout_s: 5,
-  command_provider: "openrouter",
+  command_provider: "keys",
   env_path: "",
 };
 
@@ -321,10 +328,13 @@ export class MockBackend implements Backend {
   private data: MockData;
   private sysLang: Locale;
   private draft: string;
-  private keys: Record<KeyProvider, string | null> = {
+  /** Секреты ключей по id записи списка (маска); id = провайдер — прежняя цель Rupor/<провайдер>. */
+  private secrets: Record<string, string | null> = {
     openrouter: "sk-or-v1-…XYZ",
-    anthropic: null,
+    anthropic: "sk-ant-api03-…k9Q",
   };
+  /** Расход демо-ключей: всего и с момента ввода остатка (Anthropic «уже потратил» $3.10). */
+  private keySpent: Record<string, number> = { anthropic: 3.1 };
   private rdpOpen: RdpBase[];
   private usage: UsageRow[] = [];
   private balanceCache: { at: number; value: AiBalance } | null = null;
@@ -356,7 +366,8 @@ export class MockBackend implements Backend {
       this.settings.first_run_done = false;
       this.settings.ai_enabled = false;
       this.cudaReady = false;
-      this.keys.openrouter = null;
+      this.secrets = {};
+      this.settings.ai_keys = [];
     }
     if (opts.noGpu && !opts.firstRun) {
       this.settings.device = "cpu";
@@ -410,7 +421,7 @@ export class MockBackend implements Backend {
         setTimeout(
           () =>
             this.hub.emit("notice", {
-              text: fill(this.tx.balanceLow, { balance: "0.62" }),
+              text: fill(this.tx.balanceLow, { name: "OpenRouter", balance: "0.62" }),
               level: "warn",
               action: null,
               toast: true,
@@ -773,6 +784,10 @@ export class MockBackend implements Backend {
     if (this.settings.ai_provider === "ollama") row.cost = 0;
     this.usage.push(row);
     this.balanceSpent += row.cost;
+    const first = this.chain()[0];
+    if (first && this.settings.ai_provider !== "ollama") {
+      this.keySpent[first.id] = (this.keySpent[first.id] ?? 0) + row.cost;
+    }
     const today = this.aiStats().today.cost_usd;
     this.hub.emit("ai_usage", {
       kind,
@@ -835,20 +850,113 @@ export class MockBackend implements Backend {
     };
   }
 
+  /** Очередь ключей, как keys.chain в ядре (без пауз после ошибок). */
+  private chain(provider: string = this.settings.ai_provider): AiKeyEntry[] {
+    if (provider !== "keys" && provider !== "openrouter" && provider !== "anthropic") return [];
+    return this.settings.ai_keys.filter((e) => e.enabled && (provider === "keys" || e.provider === provider));
+  }
+
+  private keyTitle(e: AiKeyEntry): string {
+    if (e.label) return e.label;
+    const name = e.provider === "openrouter" ? "OpenRouter" : "Anthropic";
+    const same = this.settings.ai_keys.filter((x) => x.provider === e.provider);
+    return same.length <= 1 ? name : `${name} #${same.findIndex((x) => x.id === e.id) + 1}`;
+  }
+
+  private keyItem(e: AiKeyEntry): AiKeyItem {
+    const secret = this.secrets[e.id] ?? null;
+    const spent = Math.round((this.keySpent[e.id] ?? 0) * 10_000) / 10_000;
+    return {
+      ...structuredClone(e),
+      title: this.keyTitle(e),
+      has_key: Boolean(secret),
+      masked: secret,
+      spent_usd: spent,
+      calls: Math.round(spent * 900),
+      spent_since_usd: e.balance_at !== null ? spent : null,
+      paused_until: null,
+      paused_reason: null,
+    };
+  }
+
+  private keyInfo(id: string, cmd: string): AiKeyInfo {
+    const e = this.settings.ai_keys.find((x) => x.id === id);
+    if (!e) throw new BackendError(this.tx.keyUnknown, cmd);
+    const item = this.keyItem(e);
+    const base = {
+      id,
+      provider: e.provider,
+      spent_usd: item.spent_usd,
+      calls: item.calls,
+      spent_since_usd: item.spent_since_usd,
+      checked_at: Math.floor(Date.now() / 1000),
+    };
+    if (!item.has_key) {
+      return { ...base, valid: false, balance_usd: null, balance_source: null, usage_usd: null, limit_usd: null, checked_at: null, error: this.tx.noKey };
+    }
+    if (e.provider === "openrouter") {
+      return {
+        ...base,
+        valid: true,
+        balance_usd: Math.round(((this.opts.lowBalance ? 0.62 : BALANCE_START) - this.balanceSpent) * 10_000) / 10_000,
+        balance_source: "api",
+        usage_usd: Math.round((BALANCE_USED + this.balanceSpent) * 10_000) / 10_000,
+        limit_usd: null,
+        error: null,
+      };
+    }
+    if (e.balance_usd !== null) {
+      return {
+        ...base,
+        valid: true,
+        balance_usd: Math.max(0, Math.round((e.balance_usd - item.spent_usd) * 10_000) / 10_000),
+        balance_source: "estimate",
+        usage_usd: null,
+        limit_usd: null,
+        error: null,
+      };
+    }
+    return {
+      ...base,
+      valid: true,
+      balance_usd: null,
+      balance_source: null,
+      usage_usd: null,
+      limit_usd: null,
+      error: fill(this.tx.balanceNoApi, { name: "Anthropic" }),
+    };
+  }
+
   private aiBalance(force: boolean): AiBalance {
     const hit = this.balanceCache;
     if (!force && hit && Date.now() - hit.at < BALANCE_CACHE_MS) return structuredClone(hit.value);
-    const value: AiBalance = this.keys.openrouter
-      ? {
-          balance_usd: Math.round(((this.opts.lowBalance ? 0.62 : BALANCE_START) - this.balanceSpent) * 10_000) / 10_000,
-          usage_usd: Math.round((BALANCE_USED + this.balanceSpent) * 10_000) / 10_000,
-          limit_usd: null,
-          checked_at: Math.floor(Date.now() / 1000),
-          error: null,
-        }
-      : { balance_usd: null, usage_usd: null, limit_usd: null, checked_at: null, error: this.tx.noKey };
+    const first = (this.settings.ai_enabled ? this.chain() : [])[0] ?? this.chain(this.settings.command_provider)[0];
+    let value: AiBalance;
+    if (!first) {
+      value = { balance_usd: null, usage_usd: null, limit_usd: null, checked_at: null, error: this.tx.noKeys, key_id: null, provider: null, label: null, estimate: false };
+    } else {
+      const info = this.keyInfo(first.id, "ai_balance");
+      value = {
+        balance_usd: info.balance_usd,
+        usage_usd: info.usage_usd,
+        limit_usd: info.limit_usd,
+        checked_at: info.checked_at,
+        error: info.balance_usd !== null ? null : info.error,
+        key_id: first.id,
+        provider: first.provider,
+        label: this.keyTitle(first),
+        estimate: info.balance_source === "estimate",
+      };
+    }
     this.balanceCache = { at: Date.now(), value };
     return structuredClone(value);
+  }
+
+  private ensureLegacyKey(provider: KeyProvider): void {
+    if (this.settings.ai_keys.some((e) => e.id === provider)) return;
+    this.applySettings({
+      ai_keys: [...this.settings.ai_keys, { id: provider, provider, label: "", enabled: true, balance_usd: null, balance_at: null }],
+    });
   }
 
   // ——— Правила по названию окна ———
@@ -1561,7 +1669,7 @@ export class MockBackend implements Backend {
       }
       case "ai_key_status": {
         const a = rawArgs as CommandArgs<"ai_key_status">;
-        const k = this.keys[a.provider];
+        const k = this.secrets[a.provider];
         return { has_key: Boolean(k), masked: k ? mask(k) : null };
       }
       case "ai_key_import_env": {
@@ -1572,24 +1680,31 @@ export class MockBackend implements Backend {
           if (!path.toLowerCase().endsWith(".env")) {
             throw new BackendError(this.tx.envNotFound, cmd);
           }
-          this.keys.openrouter = "sk-or-v1-…XYZ";
-          return { imported: true, masked: this.keys.openrouter };
+          this.secrets.openrouter = "sk-or-v1-…XYZ";
+          this.ensureLegacyKey("openrouter");
+          this.balanceCache = null;
+          return { imported: true, masked: this.secrets.openrouter };
         });
       }
       case "ai_key_set": {
         const a = rawArgs as CommandArgs<"ai_key_set">;
         if (a.key.trim().length < 12) throw new BackendError(this.tx.badKey, cmd);
-        this.keys[a.provider] = mask(a.key.trim());
-        return { masked: this.keys[a.provider] };
+        const masked = mask(a.key.trim());
+        this.secrets[a.provider] = masked;
+        this.ensureLegacyKey(a.provider);
+        this.balanceCache = null;
+        return { masked };
       }
       case "ai_key_delete": {
         const a = rawArgs as CommandArgs<"ai_key_delete">;
-        this.keys[a.provider] = null;
+        this.secrets[a.provider] = null;
+        this.applySettings({ ai_keys: this.settings.ai_keys.filter((e) => e.id !== a.provider) });
+        this.balanceCache = null;
         return null;
       }
       case "ai_key_check":
         return sleep(700).then(() =>
-          this.keys.openrouter
+          this.secrets[this.settings.ai_keys.find((e) => e.provider === "openrouter")?.id ?? "openrouter"]
             ? {
                 valid: true,
                 label: this.tx.keyLabel,
@@ -1664,6 +1779,73 @@ export class MockBackend implements Backend {
       case "ai_balance": {
         const a = (rawArgs ?? {}) as CommandArgs<"ai_balance">;
         return sleep(a.force ? 650 : 60).then(() => this.aiBalance(Boolean(a.force)));
+      }
+      case "ai_keys_list":
+        return this.settings.ai_keys.map((e) => this.keyItem(e));
+      case "ai_key_add": {
+        const a = rawArgs as CommandArgs<"ai_key_add">;
+        if (a.key.trim().length < 12) throw new BackendError(this.tx.badKey, cmd);
+        const ids = new Set(this.settings.ai_keys.map((e) => e.id));
+        let id: string = a.provider;
+        while (ids.has(id)) id = `${a.provider}-${Math.random().toString(16).slice(2, 8)}`;
+        const hasBal = a.balance_usd !== undefined && a.balance_usd !== null;
+        const entry: AiKeyEntry = {
+          id,
+          provider: a.provider,
+          label: (a.label ?? "").trim(),
+          enabled: true,
+          balance_usd: hasBal ? (a.balance_usd ?? null) : null,
+          balance_at: hasBal ? Math.floor(Date.now() / 1000) : null,
+        };
+        this.secrets[id] = mask(a.key.trim());
+        this.applySettings({ ai_keys: [...this.settings.ai_keys, entry] });
+        this.balanceCache = null;
+        return sleep(150).then(() => this.keyItem(entry));
+      }
+      case "ai_key_update": {
+        const a = rawArgs as CommandArgs<"ai_key_update">;
+        const e = this.settings.ai_keys.find((x) => x.id === a.id);
+        if (!e) throw new BackendError(this.tx.keyUnknown, cmd);
+        const next: AiKeyEntry = { ...e };
+        if (a.label !== undefined) next.label = a.label.trim();
+        if (a.enabled !== undefined) next.enabled = a.enabled;
+        if (a.balance_usd !== undefined) {
+          next.balance_usd = a.balance_usd;
+          next.balance_at = a.balance_usd !== null ? Math.floor(Date.now() / 1000) : null;
+          this.keySpent[e.id] = 0;
+        }
+        this.applySettings({ ai_keys: this.settings.ai_keys.map((x) => (x.id === a.id ? next : x)) });
+        this.balanceCache = null;
+        return this.keyItem(next);
+      }
+      case "ai_key_replace": {
+        const a = rawArgs as CommandArgs<"ai_key_replace">;
+        const e = this.settings.ai_keys.find((x) => x.id === a.id);
+        if (!e) throw new BackendError(this.tx.keyUnknown, cmd);
+        if (a.key.trim().length < 12) throw new BackendError(this.tx.badKey, cmd);
+        this.secrets[e.id] = mask(a.key.trim());
+        this.balanceCache = null;
+        return this.keyItem(e);
+      }
+      case "ai_key_remove": {
+        const a = rawArgs as CommandArgs<"ai_key_remove">;
+        if (!this.settings.ai_keys.some((x) => x.id === a.id)) throw new BackendError(this.tx.keyUnknown, cmd);
+        this.secrets[a.id] = null;
+        this.applySettings({ ai_keys: this.settings.ai_keys.filter((x) => x.id !== a.id) });
+        this.balanceCache = null;
+        return null;
+      }
+      case "ai_keys_reorder": {
+        const a = rawArgs as CommandArgs<"ai_keys_reorder">;
+        const byId = new Map(this.settings.ai_keys.map((e) => [e.id, e]));
+        if (a.ids.length !== byId.size || a.ids.some((id) => !byId.has(id))) throw new BackendError(this.tx.keyUnknown, cmd);
+        this.applySettings({ ai_keys: a.ids.map((id) => byId.get(id) as AiKeyEntry) });
+        this.balanceCache = null;
+        return this.settings.ai_keys.map((e) => this.keyItem(e));
+      }
+      case "ai_key_info": {
+        const a = rawArgs as CommandArgs<"ai_key_info">;
+        return sleep(a.force ? 600 : 120).then(() => this.keyInfo(a.id, cmd));
       }
     }
   }

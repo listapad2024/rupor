@@ -14,6 +14,28 @@ All notable changes to Rupor are listed here. The format follows
   direction is detected for each word; pressing again brings the original back. It is purely
   mechanical — no AI, nothing goes to history or *Paste last*. The shortcut can be changed or
   turned off in Settings → Dictation.
+- **Several AI keys, in priority order.** Settings → AI now holds a list of keys: OpenRouter and
+  Anthropic mixed, including several keys for the same provider. Drag a key (or use the arrows)
+  to change the order. Cleanup and command mode use the first key; if it fails (out of credit,
+  rejected, rate limit, provider outage, no network), Rupor moves straight on to the next one,
+  and the failed key waits at the end of the queue for a while. Each key can be turned off,
+  renamed, replaced or deleted.
+- **Balance for each key.** OpenRouter keys show the balance from OpenRouter. Anthropic doesn't
+  report a balance through its API, so you can enter the balance from the Console and Rupor shows
+  an estimate: that amount minus what Rupor has spent through the key since. The AI spending card
+  shows the balance of the key that is first in line.
+
+### Changed
+
+- Existing OpenRouter and Anthropic keys move into the new list automatically, with the provider
+  you had selected first.
+- Spending for Claude Haiku 5.5, Sonnet 5.5 and Opus 5.5 is now counted at their own prices
+  (Opus 5.5 was priced as Opus 5 before, Haiku 5.5 was not counted at all).
+
+### Fixed
+
+- Claude Haiku 5.5 works for cleanup: Rupor no longer sends it `temperature`, which the model
+  rejects (before, every call failed and went to the next key).
 
 ## [0.4.3] — 2026-10-18
 
