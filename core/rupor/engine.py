@@ -54,7 +54,7 @@ from typing import Any, Callable, Protocol
 
 import numpy as np
 
-from . import (ai, audio, broadcast, config, credman, duck, fetch, fuzzy, i18n, inject,
+from . import (ai, audio, broadcast, config, credman, duck, fetch, fuzzy, i18n, inject, keys,
                learn, recommend, sounds, spell, textproc, uia, vocab, winutil)
 from . import _win
 from ._win import VK_RIGHT
@@ -563,6 +563,8 @@ class Engine:
         self._balance_at = 0.0          # monotonic — когда получен кэш
         self._balance_lock = threading.Lock()
         self._balance_fetching = threading.Lock()
+        # Проверка ключей из списка (ai_key_info): id → (monotonic, ответ провайдера)
+        self._key_checks: dict[str, tuple[float, dict[str, Any]]] = {}
         # Звук компьютера во время записи: сессии процессов Рупора (ядро играет звуки начала
         # и конца, own_pids) не трогаются; _ducked — приглушение запрошено (под self._lock)
         self.ducker: DuckerLike = (ducker if ducker is not None
@@ -587,6 +589,11 @@ class Engine:
             sounds.prepare()
         except Exception:
             log.exception("Не удалось подготовить звуки")
+        try:
+            # переход на список ключей добавил записи прежних ключей — без секрета убрать
+            self.modify_settings(self._drop_missing_legacy_keys)
+        except Exception:
+            log.exception("Список ключей ИИ: не удалось убрать записи без ключа")
         threading.Thread(target=self._ctl_loop, name="rupor-ctl", daemon=True).start()
         threading.Thread(target=self._job_loop, name="rupor-asr", daemon=True).start()
         threading.Thread(target=self._idle_loop, name="rupor-idle", daemon=True).start()
@@ -1723,15 +1730,22 @@ class Engine:
 
     # ---------- ИИ ----------
 
+    @staticmethod
+    def _drop_missing_legacy_keys(s: Settings) -> dict[str, Any] | None:
+        kept = keys.drop_missing_legacy(s.ai_keys)
+        return None if kept == s.ai_keys else {"ai_keys": kept}
+
     def _has_key(self, provider: str) -> bool:
-        target = credman.TARGETS.get(provider)
-        if target is None:
-            return True  # ollama — без ключа
-        try:
-            return credman.read(target) is not None
-        except OSError:
-            log.warning("Не удалось прочитать ключ %s из Credential Manager", provider)
-            return False
+        """Есть ли чем звать ИИ: для списка ключей — хотя бы один включённый ключ с секретом."""
+        if provider not in config.CHAIN_PROVIDERS:
+            return True  # ollama, claude_cli — без ключа
+        for e in keys.chain(self.s, provider):
+            try:
+                if credman.read(keys.target(e)) is not None:
+                    return True
+            except OSError:
+                log.warning("Не удалось прочитать ключ %s из Credential Manager", e["provider"])
+        return False
 
     def _want_ai(self, text: str, style: str, snippet_used: bool) -> bool:
         s = self.s
@@ -1793,6 +1807,7 @@ class Engine:
             "error_kind": None if err is None else (
                 err.kind if isinstance(err, ai.AIError) else type(err).__name__),
             "app": app,
+            "key_id": r.key_id if r is not None else None,
         }
         try:
             saved = self.storage.add_ai_usage(rec)
@@ -1803,16 +1818,25 @@ class Engine:
         self.bus.emit("ai_usage", kind=kind, cost_usd=saved["cost_usd"] or 0.0,
                       tokens_in=saved["tokens_in"] or 0, tokens_out=saved["tokens_out"] or 0,
                       today_cost_usd=today)
-        if err is None and provider == "openrouter":
+        if err is None and provider == "openrouter" and r is not None:
+            kid = r.key_id
+            if kid is None:                          # ключ передан мимо списка — активный
+                active = self._active_key()
+                kid = str(active["id"]) if active else None
             with self._balance_lock:
-                stale = time.monotonic() - self._balance_at >= BALANCE_TTL_S
-            if stale:
-                threading.Thread(target=self._balance_refresh, name="rupor-balance",
-                                 daemon=True).start()
+                c = self._key_checks.get(kid) if kid else None
+                stale = c is None or time.monotonic() - c[0] >= BALANCE_TTL_S
+            if kid and stale:
+                threading.Thread(target=self._balance_refresh, args=(kid,),
+                                 name="rupor-balance", daemon=True).start()
 
-    def _balance_refresh(self) -> None:
+    def _balance_refresh(self, kid: str) -> None:
         try:
-            self.ai_balance(force=False)
+            active = self._active_key()
+            if active is not None and active["id"] == kid:
+                self.ai_balance(force=False)        # и предупреждение «пополните»
+            elif keys.find(self.s.ai_keys, kid) is not None:
+                self.ai_key_info(kid, force=False)
         except Exception:
             log.exception("Не удалось обновить баланс OpenRouter")
 
@@ -1832,48 +1856,141 @@ class Engine:
     def ai_usage_stats(self) -> dict[str, Any]:
         return self.storage.ai_usage_stats()
 
+    def _active_key(self) -> dict[str, Any] | None:
+        """Ключ, который сейчас первым пойдёт в работу: первый в очереди очистки (если ИИ
+        включён и очистка облачная), иначе — командного режима. None — облачные ключи не
+        используются (Ollama, Claude Code) или списка нет."""
+        provs = ([self.s.ai_provider] if self.s.ai_enabled else []) + [self.s.command_provider]
+        for prov in provs:
+            c = keys.chain(self.s, prov)
+            if c:
+                return c[0]
+        return None
+
     def _openrouter_used(self) -> bool:
-        """OpenRouter нужен очистке или командному режиму."""
-        return OPENROUTER in (self.s.ai_provider, self.s.command_provider)
+        """Ключ OpenRouter есть в очереди очистки или командного режима."""
+        return any(e["provider"] == OPENROUTER
+                   for prov in (self.s.ai_provider, self.s.command_provider)
+                   for e in keys.chain(self.s, prov))
 
     def ai_balance(self, force: bool = False) -> dict[str, Any]:
-        """Баланс ключа OpenRouter (WS ai_balance): {balance_usd, usage_usd, limit_usd,
-        checked_at, error}. Кэш 5 минут (неудачная проверка — минута), force — мимо кэша.
-        Баланс меньше $1 — notice warn не чаще раза в сутки. Ни очистка, ни командный
-        режим не идут через OpenRouter — в сеть не ходим (error «не используется»); кнопка
-        «Обновить» (force) всё же проверяет ключ, но без предупреждения о балансе."""
-        if not force and not self._openrouter_used():
+        """Баланс ключа, который сейчас первым в очереди (WS ai_balance): {balance_usd,
+        usage_usd, limit_usd, checked_at, error, key_id, provider, label, estimate}.
+
+        OpenRouter — баланс по API (кэш 5 минут, неудачная проверка — минута; force — мимо
+        кэша). Anthropic баланса по API не отдаёт: если пользователь ввёл остаток, это
+        оценка «введённое − расход Рупора с того момента» (estimate=true), иначе error
+        «недоступно». Баланс меньше $1 — notice warn не чаще раза в сутки. Облачные ключи не
+        используются — в сеть не ходим (error «не используется»)."""
+        entry = self._active_key()
+        if entry is None:
+            err = tr("eng.balance_unused") if self.s.ai_keys else tr("eng.no_keys")
             return {"balance_usd": None, "usage_usd": None, "limit_usd": None,
-                    "checked_at": None, "error": tr("eng.balance_unused")}
-        with self._balance_fetching:        # параллельные запросы не ходят в сеть дважды
-            with self._balance_lock:
-                cached, at = self._balance, self._balance_at
-            ttl = BALANCE_TTL_S if cached is not None and not cached.get("error") \
-                else BALANCE_ERROR_TTL_S
-            if cached is not None and not force and time.monotonic() - at < ttl:
-                return dict(cached)
-            try:
-                key = credman.read(credman.TARGETS["openrouter"])
-            except OSError:
-                key = None
-                log.warning("Не удалось прочитать ключ OpenRouter из Credential Manager")
-            if not key:
-                return {"balance_usd": None, "usage_usd": None, "limit_usd": None,
-                        "checked_at": None,
-                        "error": tr("eng.openrouter_no_key")}
-            r = ai.check_openrouter_key(key)
-            res: dict[str, Any] = {"balance_usd": r.get("balance_usd"),
-                                   "usage_usd": r.get("usage_usd"),
-                                   "limit_usd": r.get("limit_usd"),
-                                   "checked_at": int(time.time()), "error": r.get("error")}
-            with self._balance_lock:
-                self._balance, self._balance_at = dict(res), time.monotonic()
-        self._check_low_balance(res.get("balance_usd"))
+                    "checked_at": None, "error": err, "key_id": None, "provider": None,
+                    "label": None, "estimate": False}
+        info = self.ai_key_info(str(entry["id"]), force)
+        res: dict[str, Any] = {k: info.get(k) for k in (
+            "balance_usd", "usage_usd", "limit_usd", "checked_at", "error")}
+        res.update(key_id=entry["id"], provider=entry["provider"],
+                   label=keys.label_of(entry, self.s.ai_keys),
+                   estimate=info.get("balance_source") == "estimate")
+        if res["balance_usd"] is not None:
+            res["error"] = None
+        with self._balance_lock:
+            self._balance, self._balance_at = dict(res), time.monotonic()
+        self._check_low_balance(res.get("balance_usd"), str(res["label"]))
         return res
 
-    def _check_low_balance(self, balance: Any) -> None:
+    def _key_check(self, entry: dict[str, Any], force: bool) -> dict[str, Any]:
+        """Проверка ключа у провайдера (сеть) с кэшем: удачная — 5 минут, неудачная — минута."""
+        kid = str(entry["id"])
+        with self._balance_fetching:        # параллельные запросы не ходят в сеть дважды
+            with self._balance_lock:
+                cached = self._key_checks.get(kid)
+            if cached is not None and not force:
+                at, r = cached
+                ttl = BALANCE_TTL_S if not r.get("error") else BALANCE_ERROR_TTL_S
+                if time.monotonic() - at < ttl:
+                    return dict(r)
+            name = keys.PROVIDER_NAMES[str(entry["provider"])]
+            try:
+                key = credman.read(keys.target(entry))
+            except OSError:
+                key = None
+                log.warning("Не удалось прочитать ключ %s из Credential Manager", name)
+            if not key:
+                return {"valid": False, "balance_usd": None, "usage_usd": None,
+                        "limit_usd": None, "checked_at": None,
+                        "error": tr("eng.key_no_secret", name=name)}
+            check = (ai.check_openrouter_key if entry["provider"] == OPENROUTER
+                     else ai.check_anthropic_key)
+            r = dict(check(key))
+            r["checked_at"] = int(time.time())
+            with self._balance_lock:
+                self._key_checks[kid] = (time.monotonic(), dict(r))
+        return r
+
+    def ai_key_info(self, kid: str, force: bool = False) -> dict[str, Any]:
+        """Проверка и баланс одного ключа списка (WS ai_key_info).
+
+        {id, provider, valid, balance_usd, balance_source: api | estimate | null,
+        usage_usd, limit_usd, spent_usd, spent_since_usd, checked_at, error}. spent_* —
+        расход Рупора через этот ключ (всего и с момента, когда введён баланс)."""
+        entry = keys.find(self.s.ai_keys, kid)
+        if entry is None:
+            raise ValueError(tr("eng.key_unknown"))
+        r = self._key_check(entry, force)
+        spent = self.storage.ai_key_spend(kid)
+        since = entry.get("balance_at")
+        spent_since = self.storage.ai_key_spend(kid, float(since)) if since is not None \
+            else None
+        res: dict[str, Any] = {
+            "id": kid, "provider": entry["provider"], "valid": bool(r.get("valid")),
+            "balance_usd": r.get("balance_usd"),
+            "balance_source": "api" if r.get("balance_usd") is not None else None,
+            "usage_usd": r.get("usage_usd"), "limit_usd": r.get("limit_usd"),
+            "spent_usd": spent["cost_usd"], "calls": spent["calls"],
+            "spent_since_usd": spent_since["cost_usd"] if spent_since else None,
+            "checked_at": r.get("checked_at"), "error": r.get("error"),
+        }
+        manual = entry.get("balance_usd")
+        if res["balance_usd"] is None and manual is not None and spent_since is not None:
+            res["balance_usd"] = round(max(0.0, float(manual) - spent_since["cost_usd"]), 4)
+            res["balance_source"] = "estimate"
+        elif res["balance_usd"] is None and r.get("valid") and entry["provider"] != OPENROUTER:
+            res["error"] = tr("eng.balance_no_api", name=keys.PROVIDER_NAMES[entry["provider"]])
+        return res
+
+    def ai_keys_list(self) -> list[dict[str, Any]]:
+        """Список ключей для настроек (WS ai_keys_list), без сети: запись + маска секрета,
+        расход Рупора через ключ и пауза после ошибки."""
+        out: list[dict[str, Any]] = []
+        entries = self.s.ai_keys
+        for e in entries:
+            kid = str(e["id"])
+            try:
+                secret = credman.read(keys.target(e))
+            except OSError:
+                secret = None
+                log.warning("Не удалось прочитать ключ %s из Credential Manager", e["provider"])
+            spent = self.storage.ai_key_spend(kid)
+            since = e.get("balance_at")
+            spent_since = (self.storage.ai_key_spend(kid, float(since))["cost_usd"]
+                           if since is not None else None)
+            cd = keys.cooldown(kid)
+            out.append({
+                **e, "title": keys.label_of(e, entries), "has_key": bool(secret),
+                "masked": credman.mask(secret) if secret else None,
+                "spent_usd": spent["cost_usd"], "calls": spent["calls"],
+                "spent_since_usd": spent_since,
+                "paused_until": int(cd.until) if cd else None,
+                "paused_reason": cd.kind if cd else None,
+            })
+        return out
+
+    def _check_low_balance(self, balance: Any, name: str = "OpenRouter") -> None:
         if (not isinstance(balance, (int, float)) or isinstance(balance, bool)
-                or balance >= LOW_BALANCE_USD or not self._openrouter_used()):
+                or balance >= LOW_BALANCE_USD or self._active_key() is None):
             return
         with self._balance_lock:
             try:
@@ -1887,7 +2004,7 @@ class Engine:
                 self.storage.kv_set(LOW_BALANCE_KEY, str(now))
             except Exception:
                 log.exception("Не удалось запомнить предупреждение о балансе")
-        self.notice(tr("eng.low_balance", balance=f"{balance:.2f}"), level="warn",
+        self.notice(tr("eng.low_balance", name=name, balance=f"{balance:.2f}"), level="warn",
                     action="open_settings_ai")
 
     # ---------- поток одной диктовки ----------
@@ -2393,6 +2510,8 @@ class Engine:
             with self._balance_lock:
                 if self._balance is not None and self._balance.get("error"):
                     self._balance, self._balance_at = None, 0.0
+                self._key_checks = {k: v for k, v in self._key_checks.items()
+                                    if not v[1].get("error")}
         hotkeys = any(k in config.HOTKEY_FIELDS for k in changed)
         if (hotkeys or "input_device" in changed) and self._session is not None:
             # Автомат жестов и микрофон меняются — идущую запись завершаем явно
@@ -2412,7 +2531,7 @@ class Engine:
                 sounds.prepare()
             except Exception:
                 log.exception("Не удалось подготовить звуки")
-        if "ai_enabled" in changed or "ai_provider" in changed:
+        if "ai_enabled" in changed or "ai_provider" in changed or "ai_keys" in changed:
             self._nokey_warned = False
         if "duck_mode" in changed or "duck_level" in changed:
             # Во время записи: «Не трогать» — вернуть звук; другой режим или уровень — вернуть
@@ -2426,12 +2545,18 @@ class Engine:
                 and self._model_phase == "error"):
             self._jobs.put(("load", None))
 
-    def key_changed(self) -> None:
-        """Ключ ИИ добавлен/удалён — снова предупредить, если его нет; баланс — заново."""
+    def key_changed(self, kid: str | None = None) -> None:
+        """Ключ ИИ добавлен/заменён/удалён — снова предупредить, если его нет; баланс и пауза
+        после ошибки — заново (kid — только этого ключа)."""
         self._nokey_warned = False
+        keys.reset(kid)
         with self._balance_lock:
             self._balance = None
             self._balance_at = 0.0
+            if kid is None:
+                self._key_checks.clear()
+            else:
+                self._key_checks.pop(kid, None)
 
     # ---------- фон: выгрузка модели, срок хранения истории ----------
 

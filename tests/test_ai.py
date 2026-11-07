@@ -28,9 +28,17 @@ def ui_ru() -> Iterator[None]:
     i18n.set_language(prev)
 
 
+# Список ключей по умолчанию — как после перехода со старых настроек: прежние цели
+# Rupor/openrouter и Rupor/anthropic, OpenRouter первым
+LEGACY_KEYS = [{"id": "openrouter", "provider": "openrouter", "label": "", "enabled": True,
+                "balance_usd": None, "balance_at": None},
+               {"id": "anthropic", "provider": "anthropic", "label": "", "enabled": True,
+                "balance_usd": None, "balance_at": None}]
+
+
 def settings(**kw: Any) -> Settings:
     s = Settings()
-    for k, v in {**ai.DEFAULTS, **kw}.items():
+    for k, v in {**ai.DEFAULTS, "ai_keys": LEGACY_KEYS, **kw}.items():
         setattr(s, k, v)
     return s
 

@@ -12,7 +12,7 @@ import { useSyncExternalStore } from "react";
 import { t } from "../i18n";
 import { fmtSpend, fmtUsd } from "./format";
 import { errorText } from "./hub";
-import type { AiBalance, AiUsageEvent, AiUsageStats, AiUsageTotals, Settings } from "./types";
+import type { AiBalance, AiKeyEntry, AiUsageEvent, AiUsageStats, AiUsageTotals, Settings } from "./types";
 import { backend } from "./ws";
 
 export interface AiUsageSnapshot {
@@ -168,17 +168,30 @@ export async function refreshBalance(force: boolean): Promise<void> {
   }
 }
 
+type KeySettings = Pick<Settings, "ai_enabled" | "ai_provider" | "command_provider" | "ai_keys">;
+
+/** Первый включённый ключ в очереди ai_provider / command_provider (как keys.chain в ядре). */
+export function firstKey(s: Pick<Settings, "ai_keys">, provider: string): AiKeyEntry | null {
+  if (provider !== "keys" && provider !== "openrouter" && provider !== "anthropic") return null;
+  return s.ai_keys.find((k) => k.enabled && (provider === "keys" || k.provider === provider)) ?? null;
+}
+
+/** Провайдер и модель, которыми сейчас идёт очистка (для подписи на Главной). */
+export function activeModel(s: Settings): { provider: string; model: string } {
+  if (s.ai_provider === "ollama") return { provider: "ollama", model: s.ollama_model };
+  const p = firstKey(s, s.ai_provider)?.provider ?? (s.ai_provider === "anthropic" ? "anthropic" : "openrouter");
+  return { provider: p, model: p === "anthropic" ? s.anthropic_model : s.ai_model };
+}
+
 /**
- * Нужен ли баланс OpenRouter. Очистка через OpenRouter (ИИ включён) — опрос; через него только
- * командный режим — после платных вызовов; иначе (Ollama, Anthropic, Claude Code) — не нужен:
- * ключ не уходит в OpenRouter ради баланса провайдера, которым Рупор не пользуется.
+ * Нужен ли баланс ключа, который первым в очереди. Очистка через облачные ключи (ИИ включён) —
+ * опрос; через них только командный режим — после платных вызовов; иначе (Ollama, Claude Code,
+ * ключей нет) — не нужен: ядро не ходит к провайдеру, которым Рупор не пользуется.
  */
-export function balanceMode(
-  s: Pick<Settings, "ai_enabled" | "ai_provider" | "command_provider"> | null | undefined,
-): BalanceMode {
+export function balanceMode(s: KeySettings | null | undefined): BalanceMode {
   if (!s) return "off";
-  if (s.ai_enabled && s.ai_provider === "openrouter") return "poll";
-  if (s.command_provider === "openrouter") return "on_use";
+  if (s.ai_enabled && firstKey(s, s.ai_provider)) return "poll";
+  if (firstKey(s, s.command_provider)) return "on_use";
   return "off";
 }
 

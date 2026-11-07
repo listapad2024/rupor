@@ -11,10 +11,12 @@ from __future__ import annotations
 
 import copy
 import logging
+import math
 import os
+import time
 from typing import Any, Callable
 
-from . import ai, broadcast, config, credman, fetch, winutil
+from . import ai, broadcast, config, credman, fetch, keys, winutil
 from .config import app_dir
 from .engine import Engine, history_display, styles_localized
 from .i18n import tr
@@ -145,6 +147,13 @@ class Api:
             "ai_key_set": self._ai_key_set,
             "ai_key_delete": self._ai_key_delete,
             "ai_key_check": lambda a: self._ai_key_check(),
+            "ai_keys_list": lambda a: self.e.ai_keys_list(),
+            "ai_key_add": self._ai_key_add,
+            "ai_key_update": self._ai_key_update,
+            "ai_key_replace": self._ai_key_replace,
+            "ai_key_remove": self._ai_key_remove,
+            "ai_keys_reorder": self._ai_keys_reorder,
+            "ai_key_info": self._ai_key_info,
             "ai_test": self._ai_test,
             "ai_usage_stats": lambda a: self.e.ai_usage_stats(),
             "ai_balance": self._ai_balance,
@@ -431,6 +440,33 @@ class Api:
 
     # ---------- ключи ИИ ----------
 
+    def _ensure_legacy_entry(self, provider: str) -> None:
+        """Ключ записан по прежней цели Rupor/<провайдер> (мастер первого запуска, импорт из
+        .env, старые команды) — он должен быть и в списке ключей (в конце, если его там нет)."""
+        def patch(s: config.Settings) -> dict[str, Any] | None:
+            if keys.find(s.ai_keys, provider) is not None:
+                return None
+            if len(s.ai_keys) >= config.AI_KEYS_MAX:
+                raise ApiError(tr("api.keys_too_many", max=config.AI_KEYS_MAX))
+            return {"ai_keys": [*s.ai_keys, {"id": provider, "provider": provider}]}
+        self.e.modify_settings(patch)
+
+    def _drop_entry(self, kid: str) -> None:
+        def patch(s: config.Settings) -> dict[str, Any] | None:
+            rest = [e for e in s.ai_keys if e["id"] != kid]
+            return None if len(rest) == len(s.ai_keys) else {"ai_keys": rest}
+        self.e.modify_settings(patch)
+
+    def _entry(self, a: dict[str, Any]) -> dict[str, Any]:
+        kid = _str(a, "id")
+        e = keys.find(self.e.s.ai_keys, kid)
+        if e is None:
+            raise ApiError(tr("eng.key_unknown"))
+        return e
+
+    def _list_item(self, kid: str) -> dict[str, Any]:
+        return next(x for x in self.e.ai_keys_list() if x["id"] == kid)
+
     def _ai_key_status(self, a: dict[str, Any]) -> dict[str, Any]:
         key = credman.read(credman.TARGETS[_provider(a)])
         return {"has_key": bool(key), "masked": credman.mask(key) if key else None}
@@ -447,7 +483,8 @@ class Api:
             log.info("Ключ openrouter_api_key в %s не найден", path)
             return {"imported": False, "masked": None}
         credman.write(credman.TARGETS["openrouter"], key)
-        self.e.key_changed()
+        self._ensure_legacy_entry("openrouter")
+        self.e.key_changed("openrouter")
         log.info("Ключ OpenRouter импортирован из .env в Credential Manager")
         return {"imported": True, "masked": credman.mask(key)}
 
@@ -459,20 +496,128 @@ class Api:
         if any(c.isspace() for c in key):
             raise ApiError(tr("api.key_whitespace"))
         credman.write(credman.TARGETS[provider], key)
-        self.e.key_changed()
+        self._ensure_legacy_entry(provider)
+        self.e.key_changed(provider)
         return {"masked": credman.mask(key)}
 
     def _ai_key_delete(self, a: dict[str, Any]) -> None:
-        credman.delete(credman.TARGETS[_provider(a)])
-        self.e.key_changed()
+        provider = _provider(a)
+        credman.delete(credman.TARGETS[provider])
+        self._drop_entry(provider)
+        self.e.key_changed(provider)
         return None
 
     def _ai_key_check(self) -> dict[str, Any]:
-        key = credman.read(credman.TARGETS["openrouter"])
+        # первый ключ OpenRouter из списка; списка нет — прежняя цель Rupor/openrouter
+        first = next((e for e in self.e.s.ai_keys if e["provider"] == "openrouter"), None)
+        key = credman.read(keys.target(first) if first else credman.TARGETS["openrouter"])
         if not key:
             return {"valid": False, "label": None, "balance_usd": None, "usage_usd": None,
                     "limit_usd": None, "error": tr("api.openrouter_key_missing")}
         return ai.check_openrouter_key(key)
+
+    # ---------- список ключей ИИ по приоритету ----------
+
+    @staticmethod
+    def _secret(a: dict[str, Any]) -> str:
+        key = _str(a, "key").strip()
+        if not key:
+            raise ApiError(tr("api.key_empty"))
+        if any(c.isspace() for c in key):
+            raise ApiError(tr("api.key_whitespace"))
+        return key
+
+    @staticmethod
+    def _balance_arg(a: dict[str, Any]) -> float | None:
+        v = a.get("balance_usd")
+        if v is None:
+            return None
+        if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) \
+                or not 0 <= v <= 1_000_000:
+            raise ApiError(tr("api.arg_balance", name="balance_usd"))
+        return round(float(v), 4)
+
+    def _ai_key_add(self, a: dict[str, Any]) -> dict[str, Any]:
+        """Новый ключ — в конец списка (приоритет меняется перетаскиванием)."""
+        provider = _provider(a)
+        key = self._secret(a)
+        label = _str(a, "label", "")
+        balance = self._balance_arg(a)
+        if len(self.e.s.ai_keys) >= config.AI_KEYS_MAX:
+            raise ApiError(tr("api.keys_too_many", max=config.AI_KEYS_MAX))
+        kid = keys.new_id(provider, self.e.s.ai_keys)
+        entry = config.ai_key_entry({
+            "id": kid, "provider": provider, "label": label, "enabled": True,
+            "balance_usd": balance, "balance_at": time.time() if balance is not None else None})
+        credman.write(keys.target(entry), key)
+
+        def patch(s: config.Settings) -> dict[str, Any]:
+            if len(s.ai_keys) >= config.AI_KEYS_MAX:
+                raise ApiError(tr("api.keys_too_many", max=config.AI_KEYS_MAX))
+            return {"ai_keys": [*s.ai_keys, entry]}
+        try:
+            self.e.modify_settings(patch)
+        except Exception:
+            credman.delete(keys.target(entry))     # запись не попала в список — секрет убрать
+            raise
+        self.e.key_changed(kid)
+        log.info("Ключ ИИ добавлен в список: %s (%s)", kid, provider)
+        return self._list_item(kid)
+
+    def _ai_key_update(self, a: dict[str, Any]) -> dict[str, Any]:
+        """Подпись, вкл/выкл, введённый вручную баланс (null — убрать); остальное не трогаем."""
+        kid = str(self._entry(a)["id"])
+        changes: dict[str, Any] = {}
+        if "label" in a:
+            changes["label"] = _str(a, "label", "")
+        if "enabled" in a:
+            changes["enabled"] = _bool(a, "enabled")
+        if "balance_usd" in a:
+            bal = self._balance_arg(a)
+            changes["balance_usd"] = bal
+            changes["balance_at"] = time.time() if bal is not None else None
+
+        def patch(s: config.Settings) -> dict[str, Any] | None:
+            new = [{**e, **changes} if e["id"] == kid else e for e in s.ai_keys]
+            return None if new == s.ai_keys else {"ai_keys": new}
+        self.e.modify_settings(patch)
+        if "enabled" in changes:
+            self.e.key_changed(kid)
+        return self._list_item(kid)
+
+    def _ai_key_replace(self, a: dict[str, Any]) -> dict[str, Any]:
+        e = self._entry(a)
+        credman.write(keys.target(e), self._secret(a))
+        self.e.key_changed(str(e["id"]))
+        return self._list_item(str(e["id"]))
+
+    def _ai_key_remove(self, a: dict[str, Any]) -> None:
+        e = self._entry(a)
+        credman.delete(keys.target(e))
+        self._drop_entry(str(e["id"]))
+        self.e.key_changed(str(e["id"]))
+        log.info("Ключ ИИ убран из списка: %s", e["id"])
+        return None
+
+    def _ai_keys_reorder(self, a: dict[str, Any]) -> list[dict[str, Any]]:
+        """Новый порядок (= приоритет): ids — все id списка ровно по разу."""
+        ids = _str_list(a, "ids")
+
+        def patch(s: config.Settings) -> dict[str, Any] | None:
+            by_id = {e["id"]: e for e in s.ai_keys}
+            if len(ids) != len(by_id) or set(ids) != set(by_id):
+                raise ApiError(tr("api.keys_reorder_mismatch"))
+            new = [by_id[i] for i in ids]
+            return None if new == s.ai_keys else {"ai_keys": new}
+        self.e.modify_settings(patch)
+        return self.e.ai_keys_list()
+
+    def _ai_key_info(self, a: dict[str, Any]) -> dict[str, Any]:
+        kid = str(self._entry(a)["id"])
+        force = a.get("force", False)
+        if not isinstance(force, bool):
+            raise ApiError(tr("api.arg_bool", name="force"))
+        return self.e.ai_key_info(kid, force)
 
     def _ai_test(self, a: dict[str, Any]) -> dict[str, Any]:
         text = _str(a, "text")

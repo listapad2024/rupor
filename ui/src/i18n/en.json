@@ -749,7 +749,8 @@
       "providers": {
         "openrouter": "OpenRouter",
         "anthropic": "Anthropic",
-        "ollama": "Ollama (offline)"
+        "ollama": "Ollama (offline)",
+        "keys": "Keys by priority"
       },
       "key": "API key",
       "keyHint": "Your OpenRouter key. Never shown in the interface, logs or history.",
@@ -775,7 +776,16 @@
       "commandOpenrouter": "OpenRouter",
       "commandOpenrouterText": "The same model and key as cleanup.",
       "commandCli": "Claude Code CLI",
-      "commandCliText": "The local “claude -p” command, 30-second timeout."
+      "commandCliText": "The local “claude -p” command, 30-second timeout.",
+      "cloud": "Cloud keys",
+      "keysTitle": "Keys and order",
+      "keysHint": "Top to bottom: if a key fails (out of credit, rejected, rate limit, provider outage), Rupor moves straight on to the next one. Drag or use the arrows to change the order.",
+      "onlyProvider": "Only {name} keys are used right now.",
+      "useAll": "Use all keys in order",
+      "modelOpenrouter": "OpenRouter model",
+      "modelAnthropic": "Anthropic model",
+      "commandKeys": "Keys by priority",
+      "commandKeysText": "The same keys, order and models as cleanup."
     },
     "history": {
       "title": "Dictation history",
@@ -916,12 +926,14 @@
       "text": "Stats show up here after your first AI requests."
     },
     "balance": {
-      "title": "OpenRouter balance",
+      "title": "Balance",
       "checked": "Checked {ago}",
       "notChecked": "Not checked yet",
       "usage": "{v} spent on this key",
       "limit": "key limit {v}",
-      "noLimit": "no limit"
+      "noLimit": "no limit",
+      "titleKey": "Balance · {name}",
+      "estimate": "estimate: the balance you entered minus what Rupor spent"
     },
     "home": {
       "title": "AI cleanup",
@@ -1162,5 +1174,60 @@
     "command": "command",
     "relaunchAdmin": "Restart as administrator",
     "openSettings": "AI settings"
+  },
+  "aiKeys": {
+    "add": "Add key",
+    "addTitle": "New key",
+    "provider": "Provider",
+    "label": "Label",
+    "labelPlaceholder": "For example, “Personal” or “Work”",
+    "key": "API key",
+    "balance": "Account balance, $",
+    "balancePlaceholder": "optional",
+    "balanceHint": "Anthropic doesn't report the balance through its API. Enter the balance from the Console and Rupor will subtract what it spends.",
+    "save": "Add",
+    "cancel": "Cancel",
+    "empty": "No keys yet",
+    "emptyHint": "Add an OpenRouter or Anthropic key. You can add several, including several keys for one provider.",
+    "moveUp": "Move up",
+    "moveDown": "Move down",
+    "drag": "Drag to change the priority",
+    "first": "First",
+    "off": "Off",
+    "noSecret": "The key isn't in Credential Manager",
+    "paused": "Skipped until {time}: {reason}",
+    "balanceApi": "Balance",
+    "balanceEstimate": "≈ left (estimate)",
+    "balanceUnavailable": "No balance through the API",
+    "spent": "Rupor spent {v}",
+    "spentSince": "You entered a balance of {balance}; Rupor has spent {v} since then",
+    "setBalance": "Enter balance",
+    "editBalance": "Change balance",
+    "clearBalance": "Remove balance",
+    "rename": "Rename",
+    "replace": "Replace key",
+    "enable": "Turn on",
+    "disable": "Turn off",
+    "remove": "Delete",
+    "removeTitle": "Delete key “{name}”?",
+    "removeBody": "The key will be deleted from Windows Credential Manager.",
+    "check": "Check key and balance",
+    "added": "Key added",
+    "saveError": "Couldn't save",
+    "actions": "Key actions",
+    "invalid": "The key didn't pass the check",
+    "checked": "Checked {ago}",
+    "apply": "Save",
+    "reasons": {
+      "auth": "key rejected",
+      "payment": "out of credit",
+      "forbidden": "access denied",
+      "rate_limit": "rate limit",
+      "server": "provider outage",
+      "network": "no network",
+      "timeout": "didn't answer in time",
+      "no_key": "no key",
+      "bad_request": "request error"
+    }
   }
 }

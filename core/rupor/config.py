@@ -36,9 +36,19 @@ MODE_CLIPBOARD = "clipboard"  # всегда через буфер
 INSERT_MODES = (MODE_AUTO, MODE_TYPE, MODE_CLIPBOARD)
 
 THEMES = ("system", "dark", "light")
-AI_PROVIDERS = ("openrouter", "anthropic", "ollama")
+# keys — облачные ключи из списка ai_keys по приоритету (OpenRouter и Anthropic вперемешку,
+# с переходом на следующий ключ при ошибке); openrouter / anthropic — только ключи этого
+# провайдера из того же списка (так было до списка ключей); ollama — офлайн, без ключа
+AI_PROVIDERS = ("keys", "openrouter", "anthropic", "ollama")
 AI_MODES = ("wait", "raw_first")
-COMMAND_PROVIDERS = ("openrouter", "claude_cli", "anthropic", "ollama")
+COMMAND_PROVIDERS = ("keys", "openrouter", "claude_cli", "anthropic", "ollama")
+# Провайдеры, у которых есть ключи API (Credential Manager), и значения ai_provider /
+# command_provider, которые ходят по списку ключей
+KEY_PROVIDERS = ("openrouter", "anthropic")
+CHAIN_PROVIDERS = ("keys", "openrouter", "anthropic")
+AI_KEYS_MAX = 20
+AI_KEY_LABEL_MAX = 60
+_KEY_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,39}$")
 DEVICES = ("cuda", "cpu")
 # Обучение словаря на правках: auto — добавлять сразу (с «Отменить»), suggest — предлагать
 # (повторная такая же правка добавляется сама), off — не следить за полем
@@ -177,7 +187,12 @@ class Settings:
 
     # ИИ
     ai_enabled: bool = False
-    ai_provider: str = "openrouter"
+    ai_provider: str = "keys"
+    # Ключи ИИ по приоритету: [{id, provider, label, enabled, balance_usd, balance_at}].
+    # Секреты — в Credential Manager (rupor.keys.target), здесь только описание и порядок.
+    # balance_usd — баланс, который пользователь ввёл сам (для провайдеров без API баланса),
+    # balance_at — когда (unix сек): оценка остатка = balance_usd − расход ключа с того момента
+    ai_keys: list[dict[str, Any]] = field(default_factory=list)
     ai_model: str = "anthropic/claude-haiku-4.5"
     anthropic_model: str = "claude-haiku-4-5"
     ollama_model: str = "qwen2.5:7b"
@@ -186,7 +201,7 @@ class Settings:
     ai_mode: str = "wait"               # wait | raw_first
     ai_min_words: int = 6
     ai_timeout_s: float = 5
-    command_provider: str = "openrouter"
+    command_provider: str = "keys"
     env_path: str = ""                  # путь к .env с openrouter_api_key (необязательно)
 
     def validate(self) -> None:
@@ -199,6 +214,9 @@ class Settings:
                 continue
             if f.name == "title_rules":
                 self.title_rules = _title_rules(v, strict=False)
+                continue
+            if f.name == "ai_keys":
+                self.ai_keys = _ai_keys(v, strict=False)   # битые записи — поштучно
                 continue
             try:
                 setattr(self, f.name, _VALIDATORS[f.name](v))
@@ -540,6 +558,66 @@ def _title_rules(v: Any, strict: bool = True) -> list[dict[str, str | None]]:
     return out
 
 
+def ai_key_entry(v: Any) -> dict[str, Any]:
+    """Проверенная запись списка ключей ИИ (без секрета)."""
+    if not isinstance(v, dict):
+        raise ValueError(tr("cfg.ai_key_expect"))
+    kid = v.get("id")
+    if not isinstance(kid, str) or not _KEY_ID_RE.match(kid):
+        raise ValueError(tr("cfg.ai_key_bad_id"))
+    provider = v.get("provider")
+    if provider not in KEY_PROVIDERS:
+        raise ValueError(tr("cfg.ai_key_bad_provider", options=", ".join(KEY_PROVIDERS)))
+    label = v.get("label", "")
+    if label is None:
+        label = ""
+    if not isinstance(label, str):
+        raise ValueError(tr("cfg.expect_str"))
+    label = " ".join(label.split())
+    if len(label) > AI_KEY_LABEL_MAX:
+        raise ValueError(tr("cfg.too_long", max=AI_KEY_LABEL_MAX))
+    enabled = v.get("enabled", True)
+    if not isinstance(enabled, bool):
+        raise ValueError(tr("cfg.expect_bool"))
+    bal = v.get("balance_usd")
+    at = v.get("balance_at")
+    if bal is not None:
+        bal = _float(0, 1_000_000)(bal)
+        at = _float(0, 1e11)(at) if at is not None else 0.0
+    else:
+        at = None
+    return {"id": kid, "provider": provider, "label": label, "enabled": enabled,
+            "balance_usd": bal, "balance_at": at}
+
+
+def _ai_keys(v: Any, strict: bool = True) -> list[dict[str, Any]]:
+    """Список ключей ИИ по приоритету; id не повторяются."""
+    if not isinstance(v, list):
+        if strict:
+            raise ValueError(tr("cfg.ai_keys_expect"))
+        log.warning("ai_keys: не список — список ключей сброшен")
+        return []
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in v:
+        try:
+            e = ai_key_entry(item)
+            if e["id"] in seen:
+                raise ValueError(tr("cfg.ai_key_dup", id=e["id"]))
+        except ValueError as err:
+            if strict:
+                raise
+            log.warning("Ключ ИИ в списке пропущен: %s", err)
+            continue
+        seen.add(e["id"])
+        out.append(e)
+    if len(out) > AI_KEYS_MAX:
+        if strict:
+            raise ValueError(tr("cfg.too_many", max=AI_KEYS_MAX))
+        out = out[:AI_KEYS_MAX]
+    return out
+
+
 _VALIDATORS: dict[str, Callable[[Any], Any]] = {
     "ptt_key": _keyset,
     "broadcast_modifier": _key,
@@ -593,6 +671,7 @@ _VALIDATORS: dict[str, Callable[[Any], Any]] = {
     "first_run_done": _bool,
     "ai_enabled": _bool,
     "ai_provider": _choice(AI_PROVIDERS),
+    "ai_keys": _ai_keys,
     "ai_model": _text(max_len=200),
     "anthropic_model": _text(max_len=200),
     "ollama_model": _text(max_len=200),
@@ -717,6 +796,22 @@ def _migrate_broadcast(s: Settings) -> None:
              len(targets), len(wins))
 
 
+def _migrate_ai_keys(s: Settings) -> None:
+    """Файл до списка ключей (нет ai_keys): прежние ключи OpenRouter и Anthropic
+    (``Rupor/openrouter``, ``Rupor/anthropic``) становятся записями списка — выбранный
+    провайдер первым, — а очистка и командный режим идут «по списку ключей». Записи без
+    секрета в Credential Manager движок уберёт при запуске (keys.drop_missing_legacy)."""
+    first = s.ai_provider if s.ai_provider in KEY_PROVIDERS else "openrouter"
+    order = [first, *(p for p in KEY_PROVIDERS if p != first)]
+    s.ai_keys = [{"id": p, "provider": p, "label": "", "enabled": True,
+                  "balance_usd": None, "balance_at": None} for p in order]
+    if s.ai_provider in KEY_PROVIDERS:
+        s.ai_provider = "keys"
+    if s.command_provider in KEY_PROVIDERS:
+        s.command_provider = "keys"
+    log.info("ИИ: переход на список ключей (%s первым)", first)
+
+
 def load() -> Settings:
     p = settings_path()
     s = Settings()
@@ -732,6 +827,8 @@ def load() -> Settings:
                     setattr(s, k, v)
             _migrate_hotkeys(s, raw)
             migrate_rdp = "broadcast_targets" not in raw
+            if "ai_keys" not in raw:
+                _migrate_ai_keys(s)
             if "default_style" not in raw and isinstance(s.app_rules, dict):
                 # Файл этапов 1–2: дописываем стили по приложениям, не трогая правила пользователя
                 for proc, rule in DEFAULT_APP_RULES.items():

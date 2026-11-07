@@ -1,8 +1,9 @@
 """ИИ-обработка текста: автоочистка диктовки, стили и командный режим.
 
-Провайдеры очистки: OpenRouter (по умолчанию, OpenAI-совместимый API), Anthropic API
-напрямую и Ollama (офлайн). Командный режим — OpenRouter или локальный Claude Code CLI
-(``claude -p``); OAuth-токены Claude Code модуль не читает.
+Провайдеры очистки: облачные ключи по приоритету (``keys``: OpenRouter — OpenAI-совместимый
+API — и Anthropic API напрямую, сколько угодно ключей каждого, с переходом на следующий
+ключ при ошибке, см. ``rupor.keys``) и Ollama (офлайн). Командный режим — те же ключи или
+локальный Claude Code CLI (``claude -p``); OAuth-токены Claude Code модуль не читает.
 
 Язык промптов: очистка — на языке текста (``text_language``: русский текст — русский
 промпт и инструкции стилей, английский — английские того же смысла; язык распознавания —
@@ -32,8 +33,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, TypeVar
 
-from . import credman, i18n
-from .config import Settings
+from . import credman, i18n, keys
+from .config import CHAIN_PROVIDERS, KEY_PROVIDERS, Settings
 
 log = logging.getLogger(__name__)
 
@@ -43,6 +44,7 @@ tr = i18n.tr
 OPENROUTER_BASE = "https://openrouter.ai/api/v1"
 OPENROUTER_URL = OPENROUTER_BASE + "/chat/completions"
 ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
+ANTHROPIC_MODELS_URL = "https://api.anthropic.com/v1/models"
 ANTHROPIC_VERSION = "2023-06-01"
 
 PROMPT_VERSION = "2026-09-27.2"  # менять при каждой правке BASE_PROMPT(_EN) / стилей
@@ -53,14 +55,14 @@ CREATE_NO_WINDOW = 0x08000000
 
 # Значения по умолчанию для полей Settings, которых может ещё не быть в config.py
 DEFAULTS: dict[str, Any] = {
-    "ai_provider": "openrouter",
+    "ai_provider": "keys",
     "ai_model": "anthropic/claude-haiku-4.5",
     "anthropic_model": "claude-haiku-4-5",
     "ollama_model": "qwen2.5:7b",
     "ollama_url": "http://127.0.0.1:11434",
     "ai_provider_order": [],
     "ai_timeout_s": 5.0,
-    "command_provider": "openrouter",
+    "command_provider": "keys",
 }
 
 # Цена Anthropic API напрямую, $ за 1M токенов (вход, выход) — для cost_usd. Ключ —
@@ -254,6 +256,7 @@ class AIResult:
     upstream: str | None = None     # фактический провайдер у OpenRouter (Amazon Bedrock…)
     tokens_in: int | None = None
     tokens_out: int | None = None
+    key_id: str | None = None       # какой ключ из списка ответил (rupor.keys)
 
 
 class AIError(Exception):
@@ -656,11 +659,13 @@ def normalize_key(key: str | None) -> str | None:
     return k
 
 
-def _key(provider: str, api_key: str | None) -> str:
+def _key(provider: str, api_key: str | None, target: str | None = None) -> str:
+    """Ключ для вызова: переданный явно или из Credential Manager (``target`` — цель записи
+    списка ключей, по умолчанию прежняя ``Rupor/<провайдер>``)."""
     name = "OpenRouter" if provider == "openrouter" else "Anthropic"
     if not api_key:
         try:
-            api_key = credman.read(credman.TARGETS[provider])
+            api_key = credman.read(target or credman.TARGETS[provider])
         except OSError as e:
             raise AIError(tr("ai.key_read_failed", name=name, code=e.errno),
                           "no_key") from None
@@ -787,16 +792,73 @@ def _ollama(system: str, user: str, s: object, timeout: float, max_tokens: int) 
                     tokens_out=tout if isinstance(tout, int) else None)
 
 
-def _call(provider: str, system: str, user: str, s: object, timeout: float,
-          max_tokens: int, api_key: str | None) -> AIResult:
+def _call_key(provider: str, system: str, user: str, s: object, timeout: float,
+              max_tokens: int, key: str) -> AIResult:
     if provider == "openrouter":
-        key = _key("openrouter", api_key)
         return _with_deadline(lambda: _openrouter(system, user, s, key, timeout, max_tokens),
                               timeout, "OpenRouter")
-    if provider == "anthropic":
-        key = _key("anthropic", api_key)
-        return _with_deadline(lambda: _anthropic(system, user, s, key, timeout, max_tokens),
-                              timeout, "Anthropic")
+    return _with_deadline(lambda: _anthropic(system, user, s, key, timeout, max_tokens),
+                          timeout, "Anthropic")
+
+
+def _call_chain(provider: str, system: str, user: str, s: object, timeout: float,
+                max_tokens: int) -> AIResult:
+    """Ключи из списка по приоритету (keys.chain): ошибка ключа, счёта, лимита, сервера или
+    сети — следующий ключ; ответ модели, который не годится (обрезан, отказ), и таймаут —
+    сразу наружу. Упавший ключ уходит в конец очереди на время (keys.mark_failed)."""
+    entries = keys.chain(s, provider)
+    if not entries:
+        if provider == "keys":
+            raise AIError(tr("ai.no_keys"), "no_key")
+        raise AIError(tr("ai.no_key", name=keys.PROVIDER_NAMES[provider]), "no_key")
+    all_entries = [e for e in getattr(s, "ai_keys", []) if isinstance(e, dict)]
+    first_err: AIError | None = None     # наружу — ошибка первого ключа, который пробовали
+    missing: AIError | None = None       # …а если ни у одного нет секрета — «нет ключа»
+    failed: list[str] = []
+    for i, e in enumerate(entries):
+        kid, p = str(e["id"]), str(e["provider"])
+        label = keys.label_of(e, all_entries)
+        try:
+            key = _key(p, None, keys.target(e))
+        except AIError as err:
+            # записи без секрета (ключ удалили через «Диспетчер учётных данных») — мимо
+            if err.kind != "no_key":
+                first_err = first_err or err
+            missing = missing or err
+            log.warning("ИИ: у ключа «%s» нет секрета в Credential Manager", label)
+            continue
+        try:
+            res = _call_key(p, system, user, s, timeout, max_tokens, key)
+        except AIError as err:
+            keys.mark_failed(kid, err.kind)
+            more = err.kind in keys.FALLBACK_KINDS and i + 1 < len(entries)
+            log.warning("ИИ: ключ «%s» не сработал (%s)%s", label, err.kind,
+                        " — беру следующий" if more else "")
+            if err.kind not in keys.FALLBACK_KINDS:
+                raise
+            first_err = first_err or err
+            failed.append(label)
+            continue
+        keys.mark_ok(kid)
+        res.key_id = kid
+        if failed:
+            log.info("ИИ: ответил ключ «%s» (до него не сработали: %s)", label,
+                     ", ".join(failed))
+        return res
+    final = first_err or missing
+    assert final is not None
+    raise final
+
+
+def _call(provider: str, system: str, user: str, s: object, timeout: float,
+          max_tokens: int, api_key: str | None) -> AIResult:
+    if provider in CHAIN_PROVIDERS:
+        if api_key:
+            # ключ передан явно (бенчмарк, проверка) — без списка ключей
+            p = provider if provider in KEY_PROVIDERS else (
+                keys.first_provider(s, provider) or "openrouter")
+            return _call_key(p, system, user, s, timeout, max_tokens, _key(p, api_key))
+        return _call_chain(provider, system, user, s, timeout, max_tokens)
     if provider == "ollama":
         return _with_deadline(lambda: _ollama(system, user, s, timeout, max_tokens),
                               timeout, "Ollama")
@@ -809,6 +871,8 @@ def provider_model(s: object, command: bool = False) -> tuple[str, str]:
     """(провайдер, модель), которые будут вызваны очисткой (или командным режимом) —
     для учёта расхода, когда вызов упал и ответа с моделью нет."""
     provider = _str_setting(s, "command_provider" if command else "ai_provider")
+    if provider == "keys":
+        provider = keys.first_provider(s, provider) or "openrouter"
     if provider == "claude_cli":
         return provider, "claude -p"
     if provider == "anthropic":
@@ -911,8 +975,9 @@ def command(instruction: str, selected: str, s: Settings, *,
             api_key: str | None = None) -> AIResult:
     """Командный режим: применить голосовую инструкцию к выделенному тексту (таймаут 30 с).
 
-    Провайдер — ``s.command_provider``: ``openrouter`` (модель ``ai_model``) или
-    ``claude_cli`` (локальный ``claude -p``); ``anthropic``/``ollama`` тоже поддержаны.
+    Провайдер — ``s.command_provider``: ``keys`` (список ключей по приоритету, как у
+    очистки) или ``claude_cli`` (локальный ``claude -p``); ``openrouter``/``anthropic``
+    (только ключи этого провайдера) и ``ollama`` тоже поддержаны.
     Промпт — на языке интерфейса (``i18n.current()``)."""
     instruction = instruction.strip()
     if not instruction:
@@ -987,4 +1052,30 @@ def check_openrouter_key(key: str) -> dict[str, Any]:
             res["balance_usd"] = round(remaining, 4)
         else:
             res["error"] = tr("ai.key_check_no_balance", error=e)
+    return res
+
+
+def check_anthropic_key(key: str) -> dict[str, Any]:
+    """Проверка ключа Anthropic: ``GET /v1/models?limit=1`` (бесплатно, без генерации).
+
+    Баланса счёта у Anthropic API нет (его видно только в Console), поэтому ``balance_usd``
+    всегда ``None``. Ответ — как у ``check_openrouter_key``; исключений не бросает."""
+    res: dict[str, Any] = {"valid": False, "label": None, "balance_usd": None,
+                           "usage_usd": None, "limit_usd": None, "error": None}
+    try:
+        k = normalize_key(key)
+    except ValueError:
+        res["error"] = tr("ai.key_check_corrupted")
+        return res
+    if not k:
+        res["error"] = tr("ai.key_check_empty")
+        return res
+    try:
+        _post_json("Anthropic", ANTHROPIC_MODELS_URL + "?limit=1",
+                   {"x-api-key": k, "anthropic-version": ANTHROPIC_VERSION}, None,
+                   KEY_CHECK_TIMEOUT_S, method="GET")
+    except AIError as e:
+        res["error"] = str(e)
+        return res
+    res["valid"] = True
     return res
