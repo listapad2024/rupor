@@ -327,6 +327,7 @@ def test_raw_first_ai_replacement_is_not_learned(lenv: tuple[Env, FakeUI],
     env, ui = lenv
     calls = env.calls
     calls.creds["Rupor/openrouter"] = FAKE_KEY
+    env.eng.update_settings({"ai_keys": [{"id": "openrouter", "provider": "openrouter"}]})
     calls.cleanup_impl = lambda t: "Задеплой в Kubernetes и метабейс."
 
     def replace(n: int, text: str, d: Delivery, s: config.Settings, expected: str) -> bool:

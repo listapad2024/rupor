@@ -71,7 +71,7 @@ def test_migration_1_to_3_builds_vocab_from_history(tmp_path: Path) -> None:
         assert s.ai_usage_stats(TODAY)["total"]["calls"] == 0     # таблица создана
     con = sqlite3.connect(p)
     try:
-        assert con.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION == 3
+        assert con.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION == 4
         ver = con.execute("SELECT value FROM kv WHERE key = 'vocab_version'").fetchone()[0]
         assert ver == vocab.version()
         rows = dict(con.execute("SELECT app, sum(count) FROM vocab WHERE word = 'Metabase' "

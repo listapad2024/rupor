@@ -27,8 +27,11 @@ export function Menu({
   variant = "secondary",
   size = "md",
   width = 220,
+  iconOnly = false,
 }: {
   label: string;
+  /** Только значок; label — подсказка и aria-label. */
+  iconOnly?: boolean;
   icon?: ReactNode;
   items: MenuItem[];
   variant?: ButtonVariant;
@@ -109,6 +112,8 @@ export function Menu({
         icon={icon}
         aria-haspopup="menu"
         aria-expanded={open}
+        aria-label={iconOnly ? label : undefined}
+        title={iconOnly ? label : undefined}
         onClick={() => setOpen((o) => !o)}
         onKeyDown={(e) => {
           if (e.key === "ArrowDown" && !open) {
@@ -117,7 +122,7 @@ export function Menu({
           }
         }}
       >
-        {label}
+        {iconOnly ? null : label}
       </Button>
       {createPortal(
         <AnimatePresence>

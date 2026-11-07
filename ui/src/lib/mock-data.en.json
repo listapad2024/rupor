@@ -403,7 +403,7 @@
       "one": "Sent to {n} RDP session",
       "other": "Sent to {n} RDP sessions"
     },
-    "balanceLow": "Your OpenRouter balance is below $1. Top it up, or AI cleanup will stop working (${balance} left)",
+    "balanceLow": "Your {name} balance is below $1. Top it up, or AI cleanup will stop working (${balance} left)",
     "titleShort": "The window title must be at least 2 characters",
     "titleProcess": "Enter a process (.exe name) or “*”",
     "unknownStyle": "Unknown style “{style}”",
@@ -434,7 +434,11 @@
     "noteSmall": "A sensible choice without an NVIDIA graphics card",
     "noteMedium": "More accurate than small but noticeably slower; slow on a processor",
     "noteTurbo": "Best for Russian and English: almost as accurate as large-v3 but several times faster; needs an NVIDIA graphics card",
-    "noteLarge": "Most accurate and slowest; turbo is nearly as good"
+    "noteLarge": "Most accurate and slowest; turbo is nearly as good",
+    "noKeys": "No AI keys yet. Add one in Settings → AI",
+    "keyUnknown": "This key isn't in the list. Refresh the page",
+    "balanceNoApi": "{name} doesn't report the balance through its API. Enter it yourself and Rupor will subtract what it spends",
+    "keyMainLabel": "Main"
   },
   "learnSamples": [
     {

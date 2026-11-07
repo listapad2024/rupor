@@ -5,14 +5,14 @@ import { AnimatePresence, motion } from "framer-motion";
 import { ArrowRight, BarChart3, CircleAlert, RefreshCw, Sparkles, Wallet } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 import { t, tp } from "../i18n";
-import { avgCost, balanceMode, balanceValue, refreshBalance, reloadAiStats, useAiUsage } from "../lib/aiUsage";
+import { activeModel, avgCost, balanceMode, balanceValue, firstKey, refreshBalance, reloadAiStats, useAiUsage } from "../lib/aiUsage";
 import { cn } from "../lib/cn";
 import { fmtAgo, fmtSpend, fmtTokens, fmtUsd } from "../lib/format";
 import { useNow } from "../lib/hooks";
 import { errorText } from "../lib/hub";
 import { navigate } from "../lib/router";
 import { useCore } from "../lib/store";
-import type { AiBalance, AiUsageDay, AiUsageKind, AiUsageTotals, KeyProvider } from "../lib/types";
+import type { AiBalance, AiUsageDay, AiUsageKind, AiUsageTotals } from "../lib/types";
 import { call } from "../lib/ws";
 import { CountUp } from "./CountUp";
 import { DayBars } from "./DayBars";
@@ -67,18 +67,14 @@ export function AiHomeCard() {
   if (!settings.ai_enabled) return <AiOffCard />;
 
   const s = ai.stats;
-  // Баланс OpenRouter — когда очистка через OpenRouter; если через него только команды —
-  // когда он уже известен (после платной команды). Ollama/Anthropic — без чужого баланса.
+  // Баланс первого ключа в очереди — когда очистка идёт через облачные ключи; если через них
+  // только команды — когда он уже известен (после платной команды). Ollama — без баланса.
+  // Anthropic баланс по API не отдаёт: показываем, только если введён остаток (оценка).
   const bm = balanceMode(settings);
-  const showBalance = bm === "poll" || (bm === "on_use" && ai.balance !== null);
   const bal = balanceValue(ai.balance);
+  const showBalance = (bm === "poll" || (bm === "on_use" && ai.balance !== null)) && !(ai.balance?.provider === "anthropic" && bal === null);
   const foot = balanceFoot(ai.balance, now);
-  const model =
-    settings.ai_provider === "anthropic"
-      ? settings.anthropic_model
-      : settings.ai_provider === "ollama"
-        ? settings.ollama_model
-        : settings.ai_model;
+  const { provider: activeProvider, model } = activeModel(settings);
 
   return (
     <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.25, delay: 0.05 }}>
@@ -91,7 +87,7 @@ export function AiHomeCard() {
             <div className="min-w-0">
               <div className="text-[14px] font-semibold text-fg">{t("aiUsage.home.title")}</div>
               <div className="truncate text-[12px] text-muted" title={model}>
-                {t(`settings.ai.providers.${settings.ai_provider}`)} ·{" "}
+                {t(`settings.ai.providers.${activeProvider as "openrouter" | "anthropic" | "ollama"}`)} ·{" "}
                 <span className="font-mono text-[11.5px]">{model.split("/").pop() || model}</span>
               </div>
               <button
@@ -191,8 +187,9 @@ function AiOffCard() {
     try {
       const provider = settings.ai_provider;
       if (provider !== "ollama") {
-        const st = await call("ai_key_status", { provider: provider as KeyProvider });
-        if (!st.has_key) {
+        const keys = firstKey(settings, provider) ? await call("ai_keys_list") : [];
+        const usable = keys.some((k) => k.enabled && k.has_key && (provider === "keys" || k.provider === provider));
+        if (!usable) {
           navigate("settings/ai");
           toast({ tone: "info", title: t("aiUsage.home.needKey") });
           return;
@@ -408,7 +405,7 @@ function BalanceCard({ balance, loading, now }: { balance: AiBalance | null; loa
   if (balance && !balance.error && balance.usage_usd !== null) {
     details.push(t("aiUsage.balance.usage", { v: fmtUsd(balance.usage_usd) }));
   }
-  if (balance && !balance.error && balance.checked_at !== null) {
+  if (balance && !balance.error && balance.checked_at !== null && !balance.estimate) {
     details.push(balance.limit_usd !== null ? t("aiUsage.balance.limit", { v: fmtUsd(balance.limit_usd) }) : t("aiUsage.balance.noLimit"));
   }
   return (
@@ -418,7 +415,10 @@ function BalanceCard({ balance, loading, now }: { balance: AiBalance | null; loa
           <Wallet className="size-[18px]" />
         </span>
         <div className="min-w-0 flex-1">
-          <div className="text-[13.5px] font-medium text-fg">{t("aiUsage.balance.title")}</div>
+          <div className="text-[13.5px] font-medium text-fg">
+            {balance?.label ? t("aiUsage.balance.titleKey", { name: balance.label }) : t("aiUsage.balance.title")}
+            {balance?.estimate && <span className="ml-1.5 text-[12px] font-normal text-muted">{t("aiUsage.balance.estimate")}</span>}
+          </div>
           <AnimatePresence mode="wait" initial={false}>
             <motion.div
               key={foot.text}

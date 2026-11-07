@@ -94,6 +94,10 @@ _MIGRATIONS: tuple[tuple[Migration, ...], ...] = (
         # частоты по истории считает пересборка после миграции (_vocab_check_version):
         # у движка — в фоне, чтобы большая история не задерживала запуск ядра
     ),
+    (  # 3 → 4: какой ключ из списка ключей ИИ ответил (расход и оценка баланса по ключу)
+        "ALTER TABLE ai_usage ADD COLUMN key_id TEXT",
+        "CREATE INDEX IF NOT EXISTS ai_usage_key ON ai_usage(key_id, ts)",
+    ),
 )
 SCHEMA_VERSION = len(_MIGRATIONS)
 
@@ -1020,15 +1024,24 @@ class Storage:
             "ok": ok,
             "error_kind": None if ok else (_str(rec.get("error_kind")) or "error"),
             "app": _str(rec.get("app")),
+            "key_id": _str(rec.get("key_id")) or None,
         }
         cols = ("ts", "kind", "provider", "model", "upstream", "tokens_in", "tokens_out",
-                "cost_usd", "ms", "ok", "error_kind", "app")
+                "cost_usd", "ms", "ok", "error_kind", "app", "key_id")
         with self._tx() as c:
             cur = c.execute(f"INSERT INTO ai_usage({', '.join(cols)}) "
                             f"VALUES({', '.join('?' * len(cols))})",
                             [int(row[k]) if k == "ok" else row[k] for k in cols])
             row_id = int(cur.lastrowid or 0)
         return {"id": row_id, **row}
+
+    def ai_key_spend(self, key_id: str, since: float = 0.0) -> dict[str, Any]:
+        """Расход через ключ из списка ключей ИИ с момента ``since`` (unix, с):
+        {cost_usd, calls} — calls только удачные."""
+        with self._lock:
+            r = self._conn.execute("SELECT total(cost_usd), total(ok) FROM ai_usage "
+                                   "WHERE key_id = ? AND ts >= ?", (key_id, since)).fetchone()
+        return {"cost_usd": round(float(r[0] or 0.0), 6), "calls": int(r[1] or 0)}
 
     def ai_usage_today_cost(self, now: float | None = None) -> float:
         """Сколько стоили вызовы ИИ сегодня (локальная дата)."""

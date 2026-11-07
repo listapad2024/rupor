@@ -6,6 +6,24 @@ All notable changes to Rupor are listed here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **Several AI keys, in priority order.** Settings → AI now holds a list of keys: OpenRouter and
+  Anthropic mixed, including several keys for the same provider. Drag a key (or use the arrows)
+  to change the order. Cleanup and command mode use the first key; if it fails (out of credit,
+  rejected, rate limit, provider outage, no network), Rupor moves straight on to the next one,
+  and the failed key waits at the end of the queue for a while. Each key can be turned off,
+  renamed, replaced or deleted.
+- **Balance for each key.** OpenRouter keys show the balance from OpenRouter. Anthropic doesn't
+  report a balance through its API, so you can enter the balance from the Console and Rupor shows
+  an estimate: that amount minus what Rupor has spent through the key since. The AI spending card
+  shows the balance of the key that is first in line.
+
+### Changed
+
+- Existing OpenRouter and Anthropic keys move into the new list automatically, with the provider
+  you had selected first.
+
 ## [0.4.3] — 2026-10-18
 
 ### Fixed
