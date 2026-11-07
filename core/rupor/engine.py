@@ -2479,6 +2479,17 @@ class Engine:
             raise ValueError(tr("api.recording_not_found"))
         return p
 
+    def recording_audio(self, rid: str) -> dict[str, Any]:
+        """Звук записи для прослушивания в интерфейсе (WS recording_audio): {mime, data} —
+        WAV целиком в base64 (16 кГц моно 16 бит: минута — около 2,6 МБ в base64)."""
+        import base64
+        p = self.recording_path(rid)
+        try:
+            data = p.read_bytes()
+        except OSError:
+            raise ValueError(tr("api.recording_not_found")) from None
+        return {"mime": "audio/wav", "data": base64.b64encode(data).decode("ascii")}
+
     def recording_transcribe(self, rid: str) -> dict[str, Any]:
         """Распознать сохранённую запись заново: словарь, сниппеты и ИИ-обработка (стиль по
         умолчанию) — как у диктовки; результат — в истории и в «Вставить последнее».

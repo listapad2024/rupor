@@ -127,6 +127,7 @@ class Api:
             "last_insert": self._last_insert,
             "recordings_list": lambda a: self.e.recordings_list(),
             "recording_transcribe": lambda a: self.e.recording_transcribe(_rec_id(a)),
+            "recording_audio": lambda a: self.e.recording_audio(_rec_id(a)),
             "recording_delete": self._recording_delete,
             "recordings_clear": lambda a: {"deleted": self.e.recordings_clear()},
             "recording_reveal": self._recording_reveal,

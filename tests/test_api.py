@@ -6,6 +6,7 @@ Manager и открытие проводника подменены — тест
 и не трогают его ключи; настройки, база и логи — во временной папке (APPDATA)."""
 from __future__ import annotations
 
+import base64
 import json
 import os
 import threading
@@ -504,6 +505,12 @@ def test_recordings_saved_rotated_and_retranscribed(env: Env) -> None:
     assert env.calls.delivered == []
     assert c.call("stats_get")["words_today"] == words
     assert env.eng.last_text == "третья, но целиком"
+    # прослушать: WAV целиком, тот же файл
+    snd = c.call("recording_audio", {"id": newest["id"]})
+    assert snd["mime"] == "audio/wav"
+    assert base64.b64decode(snd["data"]) == (
+        env.tmp / "recordings" / f"{newest['id']}.wav").read_bytes()
+    assert "не найдена" in c.error("recording_audio", {"id": "../rupor.db"})
     # ошибки и удаление
     assert "не найдена" in c.error("recording_transcribe", {"id": "20200101-000000-000"})
     assert "не найдена" in c.error("recording_transcribe", {"id": "../rupor.db"})

@@ -10,16 +10,18 @@ import {
   Mic,
   MonitorSmartphone,
   NotebookPen,
+  Play,
   RefreshCw,
   Search,
   SearchX,
   Sparkles,
+  Square,
   Terminal,
   Trash,
   Wand2,
   X,
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { AppIcon } from "../components/AppIcon";
 import { Button, IconButton, Input, Textarea } from "../components/ui/controls";
 import { Badge, Card, EmptyState, KeyCombo, LoadError, PageHeader, Skeleton, Spinner } from "../components/ui/display";
@@ -38,6 +40,87 @@ import type { ClearPeriod, HistoryItem, RecordingItem, RetranscribeResult } from
 import { call } from "../lib/ws";
 
 const PAGE = 50;
+
+// ——— Прослушивание записей голоса ———
+// Один плеер на всё окно: новая запись останавливает прежнюю. Звук — WAV из ядра
+// (recording_audio) в blob: URL; CSP окна разрешает media-src blob:.
+
+let playing: string | null = null;
+let player: HTMLAudioElement | null = null;
+let playerUrl: string | null = null;
+const playListeners = new Set<() => void>();
+
+function setPlaying(id: string | null) {
+  playing = id;
+  playListeners.forEach((f) => f());
+}
+
+function stopPlayback() {
+  player?.pause();
+  player = null;
+  if (playerUrl) URL.revokeObjectURL(playerUrl);
+  playerUrl = null;
+  setPlaying(null);
+}
+
+async function startPlayback(id: string): Promise<void> {
+  stopPlayback();
+  setPlaying(id);
+  try {
+    const r = await call("recording_audio", { id });
+    if (playing !== id) return; // пока грузилось, нажали другую или «Стоп»
+    const bin = atob(r.data);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    playerUrl = URL.createObjectURL(new Blob([bytes], { type: r.mime }));
+    const a = new Audio(playerUrl);
+    player = a;
+    a.onended = () => player === a && stopPlayback();
+    await a.play();
+  } catch (e) {
+    if (playing === id) stopPlayback();
+    throw e;
+  }
+}
+
+function usePlaying(): string | null {
+  return useSyncExternalStore(
+    (f) => {
+      playListeners.add(f);
+      return () => playListeners.delete(f);
+    },
+    () => playing,
+  );
+}
+
+/** Кнопка «Прослушать / Остановить» записи голоса. */
+function PlayButton({ recId, compact = false }: { recId: string; compact?: boolean }) {
+  const toast = useToast();
+  const now = usePlaying();
+  const on = now === recId;
+  const toggle = () => {
+    if (on) return stopPlayback();
+    startPlayback(recId).catch((e: unknown) =>
+      toast({ tone: "error", title: t("history.rec.playError"), description: errorText(e) }),
+    );
+  };
+  const icon = on ? <Square className="size-4" /> : <Play className="size-4" />;
+  if (compact) {
+    const label = on ? t("history.rec.stop") : t("history.actions.play");
+    return (
+      <Tooltip content={label} side="right">
+        <IconButton label={label} size="sm" onClick={toggle}>
+          {icon}
+        </IconButton>
+      </Tooltip>
+    );
+  }
+  return (
+    <Button size="sm" variant="secondary" icon={icon} onClick={toggle}>
+      {on ? t("history.rec.stop") : t("history.rec.play")}
+    </Button>
+  );
+}
 
 export function HistoryPage({ tab }: { tab: string | null }) {
   const current = tab === "draft" ? "draft" : tab === "recordings" ? "recordings" : "feed";
@@ -90,6 +173,23 @@ function Feed() {
   const [moreError, setMoreError] = useState<string | null>(null);
   const reqId = useRef(0);
   const sentinel = useRef<HTMLDivElement>(null);
+  // диктовка → её сохранённая запись голоса (для «Прослушать» в ленте)
+  const [recByHistory, setRecByHistory] = useState<Map<number, string>>(new Map());
+  const [recTick, setRecTick] = useState(0);
+  useEffect(() => {
+    if (status !== "open") return;
+    let alive = true;
+    call("recordings_list")
+      .then((r) => {
+        if (!alive) return;
+        setRecByHistory(new Map(r.items.filter((x) => x.history_id !== null).map((x) => [x.history_id as number, x.id])));
+      })
+      .catch(() => undefined);
+    return () => {
+      alive = false;
+    };
+  }, [status, tick, recTick]);
+  useEffect(() => () => stopPlayback(), []);
 
   const applyQuery = useDebounced((q: string) => setApplied(q.trim()), 250);
 
@@ -151,6 +251,7 @@ function Feed() {
     if (applied) return;
     setItems((xs) => (xs.some((x) => x.id === item.id) ? xs : [item, ...xs]));
     setTotal((n) => n + 1);
+    setRecTick((n) => n + 1);
   });
 
   const locale = useLocale();
@@ -271,7 +372,7 @@ function Feed() {
               <Card padded={false} className="overflow-hidden">
                 <AnimatePresence initial={false}>
                   {g.items.map((it) => (
-                    <HistoryRow key={it.id} item={it} onDelete={() => void remove(it)} />
+                    <HistoryRow key={it.id} item={it} recId={recByHistory.get(it.id)} onDelete={() => void remove(it)} />
                   ))}
                 </AnimatePresence>
               </Card>
@@ -334,7 +435,7 @@ function FeedSkeleton() {
   );
 }
 
-function HistoryRow({ item, onDelete }: { item: HistoryItem; onDelete: () => void }) {
+function HistoryRow({ item, recId, onDelete }: { item: HistoryItem; recId?: string; onDelete: () => void }) {
   const toast = useToast();
   const styleName = useStyleName();
   const [showRaw, setShowRaw] = useState(false);
@@ -452,6 +553,7 @@ function HistoryRow({ item, onDelete }: { item: HistoryItem; onDelete: () => voi
           </div>
         </div>
         <div className="flex shrink-0 flex-col gap-1 opacity-0 transition-opacity duration-150 group-hover:opacity-100 focus-within:opacity-100">
+          {recId && <PlayButton recId={recId} compact />}
           <Tooltip content={copied ? t("common.copied") : t("history.actions.copy")} side="right">
             <IconButton label={t("history.actions.copy")} size="sm" onClick={() => void copy()}>
               {copied ? <Check className="size-4 text-success" /> : <Copy className="size-4" />}
@@ -483,6 +585,7 @@ function Recordings() {
   const confirm = useConfirm();
   const [items, setItems] = useState<RecordingItem[]>([]);
   const [totalBytes, setTotalBytes] = useState(0);
+  useEffect(() => () => stopPlayback(), []);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [tick, setTick] = useState(0);
@@ -667,6 +770,7 @@ function RecordingRow({ item, onDelete, onChanged }: { item: RecordingItem; onDe
             </div>
           )}
           <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
+            <PlayButton recId={item.id} />
             <Button size="sm" variant="soft" icon={<Wand2 className="size-4" />} loading={busy} onClick={() => void transcribe()}>
               {busy ? t("history.rec.transcribing") : t("history.rec.transcribe")}
             </Button>
