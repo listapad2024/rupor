@@ -245,6 +245,7 @@ export function HomePage() {
                 <HotkeyRow label={t("home.hotkeys.cancel")} keys={[hk.cancel]} />
                 {hk.insert_last && <HotkeyRow label={t("home.hotkeys.insertLast")} keys={[hk.insert_last]} />}
                 {hk.copy_last && <HotkeyRow label={t("home.hotkeys.copyLast")} keys={[hk.copy_last]} />}
+                {hk.convert_layout && <HotkeyRow label={t("home.hotkeys.convertLayout")} keys={[hk.convert_layout]} />}
               </div>
             ) : (
               <Skeleton className="h-32 w-full" />

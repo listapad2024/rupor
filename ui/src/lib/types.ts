@@ -47,6 +47,8 @@ export interface CoreHotkeys {
   insert_last: string;
   /** Сочетание «Скопировать последнее» (ctrl+alt+shift+c), "" — выключено. */
   copy_last: string;
+  /** Сочетание «Сменить раскладку выделенного» (ctrl+alt+shift+l), "" — выключено. */
+  convert_layout: string;
 }
 
 export interface CoreState {
@@ -167,6 +169,7 @@ export interface Settings {
   /** Сочетания клавиш вида «ctrl+alt+shift+v»; "" — выключено. */
   insert_last_hotkey: string;
   copy_last_hotkey: string;
+  convert_layout_hotkey: string;
   /** Кнопка мыши для диктовки: "" — нет, middle — колёсико, x1/x2 — боковые. */
   mouse_button: MouseButton;
 

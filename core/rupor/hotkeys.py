@@ -22,8 +22,8 @@
 автомат принял бы за автоповтор, но между ним и прошлым нажатием больше LOST_UP_MS, —
 это новое нажатие; прежняя запись отменяется (CANCEL), и начинается новая.
 
-Отдельно — сочетания «Вставить последнее» и «Скопировать последнее» (например,
-ctrl+alt+shift+v): основная клавиша сочетания проглатывается.
+Отдельно — сочетания «Вставить последнее», «Скопировать последнее» и «Сменить раскладку
+выделенного» (например, ctrl+alt+shift+v): основная клавиша сочетания проглатывается.
 """
 from __future__ import annotations
 
@@ -129,6 +129,7 @@ class Kind(Enum):
     COMMAND = auto()     # эта запись — инструкция командного режима
     INSERT_LAST = auto()  # сочетание «Вставить последнее»
     COPY_LAST = auto()    # сочетание «Скопировать последнее»
+    CONVERT_LAYOUT = auto()  # сочетание «Сменить раскладку выделенного»
 
 
 @dataclass(frozen=True)
@@ -264,7 +265,8 @@ class GestureMachine:
     def __init__(self, ptt: "KeySpec | tuple[KeyGroup, ...]", broadcast_mod: KeySpec,
                  cancel: KeySpec, tap_max_ms: int = 250, double_tap_ms: int = 400,
                  command_mod: KeySpec | None = None,
-                 insert_last: Chord | None = None, copy_last: Chord | None = None) -> None:
+                 insert_last: Chord | None = None, copy_last: Chord | None = None,
+                 convert_layout: Chord | None = None) -> None:
         self._lock = threading.Lock()
         self.state = _S.IDLE
         self._held: set[int] = set()
@@ -283,12 +285,12 @@ class GestureMachine:
         self.presses = 0
         self._chords: list[tuple[Kind, Chord]] = []
         self._apply(ptt, broadcast_mod, cancel, tap_max_ms, double_tap_ms, command_mod,
-                    insert_last, copy_last)
+                    insert_last, copy_last, convert_layout)
 
     def _apply(self, ptt: "KeySpec | tuple[KeyGroup, ...]", broadcast_mod: KeySpec,
                cancel: KeySpec, tap_max_ms: int, double_tap_ms: int,
                command_mod: KeySpec | None, insert_last: Chord | None,
-               copy_last: Chord | None) -> None:
+               copy_last: Chord | None, convert_layout: Chord | None = None) -> None:
         self.ptt_groups = _as_groups(ptt)
         self.ptt_vks: KeyGroup = frozenset().union(*self.ptt_groups)
         self.bmod = _as_group(broadcast_mod)
@@ -296,17 +298,19 @@ class GestureMachine:
         self.cmod = None if command_mod is None else _as_group(command_mod)
         self._gesture_mods: KeyGroup = self.bmod | (self.cmod or frozenset())
         self.tap_max, self.double_tap = tap_max_ms, double_tap_ms
-        pairs = ((Kind.INSERT_LAST, insert_last), (Kind.COPY_LAST, copy_last))
+        pairs = ((Kind.INSERT_LAST, insert_last), (Kind.COPY_LAST, copy_last),
+                 (Kind.CONVERT_LAYOUT, convert_layout))
         self._chords = [(k, c) for k, c in pairs if c is not None]
 
     def configure(self, ptt: "KeySpec | tuple[KeyGroup, ...]", broadcast_mod: KeySpec,
                   cancel: KeySpec, tap_max_ms: int, double_tap_ms: int,
                   command_mod: KeySpec | None = None,
-                  insert_last: Chord | None = None, copy_last: Chord | None = None) -> None:
+                  insert_last: Chord | None = None, copy_last: Chord | None = None,
+                  convert_layout: Chord | None = None) -> None:
         """Новые хоткеи на лету (из настроек). Незавершённый жест сбрасывается."""
         with self._lock:
             self._apply(ptt, broadcast_mod, cancel, tap_max_ms, double_tap_ms, command_mod,
-                        insert_last, copy_last)
+                        insert_last, copy_last, convert_layout)
             self.state = _S.IDLE
             self._last_tap_up = None
 

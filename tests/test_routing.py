@@ -102,6 +102,8 @@ def test_apply_patch_ok_and_changed_keys() -> None:
     ({"app_rules": {"c:\\a.exe": {"insert_mode": None, "style": None}}}, "имя процесса"),
     ({"insert_last_hotkey": "v"}, "Вставить последнее"),
     ({"copy_last_hotkey": "ctrl+alt+shift+v"}, "совпадают"),
+    ({"convert_layout_hotkey": "shift+alt+ctrl+c"}, "совпадают"),   # то же, другой порядок
+    ({"convert_layout_hotkey": "l"}, "Сменить раскладку"),
     ({"ollama_url": "localhost:11434"}, "Адрес Ollama"),
     ({"terms": "ClickHouse"}, "Термины"),
 ])
