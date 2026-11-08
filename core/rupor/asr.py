@@ -79,6 +79,83 @@ REPEAT_MIN_CHARS = 40
 # 2.4 и без всякого повтора — так длинная диктовка целиком уходила в «мусор».
 REPEAT_WINDOW = 400
 SALVAGE_MIN_WORDS = 4      # оба прохода — мусор, но после чистки осталось столько слов — вставить
+# Короткое зацикливание посреди нормальной фразы («типа какого интерфа, какого интерфа,
+# какого интерфа, интерфа, интерфа интерф» — 08.11.2026): сжимаемость всего текста ещё
+# обычная, а Whisper (часто отравленный подсказкой) уже крутит одно и то же до конца
+# записи вместо сказанного. Признак — фраза из нескольких слов подряд LOOP_REPEATS раз
+# или одно слово подряд LOOP_WORD_REPEATS раз; такое распознаётся ещё раз без подсказки.
+LOOP_MAX_UNIT = 6          # самая длинная повторяющаяся фраза, слов
+LOOP_REPEATS = 3           # фраза из 2+ слов подряд столько раз — зацикливание
+LOOP_WORD_REPEATS = 4      # одно слово (от 3 букв) подряд столько раз — зацикливание
+# Оба прохода зациклены: повтор, которого человек не скажет, сворачивается до одного раза
+COLLAPSE_REPEATS = 4       # фраза из 2+ слов подряд столько раз и больше
+COLLAPSE_WORD_REPEATS = 6  # одно слово подряд столько раз и больше
+_WORD_RE = re.compile(r"[^\W_]+")
+
+
+def _loop_runs(text: str) -> list[tuple[int, int, int]]:
+    """Повторы подряд в тексте: (первое слово, длина фразы в словах, сколько раз подряд),
+    самые длинные по числу повторённых слов, без пересечений. Сравнение — без регистра и
+    «ё». Повтор одного слова короче 3 букв («да да да») не считается."""
+    words = [m.group().casefold().replace("ё", "е") for m in _WORD_RE.finditer(text)]
+    runs: list[tuple[int, int, int]] = []
+    i = 0
+    while i < len(words):
+        best: tuple[int, int] | None = None   # (длина фразы, повторов)
+        for n in range(1, LOOP_MAX_UNIT + 1):
+            if i + 2 * n > len(words):
+                break
+            unit = words[i:i + n]
+            if (n == 1 and len(unit[0]) < 3) or (n > 1 and len(set(unit)) == 1):
+                continue    # «да да да»; фраза из одного слова — это повтор слова (n = 1)
+            k = 1
+            while words[i + k * n:i + (k + 1) * n] == unit:
+                k += 1
+            if k >= 2 and (best is None or k * n > best[0] * best[1]):
+                best = (n, k)
+        if best is None:
+            i += 1
+            continue
+        n, k = best
+        runs.append((i, n, k))
+        i += n * k
+    return runs
+
+
+def _is_loop(n: int, k: int) -> bool:
+    return k >= (LOOP_WORD_REPEATS if n == 1 else LOOP_REPEATS)
+
+
+def looping(text: str) -> bool:
+    """Whisper зациклился: фраза из 2+ слов LOOP_REPEATS раз подряд или одно слово
+    LOOP_WORD_REPEATS раз подряд."""
+    return any(_is_loop(n, k) for _i, n, k in _loop_runs(text))
+
+
+def loop_words(text: str) -> int:
+    """Сколько слов текста — лишние повторы зацикливания (меньше — текст лучше)."""
+    return sum(n * (k - 1) for _i, n, k in _loop_runs(text) if _is_loop(n, k))
+
+
+def collapse_loops(text: str) -> str:
+    """Свернуть повторы, которых человек не говорит (фраза из 2+ слов COLLAPSE_REPEATS раз
+    подряд, одно слово COLLAPSE_WORD_REPEATS раз), до одного раза. Остальной текст —
+    как был, с исходной пунктуацией и регистром."""
+    spans = [m.span() for m in _WORD_RE.finditer(text)]
+    cut: list[tuple[int, int]] = []
+    for i, n, k in _loop_runs(text):
+        if k >= (COLLAPSE_WORD_REPEATS if n == 1 else COLLAPSE_REPEATS):
+            cut.append((spans[i + n - 1][1], spans[i + n * k - 1][1]))
+    if not cut:
+        return text
+    out, pos = [], 0
+    for a, b in cut:
+        out.append(text[pos:a])
+        pos = b
+    out.append(text[pos:])
+    res = "".join(out)
+    res = re.sub(r"\s+([,.!?;:])", r"\1", res)
+    return re.sub(r"\s{2,}", " ", res).strip()
 
 
 def _foreign(text: str) -> bool:
@@ -402,12 +479,22 @@ class Recognizer:
         просто неуверенный — из двух берётся более уверенный, мусорный повтор не берётся."""
         bad = garbage_reason(text)
         guessed = guessing(stats)
-        if not (bad or guessed or low_confidence(stats)):
+        loop = bad is None and looping(text)
+        if not (bad or guessed or loop or low_confidence(stats)):
             return text
         log.warning("Распознавание сомнительное (%s) — повторяю без подсказки",
-                    bad or ("угадывание" if guessed else "низкая уверенность"))
+                    bad or ("угадывание" if guessed else "зацикливание" if loop
+                            else "низкая уверенность"))
         text2, stats2 = self._decode(audio, lang, None, guess=False)
         again = garbage_reason(text2)
+        if loop and not again and not guessed:
+            # Без подсказки тоже повтор — скорее всего его и правда сказали (или звук такой):
+            # берётся проход с меньшим повтором, нечеловеческие повторы сворачиваются
+            if looping(text2):
+                best = text2 if loop_words(text2) <= loop_words(text) else text
+                log.warning("Повтор без подсказки тоже зациклен — сворачиваю повторы")
+                return collapse_loops(best)
+            return text2
         if again:
             if bad or guessed:
                 # Длинная диктовка с одним «иероглифом» — не мусор целиком: спасти текст
@@ -419,9 +506,9 @@ class Recognizer:
                         return saved
                 log.warning("Повтор тоже мусор (%s) — текст не вставляю", again)
                 return ""
-            return text
+            return collapse_loops(text)
         if bad or guessed or _mean(stats2) >= _mean(stats):
-            return text2
+            return collapse_loops(text2)
         return text
 
     def _decode(self, audio: np.ndarray, lang: str, prompt: str | None, guess: bool

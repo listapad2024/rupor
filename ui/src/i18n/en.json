@@ -365,8 +365,10 @@
       "play": "Play the recording",
       "copy": "Copy",
       "reinsert": "Insert again",
-      "delete": "Delete"
+      "delete": "Delete",
+      "retranscribe": "Transcribe again"
     },
+    "retranscribed": "Transcribed again — the new text is at the top of the feed and in “Paste last”",
     "draft": {
       "hint": "Dictate right here: click into the field and hold",
       "saving": "Saving…",
