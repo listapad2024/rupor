@@ -1,6 +1,6 @@
 [project]
 name = "rupor"
-version = "0.6.0"
+version = "0.6.1"
 description = "Рупор — локальная голосовая диктовка для Windows (ядро)"
 license = "MIT"
 license-files = ["LICENSE"]
