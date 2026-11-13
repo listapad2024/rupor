@@ -99,6 +99,25 @@ def anthropic_price(model: str) -> tuple[float, float] | None:
 # Модели Anthropic, которые не принимают temperature/top_p (API отвечает 400)
 _NO_SAMPLING_RE = re.compile(r"^claude-(?:opus-4-[78]|opus-5|sonnet-5|haiku-5|fable|mythos)")
 
+# Новые модели Anthropic по умолчанию «размышляют» (adaptive thinking), и размышления тратят
+# тот же лимит max_tokens, что и ответ: на длинной диктовке модель могла израсходовать лимит
+# ещё до текста и вернуть stop_reason=max_tokens. Очистке и переводу размышления не нужны.
+# У этих моделей размышления выключаются (при усилии по умолчанию — medium/high):
+_THINKING_OFF_RE = re.compile(r"^claude-(?:haiku-5|sonnet-5(?!-5)|opus-5(?!-5))")
+# …а у этих выключить нельзя (400) — только снизить усилие и дать запас лимита:
+_THINKING_ALWAYS_RE = re.compile(r"^claude-(?:opus-5-5|sonnet-5-5|fable|mythos)")
+THINKING_HEADROOM_TOKENS = 4096
+
+
+def anthropic_thinking(model: str, max_tokens: int) -> tuple[dict[str, Any], int]:
+    """Поля тела запроса Anthropic про размышления и итоговый max_tokens для модели."""
+    m = (model or "").strip().lower()
+    if _THINKING_OFF_RE.match(m):
+        return {"thinking": {"type": "disabled"}}, max_tokens
+    if _THINKING_ALWAYS_RE.match(m):
+        return {"output_config": {"effort": "low"}}, max_tokens + THINKING_HEADROOM_TOKENS
+    return {}, max_tokens
+
 # ---------- промпты ----------
 
 BASE_PROMPT = """\
@@ -670,7 +689,14 @@ def _estimate_tokens(text: str) -> int:
 
 
 def _max_tokens(text: str) -> int:
-    return min(16000, max(300, 2 * _estimate_tokens(text)))
+    # Лимит — потолок, а не цена: платим только за то, что модель написала. Поэтому запас
+    # щедрый — вдвое больше оценки входа плюс 256, но не меньше 1024.
+    return min(16000, max(1024, 2 * _estimate_tokens(text) + 256))
+
+
+def _retry_max_tokens(max_tokens: int) -> int:
+    """Лимит для повтора после обрезанного ответа."""
+    return min(32000, max_tokens * 4)
 
 
 # ---------- провайдеры ----------
@@ -761,11 +787,13 @@ def _openrouter(system: str, user: str, s: object, key: str, timeout: float,
 def _anthropic(system: str, user: str, s: object, key: str, timeout: float,
                max_tokens: int) -> AIResult:
     model = _str_setting(s, "anthropic_model")
+    extra, max_tokens = anthropic_thinking(model, max_tokens)
     body: dict[str, Any] = {
         "model": model,
         "max_tokens": max_tokens,
         "system": system,
         "messages": [{"role": "user", "content": user}],
+        **extra,
     }
     if not _NO_SAMPLING_RE.match(model):  # у новых моделей temperature убран (ответ 400)
         body["temperature"] = 0
@@ -932,7 +960,18 @@ def cleanup(text: str, style: str, s: Settings, dictionary_terms: list[str],
     lang = text_language(src, language)
     system = build_system_prompt(style, dictionary_terms, lang)
     user = f"<dictation>\n{src}\n</dictation>"
-    res = _call(provider, system, user, s, timeout, _max_tokens(src), api_key)
+    limit = _max_tokens(src)
+    try:
+        res = _call(provider, system, user, s, timeout, limit, api_key)
+    except AIError as e:
+        if e.kind != "truncated":
+            raise
+        # ответ упёрся в лимит — один повтор с большим запасом; не вышло — движок вставит
+        # распознанный текст без обработки (диктовка не теряется)
+        retry = _retry_max_tokens(limit)
+        log.warning("ИИ-очистка: ответ обрезан по лимиту %d токенов — повторяю с лимитом %d",
+                    limit, retry)
+        res = _call(provider, system, user, s, timeout, retry, api_key)
     out = clean_output(res.text, src)
     stripped = strip_model_notes(out, src)
     if stripped != out:

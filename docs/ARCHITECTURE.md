@@ -560,7 +560,7 @@ def check_openrouter_key(key: str) -> dict                                      
 Язык промптов — см. «Локализация». Тексты `AIError` и ответа `check_openrouter_key` — через
 `i18n.tr` (ключи `ai.*`).
 HTTP — `urllib.request` со своим `User-Agent: Rupor/<version>` (Cloudflare режет UA urllib).
-OpenRouter: `temperature=0`, `max_tokens = max(300, 2 * оценка_токенов_входа)`, `provider.order`
+OpenRouter: `temperature=0`, `max_tokens = max(1024, 2 * оценка_токенов_входа + 256)`, `provider.order`
 если задан, `usage: {include: true}` → `cost_usd` из `usage.cost`.
 `claude -p`: `subprocess.run(["claude", "-p", *CLI_FLAGS], input=prompt, timeout=30,
 capture_output=True, text=True, encoding="utf-8", creationflags=CREATE_NO_WINDOW)` — промпт
