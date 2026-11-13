@@ -191,7 +191,8 @@ def test_bad_model_answer_is_not_retried_with_another_key(net: Net) -> None:
     s = settings([entry("anthropic", "anthropic"), entry("anthropic-2", "anthropic")])
     with pytest.raises(ai.AIError) as ei:
         ai.cleanup(RAW, "normal", s, [])
-    assert ei.value.kind == "truncated" and net.calls == [ANT1]
+    # обрезанный ответ очистка повторяет с большим лимитом, но тем же ключом
+    assert ei.value.kind == "truncated" and net.calls == [ANT1, ANT1]
 
 
 def test_command_mode_uses_the_same_chain(net: Net) -> None:

@@ -25,6 +25,7 @@ from typing import Any, Callable
 import numpy as np
 
 from . import fetch, i18n
+from .textproc import strip_tail_hallucinations
 from .config import Settings
 
 fetch.add_cuda_dll_dirs()  # до импорта faster-whisper/ctranslate2
@@ -390,6 +391,10 @@ class Recognizer:
             prompt = adapt_prompt(prompt, lang)
             text, stats = self._decode(audio, lang, prompt, guess=True)
             text = self._second_opinion(audio, lang, text, stats)
+        tail = strip_tail_hallucinations(text)
+        if tail != text:
+            log.warning("ASR: убрана фраза субтитров в конце (%d симв.)", len(text) - len(tail))
+            text = tail
         ms = (time.perf_counter() - t0) * 1000
         r = Result(text, lang, len(audio) / SAMPLE_RATE, ms)
         log.info("ASR %.1f с аудио → %.0f мс, язык %s, %d симв.", r.audio_s, ms, lang, len(text))

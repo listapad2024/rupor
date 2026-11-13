@@ -600,6 +600,59 @@ def test_anthropic_new_models_without_temperature(rec: Recorder,
     assert "temperature" not in rec.calls[0]["body"]
 
 
+def _ant_ok(req: Any) -> dict[str, Any]:
+    return {"content": [{"type": "text", "text": "Ок."}], "stop_reason": "end_turn",
+            "usage": {"input_tokens": 10, "output_tokens": 2}}
+
+
+@pytest.mark.parametrize("model,thinking,effort,headroom", [
+    ("claude-haiku-5-5", {"type": "disabled"}, None, False),   # размышления выключены
+    ("claude-sonnet-5", {"type": "disabled"}, None, False),
+    ("claude-opus-5", {"type": "disabled"}, None, False),
+    ("claude-opus-5-5", None, "low", True),                     # выключить нельзя — low + запас
+    ("claude-sonnet-5-5", None, "low", True),
+    ("claude-fable-5-2", None, "low", True),
+    ("claude-haiku-4-5", None, None, False),                    # старые — как было
+])
+def test_anthropic_thinking_does_not_eat_the_limit(rec: Recorder,
+                                                   monkeypatch: pytest.MonkeyPatch, model: str,
+                                                   thinking: Any, effort: Any,
+                                                   headroom: bool) -> None:
+    monkeypatch.setattr(ai.credman, "read", lambda t: "sk-ant-api03-zzz")
+    rec.reply = _ant_ok
+    ai.cleanup("проверка связи", "normal",
+               settings(ai_provider="anthropic", anthropic_model=model), [])
+    b = rec.calls[0]["body"]
+    assert b.get("thinking") == thinking
+    assert (b.get("output_config") or {}).get("effort") == effort
+    base = ai._max_tokens("проверка связи")
+    assert b["max_tokens"] == base + (ai.THINKING_HEADROOM_TOKENS if headroom else 0)
+
+
+def test_cleanup_drops_subtitle_tail(rec: Recorder) -> None:
+    rec.reply = lambda req: or_reply("Надо обновить дашборд в Metabase. Продолжение следует...")
+    assert ai.cleanup(RAW, "normal", settings(), []).text == "Надо обновить дашборд в Metabase."
+
+
+def test_cleanup_retries_truncated_with_bigger_limit(rec: Recorder,
+                                                     monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(ai.credman, "read", lambda t: "sk-ant-api03-zzz")
+    replies = iter([{"content": [{"type": "text", "text": "Над"}], "stop_reason": "max_tokens"},
+                    {"content": [{"type": "text", "text": "Надо обновить дашборд."}],
+                     "stop_reason": "end_turn"}])
+    rec.reply = lambda req: next(replies)
+    res = ai.cleanup(RAW, "normal",
+                     settings(ai_provider="anthropic", anthropic_model="claude-haiku-5-5"), [])
+    assert res.text == "Надо обновить дашборд."
+    assert len(rec.calls) == 2
+    assert rec.calls[1]["body"]["max_tokens"] > rec.calls[0]["body"]["max_tokens"]
+
+
+def test_max_tokens_has_generous_floor() -> None:
+    assert ai._max_tokens("коротко") >= 1024
+    assert ai._max_tokens("я" * 788) >= 2 * ai._estimate_tokens("я" * 788) + 256
+
+
 def test_anthropic_no_key(rec: Recorder, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(ai.credman, "read", lambda t: None)
     with pytest.raises(ai.AIError, match="Нет ключа Anthropic"):

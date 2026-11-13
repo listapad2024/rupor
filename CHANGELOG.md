@@ -6,6 +6,32 @@ All notable changes to Rupor are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.6.3] — 2026-11-13
+
+### Fixed
+
+- **"Продолжение следует..." at the end of a dictation.** Whisper learned on subtitles, and on
+  the silence at the end of a recording it sometimes "hears" their service phrases and appends
+  them to real speech: "Продолжение следует...", "Спасибо за просмотр", "Субтитры сделал
+  DimaTorzok", "Thanks for watching". Such phrases are now cut off the end of the recognised
+  text (a recording that is nothing but such a phrase was already dropped). The same tail is
+  removed if the AI cleanup adds it. A phrase in the middle of the text is left alone.
+
+## [0.6.2] — 2026-11-13
+
+### Fixed
+
+- **"The AI response was cut off at the token limit" on long dictations.** Newer Anthropic
+  models (Claude Haiku 5.5 and others) "think" before answering by default, and that thinking
+  is taken from the same answer limit. On a dictation of a minute or more the model could use
+  the whole limit on thinking and send back only a scrap, so Rupor pasted the raw text without
+  cleanup. Cleanup and command mode now turn thinking off on the models that allow
+  it (Haiku 5.5, Sonnet 5, Opus 5); on the ones that can't (Opus 5.5, Sonnet 5.5, Fable) they ask
+  for low effort and add 4096 tokens of headroom. The answer limit is now at least 1024 tokens,
+  and if an answer is still cut off, cleanup retries once with a four times larger limit; only
+  if that fails too is the raw text pasted, as before. You pay only for tokens actually
+  written, so the larger limit costs nothing extra.
+
 ## [0.6.0] — 2026-11-08
 
 ### Added

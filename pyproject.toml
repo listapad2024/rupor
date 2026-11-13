@@ -1,6 +1,6 @@
 [project]
 name = "rupor"
-version = "0.6.0"
+version = "0.6.3"
 description = "Рупор — локальная голосовая диктовка для Windows (ядро)"
 license = "MIT"
 license-files = ["LICENSE"]
@@ -53,3 +53,9 @@ mypy_path = "core"
 module = ["faster_whisper.*", "sounddevice.*", "pystray.*", "ctranslate2.*", "comtypes.*",
           "huggingface_hub.*", "PyInstaller.*"]
 ignore_missing_imports = true
+
+# comtypes 1.5 принёс свои (неполные) подсказки типов: интерфейсы COM описываются динамически
+# (_methods_), и mypy их не видит. Считаем comtypes нетипизированным, как было до 1.5.
+[[tool.mypy.overrides]]
+module = ["comtypes", "comtypes.*"]
+follow_imports = "skip"
