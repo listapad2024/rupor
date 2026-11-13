@@ -6,6 +6,30 @@ All notable changes to Rupor are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.7.0] — 2026-11-13
+
+### Added
+
+- **Speech page: your filler words.** A new *Speech* page in the sidebar counts filler words
+  and phrases ("ну", "короче", "как бы", "типа", "в общем", "эээ", "um", "you know"…) so you
+  can work on how you talk. They are counted from the **raw** speech-recognition text of each
+  dictation, before the dictionary and AI cleanup (cleanup removes fillers), locally and for
+  free. The page shows fillers per 100 words with the trend against the previous period, the
+  total, the top filler, a per-day chart and the full top list with counts and per-100 rates,
+  for 7 / 30 / 90 days or all time. Stats are kept per day in their own tables, so history
+  retention and clearing history don't erase them. The first time the page opens, past
+  dictations from history are counted too.
+- **Editable filler list.** Add your own words and phrases, remove ones you actually use with
+  meaning, restore the defaults, or recount past dictations from history with the new list.
+  Drawn-out sounds are merged ("э", "э-э-э", "эмм" → "эээ"; "uhh" → "uh"). Counting can be
+  turned off.
+- **Find my phrases with AI** (optional, one paid request to your cleanup model): the AI reads up
+  to 80 recent dictations from history and suggests habitual phrases that aren't in the list
+  yet; click one to add it. Counting itself stays local.
+- Note on the page: Whisper often drops "uh/um" and broken-off words by itself, so hesitation
+  sounds show up less than in real speech; and the counter doesn't understand meaning ("как бы
+  ты поступил" also counts as "как бы").
+
 ## [0.6.0] — 2026-11-08
 
 ### Added

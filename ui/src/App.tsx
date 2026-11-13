@@ -49,6 +49,7 @@ import { HistoryPage } from "./pages/History";
 import { HomePage } from "./pages/Home";
 import { SettingsPage } from "./pages/Settings";
 import { SnippetsPage } from "./pages/Snippets";
+import { SpeechPage } from "./pages/Speech";
 import { StylesPage } from "./pages/Styles";
 import { Wizard } from "./wizard/Wizard";
 
@@ -273,6 +274,7 @@ function Bridge({ navigate }: { navigate: (to: string) => void }) {
 const PAGES: Record<Exclude<Route, "wizard">, (p: { sub: string | null }) => ReactNode> = {
   home: () => <HomePage />,
   history: ({ sub }) => <HistoryPage tab={sub} />,
+  speech: () => <SpeechPage />,
   dictionary: ({ sub }) => <DictionaryPage tab={sub} />,
   snippets: () => <SnippetsPage />,
   styles: () => <StylesPage />,

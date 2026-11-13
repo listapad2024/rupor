@@ -201,6 +201,52 @@ export interface Stats {
   daily: DailyWords[];
 }
 
+/** Слова-паразиты: одна фраза за период (fillers_stats.top). */
+export interface FillerTop {
+  phrase: string;
+  count: number;
+  per100: number;
+  /** Та же фраза на 100 слов в предыдущем таком же периоде; null — сравнивать не с чем. */
+  prev_per100: number | null;
+}
+
+export interface FillerDay {
+  date: string;
+  words: number;
+  fillers: number;
+  per100: number;
+}
+
+/** Статистика паразитов по сырому тексту распознавания (до словаря и ИИ-очистки). */
+export interface FillerStats {
+  enabled: boolean;
+  /** 7, 30, 90 или 0 — всё время. */
+  days: number;
+  words: number;
+  dictations: number;
+  fillers: number;
+  per100: number;
+  prev_per100: number | null;
+  top: FillerTop[];
+  /** По дням (не больше 90 последних дней периода). */
+  daily: FillerDay[];
+  /** Первый день со статистикой (ISO) или null. */
+  since: string | null;
+}
+
+export interface FillerConfig {
+  enabled: boolean;
+  phrases: string[];
+  defaults: string[];
+}
+
+export interface FillerSuggestion {
+  phrase: string;
+  /** Сколько раз фраза нашлась в разобранных диктовках (посчитано локально). */
+  count: number;
+  example: string;
+}
+
 export interface AppRuleSetting {
   insert_mode: InsertMode | null;
   style: string | null;
@@ -557,6 +603,16 @@ export interface CommandMap {
     result: { dictionary: number; snippets: number };
   };
   stats_get: { args: void; result: Stats };
+  fillers_stats: { args: { days?: number }; result: FillerStats };
+  fillers_config: { args: void; result: FillerConfig };
+  /** phrases — весь список целиком (нормализуется ядром), enabled — считать ли. */
+  fillers_config_set: { args: { phrases?: string[]; enabled?: boolean }; result: FillerConfig };
+  fillers_defaults: { args: void; result: FillerConfig };
+  /** Пересчитать по истории текущим списком (дни без истории не трогаются). */
+  fillers_rebuild: { args: void; result: { days: number; dictations: number } };
+  fillers_reset: { args: void; result: null };
+  /** ИИ ищет личные обороты в свежих диктовках (платно, по кнопке). */
+  fillers_ai_suggest: { args: void; result: { items: FillerSuggestion[]; sampled: number } };
   draft_get: { args: void; result: { text: string } };
   draft_set: { args: { text: string }; result: null };
   styles_list: { args: void; result: StyleInfo[] };
