@@ -5,6 +5,7 @@
 // (notice, ошибки, стили) — на текущем языке интерфейса, как у настоящего ядра.
 import dataRu from "./mock-data.json";
 import dataEn from "./mock-data.en.json";
+import { fillersMock } from "./mockFillers";
 import { navigatorLocale, type Locale } from "../i18n";
 import { fmtDecimal, titleRuleKey } from "./format";
 import { BackendError, EventHub, type ArgsTuple, type Backend } from "./hub";
@@ -1676,6 +1677,16 @@ export class MockBackend implements Backend {
         }
         return { dictionary: nd, snippets: ns };
       }
+      case "fillers_stats":
+      case "fillers_config":
+      case "fillers_config_set":
+      case "fillers_defaults":
+      case "fillers_rebuild":
+      case "fillers_reset":
+      case "fillers_ai_suggest":
+        return sleep(cmd === "fillers_ai_suggest" ? 900 : 150).then(() =>
+          fillersMock(cmd, rawArgs, this.history, [...DATA.ru.fillers, ...DATA.en.fillers]),
+        );
       case "stats_get":
         return sleep(180).then(() => this.stats());
       case "draft_get":

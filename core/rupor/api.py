@@ -17,6 +17,7 @@ import time
 from typing import Any, Callable
 
 from . import ai, broadcast, config, credman, fetch, keys, recordings, winutil
+from . import fillers
 from .config import app_dir
 from .engine import Engine, history_display, styles_localized
 from .i18n import tr
@@ -143,6 +144,14 @@ class Api:
             "export_data": lambda a: self.storage.export_data(),
             "import_data": self._import_data,
             "stats_get": lambda a: self.storage.stats(),
+            "fillers_stats": lambda a: fillers.stats(self.storage, _int(a, "days", 30)),
+            "fillers_config": lambda a: fillers.config_out(self.storage),
+            "fillers_config_set": lambda a: fillers.set_config(
+                self.storage, a.get("phrases"), a.get("enabled")),
+            "fillers_defaults": lambda a: fillers.restore_defaults(self.storage),
+            "fillers_rebuild": lambda a: fillers.rebuild(self.storage),
+            "fillers_reset": lambda a: fillers.reset(self.storage),
+            "fillers_ai_suggest": lambda a: fillers.ai_suggest(self.e),
             "draft_get": lambda a: {"text": self.storage.kv_get("draft", "")},
             "draft_set": self._draft_set,
             "styles_list": lambda a: styles_localized(),

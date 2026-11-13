@@ -6,6 +6,7 @@
   "nav": {
     "home": "Home",
     "history": "History",
+    "speech": "Speech",
     "dictionary": "Dictionary",
     "snippets": "Snippets",
     "styles": "Styles",
@@ -1269,5 +1270,83 @@
       "no_key": "no key",
       "bad_request": "request error"
     }
+  },
+  "speech": {
+    "title": "Speech",
+    "subtitle": "Filler words in your speech. Counted from the raw speech-recognition text, before AI cleanup, locally and for free.",
+    "period": {
+      "d7": "7 days",
+      "d30": "30 days",
+      "d90": "90 days",
+      "all": "All time"
+    },
+    "kpi": {
+      "per100": "Per 100 words",
+      "per100Foot": "fillers in every 100 words you say",
+      "total": "Fillers in period",
+      "totalFoot": "out of {words}",
+      "top": "Top filler",
+      "topFoot": "{count} · {per100} per 100 words",
+      "topValue": "“{phrase}”",
+      "topNone": "None found yet"
+    },
+    "trend": {
+      "down": "{x} fewer than the previous period",
+      "up": "{x} more than the previous period",
+      "same": "same as the previous period",
+      "none": "nothing to compare with yet"
+    },
+    "chart": {
+      "title": "Fillers per 100 words by day",
+      "tip": "{per100} per 100 words · {fillers} of {words}",
+      "emptyTitle": "No data yet",
+      "emptyText": "Just dictate as usual: the stats build up with every dictation."
+    },
+    "topList": {
+      "title": "Most frequent",
+      "hint": "How many times it came up in the period and how much that is per 100 words",
+      "showAll": "Show all ({n})",
+      "showLess": "Show less",
+      "colCount": "Count",
+      "colPer100": "Per 100 words",
+      "times": { "one": "{n} time", "other": "{n} times" },
+      "empty": "No fillers in this period. Either great speech or the list needs more phrases."
+    },
+    "list": {
+      "title": "Filler list",
+      "hint": "What counts as a filler. Add your own words and phrases: Enter or a comma starts a new one.",
+      "enabled": "Count filler words",
+      "enabledHint": "Turn off if you don't need the stats: new dictations will no longer be counted.",
+      "placeholder": "Add a word or phrase…",
+      "save": "Save list",
+      "saved": "List saved",
+      "savedRebuild": "Recount past dictations with the new list?",
+      "defaults": "Restore defaults",
+      "rebuild": "Recount from history",
+      "rebuilt": "Recounted: {days}, {dictations}",
+      "count": "{n} in the list"
+    },
+    "ai": {
+      "title": "Find my phrases with AI",
+      "hint": "The AI reads up to 80 recent dictations from history and suggests phrases you repeat out of habit. It is one paid request to your cleanup model; counting stays local.",
+      "run": "Find phrases",
+      "none": "The AI found no new phrases in {n} dictations",
+      "found": "Suggestions from {n} dictations. Click to add to the list:",
+      "add": "Add \"{phrase}\"",
+      "added": "\"{phrase}\" added to the list"
+    },
+    "reset": {
+      "button": "Reset stats",
+      "title": "Reset filler stats?",
+      "body": "All collected numbers will be deleted. The filler list and dictation history stay.",
+      "confirm": "Reset",
+      "done": "Stats reset"
+    },
+    "note": {
+      "whisper": "Whisper often drops \"uh\", \"um\" and broken-off words by itself, so hesitation sounds usually show up less in the stats than in real speech. Words like \"like\", \"basically\", \"you know\" are transcribed reliably.",
+      "meaning": "The counter doesn't understand meaning: \"I like it\" also counts as \"like\". If a word is usually meaningful for you, remove it from the list.",
+      "rebuild": "A new list applies to new dictations. To apply it to past ones, click \"Recount from history\": days with saved history are recounted."
+    },
+    "since": "Stats since {date}"
   }
 }

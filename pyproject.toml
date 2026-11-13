@@ -1,6 +1,6 @@
 [project]
 name = "rupor"
-version = "0.6.0"
+version = "0.7.0"
 description = "Рупор — локальная голосовая диктовка для Windows (ядро)"
 license = "MIT"
 license-files = ["LICENSE"]
@@ -15,7 +15,7 @@ dependencies = [
     "nvidia-cublas-cu12",
     "nvidia-cudnn-cu12>=9,<10",
     "websockets>=13",
-    "comtypes>=1.4",   # UI Automation: обучение словаря на правках (rupor.uia)
+    "comtypes>=1.4,<1.5",   # 1.5 принёс типы, под которые не переписаны duck.py/spell.py; UI Automation: обучение словаря на правках (rupor.uia)
     # 2.x перешёл с httpx на httpx2 (без certifi): fetch._hf_client_factory строит httpx.Client
     "huggingface_hub>=0.21,<2",
 ]

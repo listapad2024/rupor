@@ -109,6 +109,13 @@ URL: `ws://127.0.0.1:<port>/?token=<token>`. Без верного токена 
 | `export_data` | — | `{version: 1, dictionary: [{term, variants}], snippets: [{trigger, text}]}` |
 | `import_data` | `{data: <как export_data>, replace: bool}` | `{dictionary: int, snippets: int}` (сколько добавлено/обновлено) |
 | `stats_get` | — | `Stats` |
+| `fillers_stats` | `{days?: 7\|30\|90\|0 = 30}` | `FillerStats` — слова-паразиты (`fillers.py`) за период и предыдущий такой же (тренд); `0` — всё время. Считаются по **сырому** тексту ASR каждой диктовки (до словаря и ИИ-очистки), в таблицах `filler_daily`/`filler_words` (создаются модулем, вне цепочки миграций; срок хранения и очистка истории их не трогают). Первый вызов сам пересчитывает историю (`fillers_rebuild`) |
+| `fillers_config` | — | `{enabled, phrases: [str], defaults: [str]}` — список (`kv.fillers_list`, нет — `data/fillers_ru.txt` + `fillers_en.txt`) |
+| `fillers_config_set` | `{phrases?: [str], enabled?: bool}` | то же — список целиком, фразы нормализуются (регистр, «ё», тянуть звуки «э-э-э» → «эээ»), до 200 фраз по ≤6 слов |
+| `fillers_defaults` | — | то же — вернуть список по умолчанию |
+| `fillers_rebuild` | — | `{days, dictations}` — пересчитать по истории текущим списком: заменяются только дни, по которым есть история; одинаковый сырой текст в один день — один раз (повторное распознавание); проверка микрофона (`target=test`) не считается |
+| `fillers_reset` | — | `null` — обнулить статистику паразитов (список и история остаются) |
+| `fillers_ai_suggest` | — | `{items: [{phrase, count, example}], sampled}` — ИИ (модель очистки, расход `kind=cleanup`) ищет личные обороты в ≤80 свежих сырых диктовках истории; фразы из списка и те, которых в текстах нет, отбрасываются, `count` считается локально |
 | `draft_get` | — | `{text}` |
 | `draft_set` | `{text}` | `null` |
 | `styles_list` | — | `[{id, name, description}]` (5 встроенных, см. ИИ); `name` и `description` — на языке интерфейса |

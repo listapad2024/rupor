@@ -11,6 +11,7 @@ import {
   Settings,
   ShieldCheck,
   Sparkles,
+  Speech,
   TextQuote,
   WandSparkles,
   Zap,
@@ -31,6 +32,7 @@ import { useToast } from "./ui/toast";
 const NAV: { route: Route; label: TKey; icon: ReactNode }[] = [
   { route: "home", label: "nav.home", icon: <House /> },
   { route: "history", label: "nav.history", icon: <Clock /> },
+  { route: "speech", label: "nav.speech", icon: <Speech /> },
   { route: "dictionary", label: "nav.dictionary", icon: <BookA /> },
   { route: "snippets", label: "nav.snippets", icon: <TextQuote /> },
   { route: "styles", label: "nav.styles", icon: <WandSparkles /> },

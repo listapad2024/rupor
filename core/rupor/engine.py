@@ -57,6 +57,7 @@ import numpy as np
 from . import (ai, audio, broadcast, config, credman, duck, fetch, fuzzy, i18n, inject, keys,
                layout, learn, recommend, sounds, spell, textproc, uia, vocab, winutil)
 from . import _win
+from . import fillers
 from ._win import VK_RIGHT
 from .asr import (SAMPLE_RATE, ModelMissing, Recognizer, Result, cuda_compute_types,
                   cuda_device_count, gpu_info)
@@ -2153,6 +2154,10 @@ class Engine:
                 self.storage.record_stats(words, res.audio_s)
             except Exception:
                 log.exception("Не удалось записать статистику")
+            try:
+                fillers.record(self.storage, raw)   # слова-паразиты — по сырому тексту ASR
+            except Exception:
+                log.exception("Не удалось записать статистику паразитов")
         if not self.s.history_enabled:
             return
         t = job.target
