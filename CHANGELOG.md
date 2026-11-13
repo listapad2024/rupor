@@ -6,6 +6,17 @@ All notable changes to Rupor are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.6.3] — 2026-11-13
+
+### Fixed
+
+- **"Продолжение следует..." at the end of a dictation.** Whisper learned on subtitles, and on
+  the silence at the end of a recording it sometimes "hears" their service phrases and appends
+  them to real speech: "Продолжение следует...", "Спасибо за просмотр", "Субтитры сделал
+  DimaTorzok", "Thanks for watching". Such phrases are now cut off the end of the recognised
+  text (a recording that is nothing but such a phrase was already dropped). The same tail is
+  removed if the AI cleanup adds it. A phrase in the middle of the text is left alone.
+
 ## [0.6.2] — 2026-11-13
 
 ### Fixed

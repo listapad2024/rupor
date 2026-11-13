@@ -35,6 +35,7 @@ from typing import Any, Callable, TypeVar
 
 from . import credman, i18n, keys
 from .config import CHAIN_PROVIDERS, KEY_PROVIDERS, Settings
+from .textproc import strip_tail_hallucinations
 
 log = logging.getLogger(__name__)
 
@@ -978,6 +979,10 @@ def cleanup(text: str, style: str, s: Settings, dictionary_terms: list[str],
         log.warning("ИИ-очистка: модель дописала примечание от себя (%d симв.) — убрано",
                     len(out) - len(stripped))
         out = stripped
+    tail = strip_tail_hallucinations(out)
+    if tail != out and strip_tail_hallucinations(src) == src:
+        log.warning("ИИ-очистка: модель дописала фразу субтитров в конце — убрано")
+        out = tail
     if not out:
         raise AIError(tr("ai.empty"), "bad_response")
     src_words, out_words = len(src.split()), len(out.split())

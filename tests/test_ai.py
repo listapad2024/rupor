@@ -629,6 +629,11 @@ def test_anthropic_thinking_does_not_eat_the_limit(rec: Recorder,
     assert b["max_tokens"] == base + (ai.THINKING_HEADROOM_TOKENS if headroom else 0)
 
 
+def test_cleanup_drops_subtitle_tail(rec: Recorder) -> None:
+    rec.reply = lambda req: or_reply("Надо обновить дашборд в Metabase. Продолжение следует...")
+    assert ai.cleanup(RAW, "normal", settings(), []).text == "Надо обновить дашборд в Metabase."
+
+
 def test_cleanup_retries_truncated_with_bigger_limit(rec: Recorder,
                                                      monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(ai.credman, "read", lambda t: "sk-ant-api03-zzz")

@@ -416,3 +416,41 @@ def asr_prompt(terms: list[str], items: list[dict[str, Any]], limit_chars: int =
         out.append(t)
         length += add
     return ", ".join(out) + "." if out else None
+
+
+# ---------- служебные фразы субтитров в конце диктовки ----------
+#
+# Whisper учился на субтитрах и на тишине в конце записи «дописывает» их служебные фразы:
+# «Продолжение следует...», «Спасибо за просмотр», «Субтитры сделал DimaTorzok». Целиком такая
+# запись отбрасывается в asr.garbage_reason, а здесь — хвост после настоящей речи.
+TAIL_HALLUCINATIONS = (
+    "продолжение следует", "спасибо за просмотр",
+    "субтитры сделал dimatorzok", "субтитры создавал dimatorzok", "субтитры делал dimatorzok",
+    "редактор субтитров а синецкая корректор а егорова",
+    "to be continued", "thank you for watching", "thanks for watching",
+    "subtitles by the amara org community",
+)
+
+
+def _tail_re(phrase: str) -> re.Pattern[str]:
+    words = [re.escape(w).replace("е", "[её]") for w in phrase.split()]
+    return re.compile(r"(?:^|(?<=[\W_]))" + r"[\W_]+".join(words) + r"[\W_]*$",
+                      re.IGNORECASE)
+
+
+_TAIL_RES = tuple(_tail_re(p) for p in TAIL_HALLUCINATIONS)
+
+
+def strip_tail_hallucinations(text: str) -> str:
+    """Убрать служебные фразы субтитров из конца текста (сколько бы их там ни было подряд).
+    Ничего не нашлось — текст как есть (без изменений, даже пробелов)."""
+    t = text
+    changed = True
+    while changed and t:
+        changed = False
+        for rx in _TAIL_RES:
+            m = rx.search(t)
+            if m:
+                t = t[:m.start()].rstrip(" \t\r\n,;:-–—")
+                changed = True
+    return t if t != text else text
