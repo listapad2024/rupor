@@ -29,6 +29,9 @@
 возвращается, когда запись кончилась (стоп, отмена, выброс, лимит, пауза, смена микрофона
 или хоткеев), при смене duck_mode/duck_level, при выходе (сразу по команде quit — до
 завершения ядра) и в конце сеанса Windows (session_ending, WM_QUERYENDSESSION).
+Голосовые чаты (app_mute_*, appmute.py): у приложений из списка (live chat Codex, ChatGPT)
+выключаются микрофон и звук сразу при нажатии клавиши диктовки (не ждут подтверждения —
+первые слова не уходят в чат) и возвращаются там же, где звук компьютера.
 
 Вставка только туда, где диктовали: если к моменту вставки активно другое окно (или фокус
 ушёл посреди печати), текст не вставляется, а остаётся в «Вставить последнее» и истории.
@@ -54,7 +57,7 @@ from typing import Any, Callable, Protocol
 
 import numpy as np
 
-from . import (ai, audio, broadcast, config, credman, duck, fetch, fuzzy, i18n, inject, keys,
+from . import (ai, appmute, audio, broadcast, config, credman, duck, fetch, fuzzy, i18n, inject, keys,
                layout, learn, recommend, sounds, spell, textproc, uia, vocab, winutil)
 from . import _win
 from ._win import VK_RIGHT
@@ -501,6 +504,7 @@ class Engine:
                  field_reader: FieldReader | None = None,
                  context_reader: ContextReader | None = None,
                  ducker: DuckerLike | None = None,
+                 app_muter: Any = None,
                  recordings: Recordings | None = None) -> None:
         self.s = settings
         # Язык сообщений ядра — из настроек (system → язык Windows); меняется на лету
@@ -579,6 +583,11 @@ class Engine:
         self.ducker: DuckerLike = (ducker if ducker is not None
                                    else duck.Ducker(own_pids=self.own_pids))
         self._ducked = False
+        # Голосовые чаты не слышат диктовку (appmute.py, поток rupor-appmute); _app_muted —
+        # выключение запрошено (под self._lock)
+        self.app_muter: Any = (app_muter if app_muter is not None
+                               else appmute.AppMuter(own_pids=self.own_pids))
+        self._app_muted = False
 
     # ---------- жизненный цикл ----------
 
@@ -613,6 +622,10 @@ class Engine:
             self.ducker.start()
         except Exception:
             log.exception("Звук компьютера: приглушение не запустилось")
+        try:
+            self.app_muter.start()
+        except Exception:
+            log.exception("Голосовые чаты: выключение не запустилось")
         if track_focus:
             self.focus.start()
             fg = winutil.foreground()
@@ -650,6 +663,10 @@ class Engine:
         except Exception:
             log.exception("Звук компьютера: не удалось вернуть громкость при выходе")
         try:
+            self.app_muter.close()
+        except Exception:
+            log.exception("Голосовые чаты: не удалось вернуть звук при выходе")
+        try:
             self.recorder.close()
         except Exception:
             log.exception("Не удалось закрыть микрофон")
@@ -677,7 +694,13 @@ class Engine:
         момент, а оболочка на Tauri — снять его раньше, чем ядро завершится само."""
         with self._lock:
             ducked = self._ducked
+            app_muted = self._app_muted
             self._duck_off()
+        if app_muted:
+            try:
+                self.app_muter.flush(timeout)
+            except Exception:
+                log.exception("Голосовые чаты: не удалось вернуть звук до конца сеанса")
         if not ducked:
             return
         try:
@@ -914,6 +937,9 @@ class Engine:
                 self.notice(tr("eng.mic_unavailable", error=e), level="error")
                 return
             log.info("Жест: запись началась")
+            with self._lock:
+                if self._session is new:
+                    self._app_mute_on()
             self._start_context(new)
             t1 = threading.Timer(CONFIRM_MS / 1000, self._confirm, (new.id,))
             t2 = threading.Timer(LANG_PREFETCH_S, self._prefetch_lang, (new.id,))
@@ -1010,6 +1036,7 @@ class Engine:
         """Запись подтверждена — приглушить звук компьютера (duck_mode, duck_level). Не
         блокирует: Core Audio работает в потоке rupor-duck. Звать под self._lock — тогда
         приглушение не переживёт запись, закончившуюся в другом потоке."""
+        self._app_mute_on()
         mode = self.s.duck_mode
         if mode == duck.OFF:
             return
@@ -1021,6 +1048,7 @@ class Engine:
 
     def _duck_off(self) -> None:
         """Вернуть звук компьютера, если приглушали (звать под self._lock)."""
+        self._app_mute_off()
         if not self._ducked:
             return
         self._ducked = False
@@ -1028,6 +1056,28 @@ class Engine:
             self.ducker.restore()
         except Exception:
             log.exception("Звук компьютера: не удалось вернуть громкость")
+
+    def _app_mute_on(self) -> None:
+        """Выключить микрофон (и звук) голосовых чатов из списка (звать под self._lock)."""
+        s = self.s
+        apps = s.app_mute_apps if s.app_mute_enabled else []
+        if not apps:
+            self._app_mute_off()
+            return
+        try:
+            self.app_muter.mute(apps, s.app_mute_output)
+            self._app_muted = True
+        except Exception:
+            log.exception("Голосовые чаты: не удалось выключить")
+
+    def _app_mute_off(self) -> None:
+        if not self._app_muted:
+            return
+        self._app_muted = False
+        try:
+            self.app_muter.restore()
+        except Exception:
+            log.exception("Голосовые чаты: не удалось вернуть звук")
 
     def _recording_confirmed(self) -> bool:
         sess = self._session
@@ -2722,6 +2772,10 @@ class Engine:
                     self._duck_off()
                 elif self._ducked or self._recording_confirmed():
                     self._duck_on()
+        if {"app_mute_enabled", "app_mute_apps", "app_mute_output"} & set(changed):
+            with self._lock:
+                if self._app_muted:
+                    self._app_mute_on()   # выключено или список пуст — вернёт звук
         if ("first_run_done" in changed and s.first_run_done and not self.rec.loaded
                 and self._model_phase == "error"):
             self._jobs.put(("load", None))

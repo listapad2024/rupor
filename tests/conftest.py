@@ -7,7 +7,8 @@
 - ``duck.default_backend`` → сессий нет (движок по умолчанию приглушает звук компьютера во
   время записи — иначе тест с записью приглушил бы музыку или созвон пользователя).
   Настоящий Core Audio — только в tests/test_duck.py и только на собственной тестовой
-  сессии (отдельный процесс, играющий тишину);
+  сессии (отдельный процесс, играющий тишину); то же ``appmute.default_backend`` (голосовые
+  чаты не выключаются);
 - язык сообщений ядра — русский: «Системный» язык (``i18n.system_language``) считается
   русским на любой машине (CI с английской Windows), после каждого теста язык снова
   «Системный» — тексты ошибок и уведомлений в тестах сверяются по-русски, если тест сам
@@ -20,7 +21,7 @@ from typing import Any
 
 import pytest
 
-from rupor import duck, i18n, keys, uia, winutil
+from rupor import appmute, duck, i18n, keys, uia, winutil
 
 
 @pytest.fixture(autouse=True)
@@ -44,6 +45,7 @@ def _fresh_key_queue() -> Iterator[None]:
 @pytest.fixture(autouse=True)
 def _no_user_audio(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(duck, "default_backend", duck.NullBackend)
+    monkeypatch.setattr(appmute, "default_backend", appmute.NullBackend)
 
 
 @pytest.fixture(autouse=True)

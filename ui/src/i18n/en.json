@@ -737,6 +737,18 @@
         "levelHint": "A share of each app's previous volume: music at 80% will play at {n}%. 0% means silence.",
         "levelValue": "{n}%",
         "note": "Rupor's own sounds and Windows system sounds aren't lowered; audio from a remote computer over RDP is. If you change an app's volume yourself while recording, Rupor leaves it alone. If Rupor closes mid-recording, the volume is restored the next time it starts."
+      },
+      "appMute": {
+        "title": "Voice chats while dictating",
+        "hint": "While you hold the dictation key, Codex live chat, ChatGPT and other voice chats on the list can't hear you: your voice goes only to Rupor. Release it and the chat hears and talks again.",
+        "enabled": "Mute the microphone for voice chats",
+        "enabledHint": "The microphone is muted only for these apps; everything else (and Rupor) hears it as usual.",
+        "output": "Mute their audio too",
+        "outputHint": "The assistant's reply doesn't play over your dictation.",
+        "apps": "Apps",
+        "appsHint": "Program names (exe), separated by commas or new lines. Find the name in Task Manager → Details.",
+        "placeholder": "codex.exe, chatgpt.exe",
+        "note": "A browser (chrome.exe, msedge.exe) is muted as a whole, with all its tabs. If Rupor closes mid-recording, the chat's audio and microphone are restored the next time it starts."
       }
     },
     "insert": {

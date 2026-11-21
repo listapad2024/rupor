@@ -270,6 +270,12 @@ export interface Settings {
   duck_mode: DuckMode;
   /** До какого процента от исходной громкости приглушать (duck_mode="duck"), целое 0–100; по умолчанию 15. */
   duck_level: number;
+  /** Голосовые чаты (live chat Codex, ChatGPT) не слышат диктовку: на время записи их микрофон выключается; по умолчанию true. */
+  app_mute_enabled: boolean;
+  /** Приложения (имена exe), которым выключать микрофон; по умолчанию ["codex.exe", "chatgpt.exe"]. */
+  app_mute_apps: string[];
+  /** Выключать и их звук; по умолчанию true. */
+  app_mute_output: boolean;
 
   sounds: boolean;
   autostart: boolean;
