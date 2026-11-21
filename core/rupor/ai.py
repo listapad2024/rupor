@@ -530,6 +530,31 @@ def strip_model_notes(out: str, source: str) -> str:
     return out
 
 
+def _plain_words(s: str) -> list[str]:
+    return [w.replace("ё", "е") for w in _WORD_RE.findall(s.lower())]
+
+
+def repeats_dictation(out: str, source: str) -> bool:
+    """Модель показала свою работу: диктовка в ответе идёт дважды — как была и исправленная
+    («…текст… Исправлено: … Итог: …текст…»). Признак: один и тот же кусок из нескольких слов
+    подряд встречается в ответе два раза, а в диктовке — один, и ответ при этом хотя бы в
+    полтора раза длиннее диктовки. Фраза, которую человек повторил сам, дважды и в диктовке."""
+    o, s = _plain_words(out), _plain_words(source)
+    if len(s) < 4 or len(o) < len(s) * 1.5:
+        return False
+    n = max(4, min(8, len(s) // 2))
+    in_source: dict[tuple[str, ...], int] = {}
+    for i in range(len(s) - n + 1):
+        g = tuple(s[i:i + n])
+        in_source[g] = in_source.get(g, 0) + 1
+    first: dict[tuple[str, ...], int] = {}
+    for i in range(len(o) - n + 1):
+        g = tuple(o[i:i + n])
+        if i - first.setdefault(g, i) >= n and in_source.get(g, 0) < 2:
+            return True
+    return False
+
+
 def _first_word(s: str) -> str:
     m = re.match(r"\W*(\w+)", s)
     return m.group(1).lower() if m else ""
@@ -1101,6 +1126,11 @@ def cleanup(text: str, style: str, s: Settings, dictionary_terms: list[str],
     if src_words >= 12 and out_words < src_words * 0.25:
         # модель, скорее всего, ответила на текст вместо исправления — не теряем диктовку
         raise AIError(tr("ai.too_short"), "bad_response")
+    if repeats_dictation(out, src):
+        # черновик, пояснение и итог одним ответом — в окно это вставлять нельзя
+        log.warning("ИИ-очистка: модель вернула текст дважды (как был и исправленный) — "
+                    "ответ отвергнут, %d → %d симв.", len(src), len(out))
+        raise AIError(tr("ai.replied"), "bad_response")
     if looks_like_reply(out, src) or out_words > max(src_words * 2, src_words + 20):
         raise AIError(tr("ai.replied"), "bad_response")
     res.text = out

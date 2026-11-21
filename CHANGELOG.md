@@ -33,6 +33,10 @@ All notable changes to Rupor are listed here. The format follows
   followed by a dictation could press the chat's button several times in a row, briefly
   unmuting the chat mid-recording. Now only the latest state is applied, and a tap released
   before the chat window is read doesn't press anything.
+- **AI cleanup sometimes inserted its own working.** Now and then the model returned the
+  dictation twice — as it was and corrected — with a comment in between (“Fixed: … Result:
+  …”), and all of it went into the window. Such a reply is now rejected and the recognized
+  text is inserted as is, with the usual notice.
 
 ## [0.8.2] — 2026-11-21
 

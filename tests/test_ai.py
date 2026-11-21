@@ -568,6 +568,52 @@ def test_cleanup_drops_model_note(rec: Recorder) -> None:
                       []).text == "Во-первых, распознать что-то."
 
 
+# Haiku 5.5, 21.11.2026: вместо исправленного текста — черновик, пояснение и итог
+DRAFT_SRC = "Ну, за коммити тремя отдельными коммитами. А ты куда его? В битхаб коммитишь?"
+DRAFT_OUT = (DRAFT_SRC + "\n\nИсправлено: «Ну» в начале — паразит, удаляю.\n\nИтог:\n"
+             "За коммити тремя отдельными коммитами. А ты куда его? В github коммитишь?")
+
+
+@pytest.mark.parametrize("out, src, repeated", [
+    (DRAFT_OUT, DRAFT_SRC, True),
+    # обычная очистка: текст один раз
+    ("За коммити тремя отдельными коммитами. А ты куда его? В GitHub коммитишь?", DRAFT_SRC, False),
+    # короткая диктовка, тот же сбой
+    ("ну привет как твои дела\n\nИтог: Привет, как твои дела?", "ну привет как твои дела", True),
+    # человек сам повторил фразу — она дважды и в диктовке
+    ("Проверь отчёт до пятницы, пожалуйста. Ещё раз: проверь отчёт до пятницы, пожалуйста.",
+     "проверь отчёт до пятницы пожалуйста ещё раз проверь отчёт до пятницы пожалуйста", False),
+    # повтор распознан с опечаткой, очистка её поправила: ответ не длиннее диктовки
+    ("Нужно сдать отчёт до пятницы. Повторяю: нужно сдать отчёт до пятницы.",
+     "нужно сдать отчёт до пятницы повторяю нужно сдать отчёт до пятнице", False),
+    # список из перечисления — не повтор
+    ("1. Купить хлеб\n2. Купить молоко\n3. Позвонить маме",
+     "во-первых купить хлеб во-вторых купить молоко в-третьих позвонить маме", False),
+    # English
+    ("so basically we need to ship the build today\n\nFixed: removed the filler.\n\nResult:\n"
+     "We need to ship the build today.", "so basically we need to ship the build today", True),
+    # слишком коротко, чтобы судить
+    ("Да. Да.", "да", False),
+])
+def test_repeats_dictation(out: str, src: str, repeated: bool) -> None:
+    assert ai.repeats_dictation(out, src) is repeated
+
+
+def test_cleanup_rejects_draft_and_final_in_one_reply(rec: Recorder,
+                                                      caplog: pytest.LogCaptureFixture) -> None:
+    """Черновик, пояснение и итог одним ответом в окно не вставляются: ответ отвергается,
+    движок вставит распознанный текст как есть."""
+    rec.reply = lambda req: or_reply(DRAFT_OUT)
+    with pytest.raises(ai.AIError) as e:
+        ai.cleanup(DRAFT_SRC, "normal", settings(), [])
+    assert e.value.kind == "bad_response" and "вместо исправления" in str(e.value)
+    assert "вернула текст дважды" in caplog.text
+    # тот же текст, очищенный как положено, проходит
+    rec.reply = lambda req: or_reply("За коммити тремя отдельными коммитами. А ты куда его? "
+                                     "В GitHub коммитишь?")
+    assert ai.cleanup(DRAFT_SRC, "normal", settings(), []).text.endswith("В GitHub коммитишь?")
+
+
 # ---------- Anthropic и Ollama ----------
 
 def test_anthropic_direct(rec: Recorder, monkeypatch: pytest.MonkeyPatch) -> None:
