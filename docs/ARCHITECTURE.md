@@ -393,6 +393,9 @@ type Stats = {
   "history_retention_days": 0,      // 0 — хранить всегда
   "recordings_keep": 30,             // последние записи голоса на диске (0 — не сохранять; до 10000)
   "recordings_max_mb": 300,         // …и не больше стольких МБ на все (20–20000)
+  "speaker_shadow": false,          // теневой счёт «свой / чужой» по голосу: считать и писать в журнал (speaker.py)
+  "speaker_own_score": 5.5,         // счёт AS-norm, от которого метка журнала — «свой» (−50…50)
+  "speaker_alien_score": 3.0,       // …и ниже которого — «чужой»; между — «не уверен»
   "pill_enabled": true,
   "pill_position": null,            // [x, y] физические пиксели или null — снизу по центру
   "theme": "system",                // system | dark | light
@@ -1855,6 +1858,42 @@ exe), фейковая таблица процессов (браузер, нов
 `tests/conftest.py` подменяет `read_mic_usage` → `[]`: остальные тесты настоящий журнал не
 читают.
 
+### Счёт «свой / чужой» по голосу — теневой режим (`speaker.py`)
+
+Настройка `speaker_shadow` (по умолчанию выключена: это биометрия). Рупор по счёту ничего не
+решает и не блокирует: считает и пишет в журнал, чтобы по нему подобрать пороги.
+
+- **Путь фразы** (`voice_embedding`): звук 16 кГц → только речь (silero VAD из faster-whisper,
+  `speech_only`), первые 15 с; речи меньше 1 с — не считаем → `fbank` (80 полос, как
+  kaldi-native-fbank в sherpa-onnx: povey 25/10 мс, 20–7600 Гц, `snip_edges=False`, без dither,
+  звук в [-1, 1]) минус среднее по времени → модель CAM++ (ONNX, `onnxruntime` на процессоре,
+  `Embedder`) → вектор 192 длины 1. Расчёт признаков свой, sherpa-onnx в зависимостях нет:
+  на одном и том же звуке косинус с её эмбеддингом — 1,000000.
+- **Счёт** (`Profile.score`): вектор минус среднее опорной выборки, длина снова 1 → косинус с
+  профилем (`cos`) → AS-norm по 300 ближайшим из опорной выборки:
+  `s' = ½·((s − μp)/σp + (s − μx)/σx)`. Профиль (`build_profile`) — сумма нормированных
+  центроидов источников (голосовые, записи Рупора) с равным весом.
+- **В движке**: `_job_loop` после `_process` (текст уже вставлен) отдаёт звук фразы в
+  `Shadow.submit` — очередь на 8 фраз и поток `rupor-speaker`; переполнение и сбой подсчёта —
+  в лог, диктовку не трогают. Модель и профиль читаются при первой фразе и перечитываются,
+  когда файлы сменились; нет файлов — одно предупреждение в лог.
+- **Файлы** — `%APPDATA%\Rupor\speaker` (в репозитории и в сборке их нет): `model.onnx`
+  (CAM++ `3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced`), `profile.npz` (`center`,
+  `voice`, `cohort`, `meta`), `journal.jsonl` — строка на диктовку, не ротируется:
+  `{ts, time, rec_id, audio_s, speech_s, cos, score, label, ms, profile, emb}`; `label` —
+  `own` (счёт ≥ `speaker_own_score`) / `alien` (< `speaker_alien_score`) / `unsure` / `short`
+  (речи меньше 1,5 с); `emb` — сам вектор, чтобы пересчитать пороги без звука; при речи меньше
+  1 с `cos`, `score` и `emb` — `null`.
+- **Сборка профиля** — отдельный запуск ядра:
+  `rupor-core.exe --speaker-enroll --speaker-cohort ПАПКА [--speaker-voices ПАПКА]
+  [--speaker-model ФАЙЛ] [--speaker-exclude ФАЙЛ.json]` (`speaker.enroll`): голосовые из папки
+  плюс сохранённые записи голоса со статусом `ok`, опорная выборка — чужие голоса (до 1500
+  файлов). Ход — в `speaker\enroll.log` (лог ядра второй процесс не пишет). WAV 16 кГц моно
+  16 бит (записи самого Рупора) читается напрямую; остальные форматы — через PyAV, которого в
+  установщике нет (как и для `--file`): профиль из голосовых в ogg собирается из окружения
+  разработки — `python -m rupor --speaker-enroll …`.
+- Тесты — `tests/test_speaker.py`, `tests/test_speaker_engine.py` (эмбеддинг подменяется).
+
 ### Расход ИИ и баланс (`engine._ai_call`, `storage.ai_usage`)
 
 - Каждый вызов ИИ — очистка (`cleanup`, и «ждать», и «сначала сырой»), командный режим
@@ -2536,7 +2575,7 @@ def selftest() -> tuple[bool, str]             # «локализация: ok (r
 | ИИ | `core/rupor/ai.py`, `core/rupor/credman.py`, `tests/test_ai.py`, `tests/test_credman.py`, `tools/ai_bench.py`, `tools/data/cleanup_cases.json`, `tools/data/cleanup_cases_en.json`, `tools/wer_bench.py`, `tools/data/asr_refs.json` |
 | Локализация | `core/rupor/i18n.py`, `core/rupor/locales/ru.json`, `core/rupor/locales/en.json`, `tests/test_i18n.py`, `tests/test_asr_lang.py`; оболочка — `ui/src-tauri/src/i18n.rs`; интерфейс — `ui/src/i18n/*`, `ui/scripts/check-i18n.mjs`, `ui/src/lib/mock-data.en.json` |
 | Загрузки и сборка | `core/rupor/fetch.py`, `packaging/**`, `build.cmd` |
-| Движок | `core/rupor/engine.py`, `hotkeys.py`, `config.py`, `server.py`, `api.py`, `__main__.py`, `asr.py`, `audio.py`, `tray.py`, `inject.py`, `winutil.py`, `broadcast.py`, `sounds.py`, `learn.py`, `uia.py`, `vocab.py`, `duck.py`, `core/rupor/data/*`, `tests/test_hotkeys.py`, `tests/test_routing.py`, `tests/test_api.py`, `tests/test_learn.py`, `tests/test_learn_engine.py`, `tests/test_learn_storage.py`, `tests/test_uia.py`, `tests/test_packaging_verify.py`, `tests/test_vocab.py`, `tests/test_storage_vocab_usage.py`, `tests/test_title_rules_rdp.py`, `tests/test_api_usage_rules_vocab.py`, `tests/test_duck.py`, `tests/test_duck_engine.py`, `tests/conftest.py`, `tools/ws_smoke.py` |
+| Движок | `core/rupor/engine.py`, `hotkeys.py`, `config.py`, `server.py`, `api.py`, `__main__.py`, `asr.py`, `audio.py`, `tray.py`, `inject.py`, `winutil.py`, `broadcast.py`, `sounds.py`, `speaker.py`, `learn.py`, `uia.py`, `vocab.py`, `duck.py`, `core/rupor/data/*`, `tests/test_hotkeys.py`, `tests/test_routing.py`, `tests/test_api.py`, `tests/test_learn.py`, `tests/test_learn_engine.py`, `tests/test_learn_storage.py`, `tests/test_uia.py`, `tests/test_packaging_verify.py`, `tests/test_vocab.py`, `tests/test_storage_vocab_usage.py`, `tests/test_title_rules_rdp.py`, `tests/test_api_usage_rules_vocab.py`, `tests/test_duck.py`, `tests/test_duck_engine.py`, `tests/conftest.py`, `tools/ws_smoke.py` |
 | Перевод встречи | `core/rupor/meeting.py` (VAD, сеанс, файл расшифровки, заметки), `core/rupor/asr.py` (`ModelGate`, `transcribe_background`), `core/rupor/ai.py` (`translate`, `meeting_title`, `meeting_notes`), `core/rupor/engine.py` (`meeting_*`), `tests/test_meeting.py`, `tests/test_meeting_title.py`, `tests/test_meeting_notes.py`, `tests/test_asr_gate.py`; окно — `ui/src-tauri/src/meeting.rs`, `ui/src-tauri/src/overlay.rs` (окна поверх всех без фокуса), `ui/src-tauri/capabilities/meeting.json`, `ui/meeting.html`, `ui/src/meeting/*` (заметки — `Notes.tsx`), `ui/src/lib/meeting.ts`, `ui/src/lib/notesMd.ts`, `ui/src/lib/notesModels.ts`; «Настройки → Встречи» — `ui/src/pages/Settings.tsx` |
 | Встреча замечается сама | `core/rupor/meeting_detect.py` (журнал микрофона, правило, предложение, подсказка «закончилась»), `core/rupor/engine.py` (`_meeting_detect_*`, `meeting_suggest_answer`, `_pick_meeting_source`), `tests/test_meeting_detect.py` |
 | Захват звука встречи | `core/rupor/loopback.py` (помощник `--loopback`, `LoopbackStream`, источники), `core/rupor/winutil.py` (дерево процессов, описание exe, заголовки окон), `core/rupor/duck.py` (`Ducker.set_excluded`), `tests/test_loopback.py` |

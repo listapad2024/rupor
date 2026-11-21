@@ -60,6 +60,46 @@ def run_file(path: str, do_type: bool, s: config.Settings) -> int:
     return 0
 
 
+def run_speaker_enroll(args: argparse.Namespace) -> int:
+    """Собрать профиль голоса для счёта «свой / чужой» (speaker.enroll) и выйти.
+
+    Это отдельный процесс, часто рядом с работающим Рупором: журнал — свой файл
+    ``speaker/enroll.log`` (лог ядра с ротацией из второго процесса не пишем)."""
+    import json
+    from pathlib import Path
+
+    from . import speaker
+    from .recordings import Recordings
+
+    root = config.app_dir() / "speaker"
+    root.mkdir(parents=True, exist_ok=True)
+    handlers: list[logging.Handler] = [
+        logging.FileHandler(root / "enroll.log", "w", encoding="utf-8")]
+    if sys.stderr is not None:
+        handlers.append(logging.StreamHandler())
+    logging.basicConfig(level=logging.INFO, handlers=handlers,
+                        format="%(asctime)s %(levelname)s %(message)s")
+    if not args.speaker_cohort:
+        log.error("--speaker-enroll: нужна папка опорной выборки (--speaker-cohort)")
+        return 2
+    try:
+        exclude: list[str] = []
+        if args.speaker_exclude:
+            listed = json.loads(Path(args.speaker_exclude).read_text(encoding="utf-8"))
+            exclude = [str(x["file"] if isinstance(x, dict) else x) for x in listed]
+        recs = Recordings(config.app_dir() / "recordings")
+        wavs = [p for m in recs.items() if m.get("status") == "ok"
+                for p in [recs.path(str(m["id"]))] if p is not None]
+        speaker.enroll(root, Path(args.speaker_cohort),
+                       Path(args.speaker_voices) if args.speaker_voices else None, wavs,
+                       Path(args.speaker_model) if args.speaker_model else None, exclude,
+                       progress=log.info)
+    except Exception:
+        log.exception("Профиль голоса не собран")
+        return 1
+    return 0
+
+
 def run_uia_selftest() -> int:
     """Самопроверка сборки. Сборка оконная (stdout нет) — результат в лог: UI Automation
     (тип элемента с фокусом, есть ли у него текст и его длина — без текста), частотные
@@ -173,6 +213,11 @@ def main() -> int:
     ap.add_argument("--uia-selftest", action="store_true", help=tr("cli.help_selftest"))
     ap.add_argument("--loopback", metavar="TARGET", help=tr("cli.help_loopback"))
     ap.add_argument("--parent", type=int, default=0, help=tr("cli.help_parent"))
+    ap.add_argument("--speaker-enroll", action="store_true", help=tr("cli.help_speaker_enroll"))
+    ap.add_argument("--speaker-voices", metavar="DIR", help=tr("cli.help_speaker_voices"))
+    ap.add_argument("--speaker-cohort", metavar="DIR", help=tr("cli.help_speaker_cohort"))
+    ap.add_argument("--speaker-model", metavar="FILE", help=tr("cli.help_speaker_model"))
+    ap.add_argument("--speaker-exclude", metavar="FILE", help=tr("cli.help_speaker_exclude"))
     ap.add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args()
 
@@ -185,6 +230,8 @@ def main() -> int:
     for stream in (sys.stdout, sys.stderr):
         if stream is not None and hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8", errors="replace")
+    if args.speaker_enroll:
+        return run_speaker_enroll(args)
     logsetup.setup(args.verbose)
     if args.uia_selftest:
         return run_uia_selftest()

@@ -51,7 +51,7 @@ mypy_path = "core"
 
 [[tool.mypy.overrides]]
 module = ["faster_whisper.*", "sounddevice.*", "pystray.*", "ctranslate2.*", "comtypes.*",
-          "huggingface_hub.*", "PyInstaller.*"]
+          "huggingface_hub.*", "PyInstaller.*", "onnxruntime.*"]
 ignore_missing_imports = true
 
 # comtypes 1.5 принёс свои (неполные) подсказки типов: интерфейсы COM описываются динамически

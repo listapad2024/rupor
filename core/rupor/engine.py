@@ -68,6 +68,7 @@ from . import (ai, appmute, audio, broadcast, config, credman, duck, fetch, fuzz
                layout, learn, recommend, sounds, spell, textproc, uia, vocab, winutil)
 from . import _win
 from . import fillers
+from . import speaker
 from . import meeting as mtg
 from . import meeting_detect as mdet
 from ._win import VK_RIGHT
@@ -571,6 +572,11 @@ class Engine:
         db_path = getattr(self.storage, "path", None)
         self.recordings = recordings if recordings is not None else Recordings(
             (Path(db_path).parent if db_path else config.app_dir()) / "recordings")
+        # Счёт «свой / чужой» по голосу (теневой режим, speaker_shadow): профиль и журнал —
+        # там же, рядом с базой
+        self.speaker = speaker.Shadow(
+            (Path(db_path).parent if db_path else config.app_dir()) / "speaker",
+            lambda: (self.s.speaker_own_score, self.s.speaker_alien_score))
         self.auto_download_model = auto_download_model
         self.rec: RecognizerLike = recognizer or Recognizer(settings, on_notice=self._rec_notice)
         self.rec.prompt_provider = self._asr_prompt
@@ -743,6 +749,7 @@ class Engine:
             self.recorder.close()
         except Exception:
             log.exception("Не удалось закрыть микрофон")
+        self.speaker.stop()
         self._ctl.put(None)
         self._jobs.put(None)
 
@@ -1274,6 +1281,10 @@ class Engine:
                         log.debug("Раннее определение языка не удалось", exc_info=True)
                 elif kind == "transcribe":
                     self._process(payload)
+                    if self.s.speaker_shadow:
+                        # текст уже вставлен: счёт «свой / чужой» — в фоне, в журнал
+                        self.speaker.submit(payload.audio, payload.rec_id,
+                                            payload.sess.started_wall)
                 elif kind == "insert":
                     self._insert_to(*payload)
                 elif kind == "replace":

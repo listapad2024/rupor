@@ -205,6 +205,13 @@ class Settings:
     # (минута ≈ 1,9 МБ; до 20000)
     recordings_keep: int = 30
     recordings_max_mb: int = 300
+    # Чей голос (speaker.py), теневой режим: для каждой диктовки считать счёт «свой / чужой»
+    # против голосового профиля и писать в журнал; на диктовку не влияет. Пороги меток
+    # журнала — в шкале AS-norm: от speaker_own_score — «свой», ниже speaker_alien_score —
+    # «чужой», между — «не уверен»
+    speaker_shadow: bool = False
+    speaker_own_score: float = 5.5
+    speaker_alien_score: float = 3.0
     pill_enabled: bool = True
     pill_position: list[int] | None = None  # [x, y] в физических пикселях; None — снизу по центру
     theme: str = "system"
@@ -786,6 +793,9 @@ _VALIDATORS: dict[str, Callable[[Any], Any]] = {
     "history_retention_days": _int(0, 36500),
     "recordings_keep": _int(0, 10000),
     "recordings_max_mb": _int(20, 20000),
+    "speaker_shadow": _bool,
+    "speaker_own_score": _float(-50.0, 50.0),
+    "speaker_alien_score": _float(-50.0, 50.0),
     "pill_enabled": _bool,
     "pill_position": _pill_position,
     "theme": _choice(THEMES),

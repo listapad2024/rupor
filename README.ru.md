@@ -534,6 +534,7 @@ webhook), правка в английском тексте. В режиме «�
 | `unload_after_min` | выгружать модель из видеопамяти после N минут простоя (0 — никогда) |
 | `history_enabled`, `history_retention_days` | история и срок её хранения (0 — всегда) |
 | `recordings_keep`, `recordings_max_mb` | сколько последних записей голоса хранить на диске (30; 0 — не хранить; до 10 000) и сколько места они могут занять всего (300 МБ; до 20 000) |
+| `speaker_shadow`, `speaker_own_score`, `speaker_alien_score` | экспериментальный счёт «свой / чужой» по голосу: после каждой диктовки сравнивать голос с вашим голосовым профилем и писать счёт в журнал на этом компьютере (выключено; ничего не блокируется); метки журнала: «свой» от 5,5, «чужой» ниже 3,0 |
 | `default_style`, `ai_enabled`, `ai_provider`, `ai_model`, `ai_mode`, `ai_min_words`, `ai_timeout_s` | ИИ-очистка |
 | `ai_provider_order` | предпочтительные провайдеры внутри OpenRouter, например `["google-vertex", "amazon-bedrock"]` |
 | `command_provider` | командный режим: `openrouter` или `claude_cli` |

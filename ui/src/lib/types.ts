@@ -333,6 +333,15 @@ export interface Settings {
   recordings_keep: number;
   /** Сколько места записи голоса могут занять всего, МБ (20–20000); по умолчанию 300. */
   recordings_max_mb: number;
+  /**
+   * Теневой счёт «свой / чужой» по голосу: после каждой диктовки ядро сравнивает голос с
+   * профилем и пишет счёт в журнал (%APPDATA%\Rupor\speaker\journal.jsonl); на диктовку не влияет.
+   */
+  speaker_shadow: boolean;
+  /** Счёт (шкала AS-norm), от которого метка журнала — «свой»; −50…50, по умолчанию 5,5. */
+  speaker_own_score: number;
+  /** Счёт, ниже которого метка журнала — «чужой»; −50…50, по умолчанию 3. */
+  speaker_alien_score: number;
   pill_enabled: boolean;
   pill_position: [number, number] | null;
   theme: ThemeMode;

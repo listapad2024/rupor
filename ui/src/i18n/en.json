@@ -930,6 +930,8 @@
       "recOff": "Don't keep",
       "recLimit": "Space for recordings",
       "recLimitHint": "Older recordings are deleted when there are more of them or they take more space. A minute of audio ≈ 1.9 MB.",
+      "speaker": "Own-voice score",
+      "speakerHint": "Experimental. After each dictation Rupor compares the voice with your voice profile and writes the score to a journal on this computer. It doesn't affect dictation and blocks nothing. The profile is built separately, from the command line.",
       "openRecordings": "Open recordings"
     },
     "about": {

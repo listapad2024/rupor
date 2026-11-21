@@ -6,6 +6,16 @@ All notable changes to Rupor are listed here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **Experimental own-voice score (off by default).** With **Settings → History → Own-voice
+  score** turned on, Rupor compares the voice of each dictation with your voice profile and
+  writes the score to a journal on this computer (`%APPDATA%\Rupor\speaker\journal.jsonl`).
+  It only measures: dictation works as before and nothing is blocked. The comparison runs on
+  the processor after the text is inserted, so insertion isn't delayed. The profile is built
+  from your own voice recordings with `rupor-core.exe --speaker-enroll`; the speaker model
+  and the profile stay in your data folder and are not shipped with Rupor.
+
 ### Changed
 
 - **Rupor can keep thousands of voice recordings.** The limit goes up from 500 to 10,000

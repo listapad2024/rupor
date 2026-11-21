@@ -1379,6 +1379,13 @@ function HistorySection({ s, set }: SectionProps) {
             options={limits.map((mb) => ({ value: mb, label: fmtMb(mb) }))}
           />
         </SettingRow>
+        <SettingRow title={t("settings.history.speaker")} description={t("settings.history.speakerHint")}>
+          <Switch
+            label={t("settings.history.speaker")}
+            checked={s.speaker_shadow}
+            onChange={(v) => void set({ speaker_shadow: v })}
+          />
+        </SettingRow>
         <SettingRow title={t("settings.history.clear")} description={t("settings.history.clearHint")}>
           <Button size="sm" variant="secondary" onClick={() => navigate("history")}>
             {t("settings.history.openHistory")}
