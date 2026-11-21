@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import threading
+import time
 from typing import Any, Iterator
 
 import pytest
@@ -69,7 +70,8 @@ def test_defaults_and_validation() -> None:
 def test_mutes_on_press_and_restores_on_stop(menv: tuple[Env, FakeMuter]) -> None:
     env, m = menv
     act(env, Kind.START)
-    assert m.ops() and m.ops()[0] == ("mute", ("codex.exe", "chatgpt.exe"), True)
+    wait_until(lambda: bool(m.ops()))
+    assert m.ops()[0] == ("mute", ("codex.exe", "chatgpt.exe"), True)
     act(env, Kind.CANCEL)
     wait_until(lambda: m.ops()[-1] == ("restore",))
 
@@ -85,12 +87,14 @@ def test_disabled_does_nothing(menv: tuple[Env, FakeMuter]) -> None:
     env.client().call("set_settings", {"patch": {"app_mute_enabled": False}})
     act(env, Kind.START)
     act(env, Kind.CANCEL)
+    time.sleep(0.2)
     assert not [c for c in m.ops() if c[0] == "mute"]
 
 
 def test_turned_off_during_recording_restores(menv: tuple[Env, FakeMuter]) -> None:
     env, m = menv
     act(env, Kind.START)
+    wait_until(lambda: bool(m.ops()))
     env.client().call("set_settings", {"patch": {"app_mute_output": False}})
     assert ("mute", ("codex.exe", "chatgpt.exe"), False) in m.ops()
     env.client().call("set_settings", {"patch": {"app_mute_enabled": False}})
