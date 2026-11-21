@@ -329,7 +329,7 @@ export interface Settings {
   default_style: string;
   history_enabled: boolean;
   history_retention_days: number;
-  /** Сколько последних записей голоса хранить на диске (0 — не сохранять), 0–500; по умолчанию 30. */
+  /** Сколько последних записей голоса хранить на диске (0 — не сохранять), 0–10000; по умолчанию 30. */
   recordings_keep: number;
   /** Сколько места записи голоса могут занять всего, МБ (20–20000); по умолчанию 300. */
   recordings_max_mb: number;

@@ -552,6 +552,13 @@ def test_history_disabled_but_stats_counted(env: Env) -> None:
 
 # ---------- сохранённые записи голоса ----------
 
+def _join_rec_prune() -> None:
+    """Дождаться фоновой ротации записей, которую запускает смена лимитов."""
+    for t in threading.enumerate():
+        if t.name == "rupor-rec-prune":
+            t.join(5)
+
+
 def test_recordings_saved_rotated_and_retranscribed(env: Env) -> None:
     c = env.client()
     c.call("set_settings", {"patch": {"recordings_keep": 2}})
@@ -632,7 +639,26 @@ def test_recordings_off_saves_nothing_and_deletes(env: Env) -> None:
     env.dictate("два")
     c.wait_event("history")
     assert c.call("recordings_list")["items"] == []
-    assert "от 0 до 500" in c.error("set_settings", {"patch": {"recordings_keep": 501}})
+    assert "от 0 до 10000" in c.error("set_settings", {"patch": {"recordings_keep": 10001}})
+    c.close()
+
+
+def test_recordings_keep_thousands_keeps_saved(env: Env) -> None:
+    """Лимит можно поднять до тысяч записей, и уже сохранённые при этом остаются."""
+    c = env.client()
+    c.mark()
+    env.dictate("раз")
+    c.wait_event("history")
+    env.dictate("два")
+    c.wait_event("history")
+    before = [i["id"] for i in c.call("recordings_list")["items"]]
+    assert len(before) == 2
+    for keep, mb in ((2000, 2000), (10000, 20000)):
+        c.call("set_settings", {"patch": {"recordings_keep": keep, "recordings_max_mb": mb}})
+        got = c.call("recordings_list")
+        assert got["keep"] == keep and got["max_bytes"] == mb * 1024 * 1024
+        _join_rec_prune()
+        assert [i["id"] for i in c.call("recordings_list")["items"]] == before
     c.close()
 
 

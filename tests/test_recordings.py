@@ -93,6 +93,65 @@ def test_broken_meta_is_rebuilt_from_wav(tmp_path: Path) -> None:
     assert json.loads((tmp_path / f"{rid}.json").read_text(encoding="utf-8"))["status"] == "empty"
 
 
+def test_list_reads_meta_once_and_sees_changes(tmp_path: Path,
+                                               monkeypatch: pytest.MonkeyPatch) -> None:
+    """Список и ротация не открывают метаданные каждой записи заново: читаются только новые
+    и изменившиеся; удалённое мимо программы из списка пропадает."""
+    r = Recordings(tmp_path)
+    ids = [r.save(_audio(0.1), BIG, ts=1000.0 + i) for i in range(5)]
+    assert all(ids)
+    r.items()
+    reads: list[str] = []
+    real = Recordings._read_meta
+
+    def counting(self: Recordings, rid: str) -> dict[str, object] | None:
+        reads.append(rid)
+        return real(self, rid)
+
+    monkeypatch.setattr(Recordings, "_read_meta", counting)
+    assert [m["id"] for m in r.items()] == ids[::-1] and reads == []
+    assert r.prune(BIG) == 0 and reads == []
+    # новая запись — читается только она
+    new = r.save(_audio(0.1), BIG, ts=2000.0)
+    assert [m["id"] for m in r.items()][0] == new and reads == [new]
+    reads.clear()
+    # изменившиеся метаданные видны сразу
+    r.update(ids[0], status="ok", chars=7)
+    assert r.items()[-1]["status"] == "ok" and r.items()[-1]["chars"] == 7
+    assert set(reads) == {ids[0]}
+    reads.clear()
+    # метаданные поправили мимо программы — перечитываются по отметке файла
+    (tmp_path / f"{ids[1]}.json").write_text(json.dumps(
+        {"ts": 1001.0, "duration_s": 0.1, "app": "x.exe", "status": "error", "chars": 0,
+         "history_id": None}), encoding="utf-8")
+    assert [m for m in r.items() if m["id"] == ids[1]][0]["app"] == "x.exe"
+    assert reads == [ids[1]]
+    # файл записи удалили в проводнике
+    (tmp_path / f"{ids[2]}.wav").unlink()
+    assert ids[2] not in [m["id"] for m in r.items()]
+    # возвращённый список — копия: правка в нём не портит следующий
+    r.items()[0]["status"] = "broken"
+    assert r.items()[0]["status"] == "pending"
+
+
+def test_rotation_with_thousands_keeps_all_within_limit(tmp_path: Path) -> None:
+    """Лимит в тысячи записей: лишние не удаляются, сверх лимита — уходят самые старые."""
+    r = Recordings(tmp_path)
+    tmp_path.mkdir(exist_ok=True)
+    wav = b"RIFF" + bytes(40) + bytes(320)
+    for i in range(2100):
+        rid = f"20261101-{i // 3600:02d}{i // 60 % 60:02d}{i % 60:02d}-000"
+        (tmp_path / f"{rid}.wav").write_bytes(wav)
+        (tmp_path / f"{rid}.json").write_text(json.dumps(
+            {"id": rid, "ts": 5000.0 + i, "duration_s": 0.01, "app": "", "status": "ok",
+             "chars": 1, "history_id": None}), encoding="utf-8")
+    assert r.prune(Limits(10000, 10**9)) == 0 and len(r.items()) == 2100
+    assert r.prune(Limits(2000, 10**9)) == 100
+    left = r.items()
+    assert len(left) == 2000 and left[0]["ts"] == 5000.0 + 2099 and left[-1]["ts"] == 5100.0
+    assert len(list(tmp_path.glob("*.json"))) == 2000
+
+
 @pytest.mark.parametrize("bad", ["", "..", "../rupor", "20261107-183305-581/../x", "abc",
                                  "C:\\Windows\\win", "20261107-183305"])
 def test_ids_are_never_paths(tmp_path: Path, bad: str) -> None:

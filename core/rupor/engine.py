@@ -3293,6 +3293,7 @@ class Engine:
 
     def _idle_loop(self) -> None:
         self._purge(force=True)
+        self.recordings.items()            # сведения о записях голоса — до первой диктовки
         if self.s.dict_fuzzy:
             spell.warm_up()                # словари Windows — до первой диктовки
         try:

@@ -49,7 +49,7 @@ import type { MouseButton } from "../lib/types";
 const MOUSE_OPTIONS: MouseButton[] = ["", "middle", "x1", "x2"];
 import { Tabs } from "../components/ui/tabs";
 import { useToast } from "../components/ui/toast";
-import { languageName, NATIVE_NAMES, systemLocale, t, tp, type TKey } from "../i18n";
+import { formatNumber, languageName, NATIVE_NAMES, systemLocale, t, tp, type TKey } from "../i18n";
 import { cn } from "../lib/cn";
 import { fmtMb } from "../lib/format";
 import { useLoad, useMicMonitor } from "../lib/hooks";
@@ -1334,8 +1334,8 @@ const MEETING_DIR_PLACEHOLDER = String.raw`%APPDATA%\Rupor\meetings`;
 
 function HistorySection({ s, set }: SectionProps) {
   const days = [0, 7, 30, 90, 180, 365];
-  const keeps = [0, 10, 30, 50, 100];
-  const limits = [100, 300, 500, 1000, 2000];
+  const keeps = [0, 10, 30, 50, 100, 500, 1000, 2000, 5000, 10000];
+  const limits = [100, 300, 500, 1000, 2000, 5000, 10000, 20000];
   return (
     <section>
       <SectionTitle>{t("settings.history.title")}</SectionTitle>
@@ -1366,7 +1366,7 @@ function HistorySection({ s, set }: SectionProps) {
             onChange={(v) => void set({ recordings_keep: v })}
             className="w-[200px]"
             align="right"
-            options={keeps.map((n) => ({ value: n, label: n === 0 ? t("settings.history.recOff") : String(n) }))}
+            options={keeps.map((n) => ({ value: n, label: n === 0 ? t("settings.history.recOff") : formatNumber(n) }))}
           />
         </SettingRow>
         <SettingRow title={t("settings.history.recLimit")} description={t("settings.history.recLimitHint")}>

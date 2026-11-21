@@ -11,11 +11,16 @@
 Ротация (``prune``): хранится не больше ``keep`` последних записей и не больше ``max_bytes``
 в сумме; самая новая запись хранится всегда, даже если одна больше лимита. ``keep = 0`` —
 записи не сохраняются, а уже сохранённые удаляются.
+
+Записей могут быть тысячи, а ротация идёт на каждой диктовке, поэтому список не открывает
+каждый файл: папка читается одним проходом (имена, размеры, время изменения), а ``<id>.json``
+перечитывается только у новых и изменившихся записей (``Recordings._metas``).
 """
 from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import threading
 import time
@@ -63,6 +68,9 @@ class Recordings:
     def __init__(self, root: Path) -> None:
         self.root = Path(root)
         self._lock = threading.RLock()
+        # id → (отметка <id>.json в папке, метаданные): прочитанное в прошлый раз. Отметка —
+        # (время изменения, размер) или None, если файла метаданных нет.
+        self._metas: dict[str, tuple[tuple[int, int] | None, dict[str, Any]]] = {}
 
     # ---------- пути ----------
 
@@ -114,6 +122,7 @@ class Recordings:
         tmp = self.root / f"{rid}.json.part"
         tmp.write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
         tmp.replace(self._meta_path(rid))
+        self._metas.pop(rid, None)      # прочитанное раньше устарело
 
     def update(self, rid: str | None, **fields: Any) -> None:
         """Дописать в метаданные (status, chars, history_id). Записи уже нет — ничего."""
@@ -151,24 +160,53 @@ class Recordings:
         meta["id"] = rid
         return meta
 
+    def _scan(self) -> tuple[dict[str, int], dict[str, tuple[int, int]]]:
+        """Папка одним проходом: размеры записей (id → байты WAV) и отметки их метаданных
+        (id → время изменения и размер ``<id>.json``). В Windows это данные самого
+        перечисления папки — к каждому файлу отдельно система не обращается."""
+        sizes: dict[str, int] = {}
+        stamps: dict[str, tuple[int, int]] = {}
+        try:
+            with os.scandir(self.root) as entries:
+                for e in entries:
+                    rid, ext = os.path.splitext(e.name)
+                    ext = ext.lower()
+                    if ext not in (".wav", ".json") or not valid_id(rid):
+                        continue
+                    try:
+                        st = e.stat()
+                    except OSError:
+                        continue
+                    if ext == ".wav":
+                        sizes[rid] = st.st_size
+                    else:
+                        stamps[rid] = (st.st_mtime_ns, st.st_size)
+        except OSError:
+            pass                        # папки ещё нет
+        return sizes, stamps
+
     def _ids(self) -> list[str]:
-        if not self.root.is_dir():
-            return []
-        return [p.stem for p in self.root.glob("*.wav") if valid_id(p.stem)]
+        return list(self._scan()[0])
 
     def items(self) -> list[dict[str, Any]]:
         """Записи, новые сверху, с размером файла (bytes)."""
         out: list[dict[str, Any]] = []
         with self._lock:
-            for rid in self._ids():
-                meta = self._read_meta(rid)
-                if meta is None:
-                    continue
-                try:
-                    meta["bytes"] = self._wav(rid).stat().st_size
-                except OSError:
-                    continue
-                out.append(meta)
+            sizes, stamps = self._scan()
+            seen: dict[str, tuple[tuple[int, int] | None, dict[str, Any]]] = {}
+            for rid, size in sizes.items():
+                stamp = stamps.get(rid)
+                known = self._metas.get(rid)
+                if known is not None and known[0] == stamp:
+                    meta = known[1]
+                else:
+                    read = self._read_meta(rid)
+                    if read is None:
+                        continue
+                    meta = read
+                seen[rid] = (stamp, meta)
+                out.append({**meta, "bytes": size})
+            self._metas = seen          # удалённые записи отсюда уходят сами
         out.sort(key=lambda m: (float(m.get("ts") or 0), str(m["id"])), reverse=True)
         return out
 

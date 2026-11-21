@@ -6,6 +6,13 @@ All notable changes to Rupor are listed here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- **Rupor can keep thousands of voice recordings.** The limit goes up from 500 to 10,000
+  recordings, and **Settings → History** now offers up to 10,000 recordings and 20 GB of
+  space. The default stays at the last 30. Saving a recording no longer re-reads every
+  saved one, so dictation is as fast with thousands of recordings as with thirty.
+
 ## [0.8.2] — 2026-11-21
 
 ### Fixed

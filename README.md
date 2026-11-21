@@ -538,7 +538,7 @@ Everything is configured in the Rupor window. You can also edit
 | `duck_mode`, `duck_level` | other apps' audio while recording: `duck` (lower to `duck_level` percent, 15 by default) / `mute` / `off` |
 | `unload_after_min` | unload the model from video memory after N minutes idle (0 — never) |
 | `history_enabled`, `history_retention_days` | history and how long to keep it (0 — forever) |
-| `recordings_keep`, `recordings_max_mb` | how many recent voice recordings to keep on disk (30; 0 — none) and how much space they may take in total (300 MB) |
+| `recordings_keep`, `recordings_max_mb` | how many recent voice recordings to keep on disk (30; 0 — none; up to 10,000) and how much space they may take in total (300 MB; up to 20,000) |
 | `default_style`, `ai_enabled`, `ai_provider`, `ai_model`, `ai_mode`, `ai_min_words`, `ai_timeout_s` | AI cleanup |
 | `ai_provider_order` | preferred providers inside OpenRouter, e.g. `["google-vertex", "amazon-bedrock"]` |
 | `command_provider` | command mode: `openrouter` or `claude_cli` |

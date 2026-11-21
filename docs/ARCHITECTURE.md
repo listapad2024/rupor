@@ -391,8 +391,8 @@ type Stats = {
   "default_style": "normal",
   "history_enabled": true,
   "history_retention_days": 0,      // 0 — хранить всегда
-  "recordings_keep": 30,             // последние записи голоса на диске (0 — не сохранять)
-  "recordings_max_mb": 300,         // …и не больше стольких МБ на все
+  "recordings_keep": 30,             // последние записи голоса на диске (0 — не сохранять; до 10000)
+  "recordings_max_mb": 300,         // …и не больше стольких МБ на все (20–20000)
   "pill_enabled": true,
   "pill_position": null,            // [x, y] физические пиксели или null — снизу по центру
   "theme": "system",                // system | dark | light

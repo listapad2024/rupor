@@ -201,7 +201,8 @@ class Settings:
     history_enabled: bool = True
     history_retention_days: int = 0     # 0 — хранить всегда
     # Последние записи голоса на диске (recordings.py): сколько хранить (0 — не сохранять,
-    # сохранённые удаляются) и сколько места они могут занять всего, МБ (минута ≈ 1,9 МБ)
+    # сохранённые удаляются; до 10000) и сколько места они могут занять всего, МБ
+    # (минута ≈ 1,9 МБ; до 20000)
     recordings_keep: int = 30
     recordings_max_mb: int = 300
     pill_enabled: bool = True
@@ -783,7 +784,7 @@ _VALIDATORS: dict[str, Callable[[Any], Any]] = {
     "default_style": _style,
     "history_enabled": _bool,
     "history_retention_days": _int(0, 36500),
-    "recordings_keep": _int(0, 500),
+    "recordings_keep": _int(0, 10000),
     "recordings_max_mb": _int(20, 20000),
     "pill_enabled": _bool,
     "pill_position": _pill_position,
