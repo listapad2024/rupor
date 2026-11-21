@@ -328,8 +328,8 @@ class AppMuter:
         sessions = b.sessions()
         by_inst = {s.instance: s for s in sessions}
         by_sess: dict[str, AppSession] = {}
-        for s in sessions:
-            by_sess.setdefault(s.session, s)
+        for x in sessions:
+            by_sess.setdefault(x.session, x)
         left: list[Entry] = []
         for e in self._pending:
             s = by_inst.get(e.instance) or by_sess.get(e.session)
