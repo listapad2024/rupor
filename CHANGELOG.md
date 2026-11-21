@@ -6,6 +6,18 @@ All notable changes to Rupor are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.8.2] — 2026-11-21
+
+### Fixed
+
+- **The voice chat didn't come back after dictation.** 0.8.1 paused the chat's audio
+  process, and after a few seconds without microphone data Codex decided the microphone had
+  failed and dropped it. Now Rupor uses the chat's own button instead: while you hold the
+  key it presses **Mute microphone** in the Codex / ChatGPT window and **Unmute microphone**
+  when you release it, so the conversation carries on. A chat you muted yourself is left
+  alone, and if Rupor closes mid-recording, the chat's microphone is turned back on the next
+  time it starts.
+
 ## [0.8.1] — 2026-11-21
 
 ### Fixed

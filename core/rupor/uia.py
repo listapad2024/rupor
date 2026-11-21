@@ -40,7 +40,13 @@ CALL_TIMEOUT_S = 3.0      # ожидание ответа потока UIA
 UIA_TIMEOUT_MS = 1000     # IUIAutomation2.ConnectionTimeout / TransactionTimeout
 INIT_TIMEOUT_S = 15.0     # первая инициализация (генерация обёртки может занять секунды)
 
+UIA_INVOKE_PATTERN = 10000
 UIA_VALUE_PATTERN = 10002
+UIA_TOGGLE_PATTERN = 10015
+UIA_LEGACY_PATTERN = 10018
+UIA_CONTROL_TYPE_PROP = 30003
+UIA_BUTTON = 50000
+_SCOPE_DESCENDANTS = 4
 UIA_TEXT_PATTERN = 10014
 UIA_EDIT = 50004
 UIA_DOCUMENT = 50030
@@ -305,6 +311,43 @@ class _Worker:
             return None
         return self.before_caret(el, limit) if el else None
 
+    def _buttons(self, hwnd: int) -> list[tuple[str, Any]]:
+        cond = self.auto.CreatePropertyCondition(UIA_CONTROL_TYPE_PROP, UIA_BUTTON)
+        arr = self.auto.ElementFromHandle(hwnd).FindAll(_SCOPE_DESCENDANTS, cond)
+        out: list[tuple[str, Any]] = []
+        for i in range(int(arr.Length)):
+            try:
+                e = arr.GetElement(i)
+                out.append((str(e.CurrentName or ""), e))
+            except Exception:
+                continue
+        return out
+
+    def button_names(self, hwnd: int) -> list[str]:
+        return [n for n, _ in self._buttons(hwnd)]
+
+    def press(self, hwnd: int, match: Callable[[str], bool]) -> str | None:
+        """Нажать первую кнопку окна, чьё имя подходит: Invoke, иначе Toggle, иначе
+        действие по умолчанию (LegacyIAccessible). Имя нажатой или None."""
+        m = self.mod
+        for name, e in self._buttons(hwnd):
+            if not match(name):
+                continue
+            for pid, iface, act in ((UIA_INVOKE_PATTERN, m.IUIAutomationInvokePattern, "Invoke"),
+                                    (UIA_TOGGLE_PATTERN, m.IUIAutomationTogglePattern, "Toggle"),
+                                    (UIA_LEGACY_PATTERN, m.IUIAutomationLegacyIAccessiblePattern,
+                                     "DoDefaultAction")):
+                pat = self._pattern(e, pid, iface)
+                if pat is None:
+                    continue
+                try:
+                    getattr(pat, act)()
+                    return name
+                except Exception as ex:
+                    log.debug("UIA: %s не сработал (%s)", act, type(ex).__name__)
+            return None
+        return None
+
     def focus_summary(self) -> tuple[int | None, bool, int]:
         """Для самопроверки: (тип элемента с фокусом, поле с текстом, длина текста)."""
         try:
@@ -365,6 +408,26 @@ def field_from_handle(hwnd: int, timeout: float = CALL_TIMEOUT_S) -> Field | Non
         return None
     except Exception as e:
         log.debug("UIA: окно не прочитано (%s)", type(e).__name__)
+        return None
+
+
+def button_names(hwnd: int, timeout: float = CALL_TIMEOUT_S) -> list[str] | None:
+    """Имена кнопок окна (UIA, все потомки) или None — UIA недоступна или не ответила.
+    Имена — интерфейс чужого приложения: в лог не пишутся."""
+    try:
+        return _worker.call(lambda: _worker.button_names(hwnd), timeout)
+    except Exception as e:
+        log.debug("UIA: кнопки окна не прочитаны (%s)", type(e).__name__)
+        return None
+
+
+def press_button(hwnd: int, match: Callable[[str], bool],
+                 timeout: float = CALL_TIMEOUT_S) -> str | None:
+    """Нажать первую кнопку окна hwnd, имя которой подходит под match. Имя нажатой или None."""
+    try:
+        return _worker.call(lambda: _worker.press(hwnd, match), timeout)
+    except Exception as e:
+        log.debug("UIA: кнопка не нажата (%s)", type(e).__name__)
         return None
 
 

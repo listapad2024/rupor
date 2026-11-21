@@ -171,8 +171,8 @@ class Settings:
     duck_mode: str = "duck"
     duck_level: int = 15
     # Голосовые чаты (live chat Codex — его exe ChatGPT.exe, ChatGPT) не слышат диктовку: на
-    # время записи звуковые процессы этих приложений приостанавливаются (rupor.appmute).
-    # Имена exe без пути
+    # время записи Рупор нажимает в их окне «Отключить микрофон», после — «Включить микрофон»
+    # (rupor.appmute, UI Automation). Имена exe без пути
     app_mute_enabled: bool = True
     app_mute_apps: list[str] = field(default_factory=lambda: ["codex.exe", "chatgpt.exe"])
 

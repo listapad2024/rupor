@@ -1,13 +1,14 @@
-"""Голосовые чаты не слышат диктовку (rupor.appmute) — на фейковых процессах: звуковые
-процессы приложений из списка приостанавливаются и возобновляются, свои/чужие/0 и 4 не
-трогаются, появившиеся во время записи — тоже, смена списка, возобновление из
-appmute.json после «падения» (и pid, занятый уже другим процессом, не трогается),
-слишком долгая запись, файл 0.8.0 (беззвук сессий) игнорируется."""
+"""Голосовые чаты не слышат диктовку (rupor.appmute) — на фейковых окнах: кнопка «Отключить
+микрофон» нажимается один раз на процесс и «Включить микрофон» — после записи; уже
+выключенный пользователем не трогаем; включил сам во время записи — его; свои процессы,
+чужие приложения; чат, начатый во время записи; возврат из appmute.json после «падения»
+и чужой процесс на том же pid; старый файл (0.8.0/0.8.1) игнорируется."""
 from __future__ import annotations
 
 import json
 import time
 from pathlib import Path
+from typing import Callable
 
 import pytest
 
@@ -15,164 +16,185 @@ from rupor import appmute
 from rupor.appmute import AppMuter
 
 
+class Chat:
+    """Процесс голосового чата: два окна (главное и плавающее) с общим микрофоном."""
+
+    def __init__(self, exe: str = "chatgpt.exe", muted: bool = False, voice: bool = True) -> None:
+        self.exe, self.muted, self.voice = exe, muted, voice
+        self.presses = 0
+
+
 class FakeBackend:
-    def __init__(self, procs: dict[int, str], audio: set[int]) -> None:
-        self.procs = dict(procs)          # pid → путь exe
-        self.audio = set(audio)           # pid с аудиосессиями
-        self.born = {p: 1000 + p for p in procs}
-        self.suspended: dict[int, int] = {}
+    def __init__(self, chats: dict[int, Chat]) -> None:
+        self.chats = chats
+        self.born = {p: 1000 + p for p in chats}
 
-    def audio_pids(self) -> set[int]:
-        return set(self.audio)
-
-    def process_name(self, pid: int) -> str:
-        return self.procs.get(pid, "")
+    def windows(self, apps: frozenset[str]) -> dict[int, list[int]]:
+        return {p: [p * 10, p * 10 + 1] for p, c in self.chats.items()
+                if "*" in apps or c.exe in apps}
 
     def created(self, pid: int) -> int | None:
-        return self.born.get(pid) if pid in self.procs else None
+        return self.born.get(pid) if pid in self.chats else None
 
-    def suspend(self, pid: int) -> bool:
-        self.suspended[pid] = self.suspended.get(pid, 0) + 1
-        return True
+    def buttons(self, hwnd: int) -> list[str] | None:
+        c = self.chats.get(hwnd // 10)
+        if c is None:
+            return None
+        names = ["Начать новый чат"]
+        if c.voice:
+            names += ["Включить микрофон" if c.muted else "Отключить микрофон",
+                      "Отключить звук голосового чата"]
+        return names
 
-    def resume(self, pid: int) -> bool:
-        self.suspended[pid] = self.suspended.get(pid, 0) - 1
-        return True
-
-    def held(self) -> set[int]:
-        return {p for p, n in self.suspended.items() if n > 0}
-
-
-CHAT_MAIN, CHAT_AUDIO, TG, OWN = 10, 11, 20, 30
-
-
-def procs() -> FakeBackend:
-    return FakeBackend({CHAT_MAIN: r"C:\Apps\Codex\ChatGPT.exe",
-                        CHAT_AUDIO: r"C:\Apps\Codex\ChatGPT.exe",
-                        TG: r"C:\Tg\Telegram.exe", OWN: r"C:\Rupor\chatgpt.exe",
-                        4: "System"},
-                       audio={CHAT_AUDIO, TG, OWN, 0, 4})
+    def press(self, hwnd: int, match: Callable[[str], bool]) -> bool:
+        c = self.chats[hwnd // 10]
+        for n in self.buttons(hwnd) or []:
+            if match(n):
+                c.muted = not c.muted
+                c.presses += 1
+                return True
+        return False
 
 
-def make(tmp_path: Path, b: FakeBackend) -> AppMuter:
-    m = AppMuter(own_pids=(OWN,), path=tmp_path / appmute.STATE_FILE, backend_factory=lambda: b)
+@pytest.fixture(autouse=True)
+def _fast(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(appmute, "SETTLE_S", 0.0)
+
+
+def make(tmp_path: Path, b: FakeBackend, own: tuple[int, ...] = ()) -> AppMuter:
+    m = AppMuter(own_pids=own, path=tmp_path / appmute.STATE_FILE, backend_factory=lambda: b)
     m.start()
     return m
 
 
-def test_norm_app() -> None:
-    assert appmute.norm_app("Codex") == "codex.exe"
+def test_names() -> None:
+    assert appmute.is_mute("Отключить микрофон") and appmute.is_mute("Mute microphone")
+    assert appmute.is_unmute("Включить микрофон") and appmute.is_unmute("Unmute mic")
+    assert not appmute.is_mute("Отключить звук голосового чата")
+    assert not appmute.is_mute("Unmute microphone") and not appmute.is_unmute("Mute mic")
     assert appmute.norm_app(r"C:\Apps\ChatGPT.EXE") == "chatgpt.exe"
-    assert appmute.norm_app("  ") == ""
 
 
-def test_suspends_only_audio_process_of_listed_app(tmp_path: Path) -> None:
-    b = procs()
+def test_mutes_once_per_process_and_unmutes(tmp_path: Path) -> None:
+    chat = Chat()
+    b = FakeBackend({7: chat, 8: Chat(exe="telegram.exe")})
     m = make(tmp_path, b)
     m.mute(["codex.exe", "chatgpt.exe"])
     assert m.flush()
-    assert b.held() == {CHAT_AUDIO}            # окно (без аудиосессии), чужие и свои — нет
+    assert chat.muted and chat.presses == 1          # два окна — одно нажатие
     assert (tmp_path / appmute.STATE_FILE).exists()
+    m.mute(["codex.exe", "chatgpt.exe"])              # повтор — не переключает обратно
+    assert m.flush()
+    assert chat.muted and chat.presses == 1
     m.restore()
     assert m.flush()
-    assert b.held() == set() and b.suspended[CHAT_AUDIO] == 0
+    assert not chat.muted and chat.presses == 2
+    assert b.chats[8].presses == 0
     assert not (tmp_path / appmute.STATE_FILE).exists()
     m.close()
 
 
-def test_repeated_mute_does_not_double_suspend(tmp_path: Path) -> None:
-    b = procs()
-    m = make(tmp_path, b)
-    for _ in range(3):
-        m.mute(["chatgpt.exe"])
-    assert m.flush()
-    assert b.suspended[CHAT_AUDIO] == 1
-    m.close()
-    assert b.suspended[CHAT_AUDIO] == 0
-
-
-def test_new_audio_process_during_recording(tmp_path: Path) -> None:
-    b = procs()
-    m = make(tmp_path, b)
+def test_already_muted_by_user_left_alone(tmp_path: Path) -> None:
+    chat = Chat(muted=True)
+    m = make(tmp_path, FakeBackend({7: chat}))
     m.mute(["chatgpt.exe"])
     assert m.flush()
-    b.audio.add(CHAT_MAIN)
-    m.mute(["chatgpt.exe"])                    # то же, что переопрос раз в POLL_S
+    m.restore()
     assert m.flush()
-    assert b.held() == {CHAT_AUDIO, CHAT_MAIN}
+    assert chat.muted and chat.presses == 0
     m.close()
-    assert b.held() == set()
 
 
-def test_list_change_resumes_removed_app(tmp_path: Path) -> None:
-    b = procs()
-    m = make(tmp_path, b)
-    m.mute(["chatgpt.exe", "telegram"])
-    assert m.flush()
-    assert b.held() == {CHAT_AUDIO, TG}
+def test_user_unmuted_during_recording(tmp_path: Path) -> None:
+    chat = Chat()
+    m = make(tmp_path, FakeBackend({7: chat}))
     m.mute(["chatgpt.exe"])
     assert m.flush()
-    assert b.held() == {CHAT_AUDIO}
+    chat.muted = False                               # включил сам
+    m.mute(["chatgpt.exe"])                          # переопрос
+    assert m.flush()
+    assert not chat.muted
+    m.restore()
+    assert m.flush()
+    assert not chat.muted and chat.presses == 1
     m.close()
 
 
-def test_empty_list_does_nothing(tmp_path: Path) -> None:
-    b = procs()
-    m = make(tmp_path, b)
+def test_no_voice_chat_then_started(tmp_path: Path) -> None:
+    chat = Chat(voice=False)
+    m = make(tmp_path, FakeBackend({7: chat}))
+    m.mute(["chatgpt.exe"])
+    assert m.flush()
+    assert chat.presses == 0
+    chat.voice = True                                # начал голосовой чат во время записи
+    m.mute(["chatgpt.exe"])
+    assert m.flush()
+    assert chat.muted
+    m.close()
+    assert not chat.muted
+
+
+def test_own_process_skipped(tmp_path: Path) -> None:
+    chat = Chat()
+    m = make(tmp_path, FakeBackend({7: chat}), own=(7,))
+    m.mute(["chatgpt.exe"])
+    assert m.flush()
+    assert chat.presses == 0
+    m.close()
+
+
+def test_disabled_mid_recording_unmutes(tmp_path: Path) -> None:
+    chat = Chat()
+    m = make(tmp_path, FakeBackend({7: chat}))
+    m.mute(["chatgpt.exe"])
+    assert m.flush()
     m.mute([])
     assert m.flush()
-    assert b.held() == set()
+    assert not chat.muted
     m.close()
 
 
-def test_resume_after_crash(tmp_path: Path) -> None:
-    b = procs()
+def test_unmute_after_crash(tmp_path: Path) -> None:
+    chat = Chat()
+    b = FakeBackend({7: chat})
     m = make(tmp_path, b)
     m.mute(["chatgpt.exe"])
     assert m.flush()
-    data = json.loads((tmp_path / appmute.STATE_FILE).read_text(encoding="utf-8"))
-    assert [e["pid"] for e in data["entries"]] == [CHAT_AUDIO]
-    # «падение»: поток не возобновил, файл остался — следующий запуск возобновляет
-    m2 = make(tmp_path, b)
+    assert chat.muted
+    m2 = make(tmp_path, b)                           # «падение»: следующий запуск
     assert m2.flush()
-    assert b.held() == set()
+    assert not chat.muted
     assert not (tmp_path / appmute.STATE_FILE).exists()
     m2.close()
 
 
-def test_reused_pid_is_not_resumed(tmp_path: Path) -> None:
-    b = procs()
+def test_reused_pid_not_touched(tmp_path: Path) -> None:
+    chat = Chat()
+    b = FakeBackend({7: chat})
     m = make(tmp_path, b)
     m.mute(["chatgpt.exe"])
     assert m.flush()
-    b.born[CHAT_AUDIO] += 1                    # процесс закрылся, pid занял другой
+    b.born[7] += 1                                   # процесс перезапустился на том же pid
     m.restore()
     assert m.flush()
-    assert b.suspended[CHAT_AUDIO] == 1        # чужой процесс не трогали
-    assert not (tmp_path / appmute.STATE_FILE).exists()
+    assert chat.muted and chat.presses == 1
     m.close()
 
 
-def test_too_long_recording_resumes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(appmute, "POLL_S", 0.01)
-    monkeypatch.setattr(appmute, "MAX_SUSPEND_S", 0.05)
-    b = procs()
+def test_stale_and_old_files_ignored(tmp_path: Path) -> None:
+    chat = Chat(muted=True)
+    b = FakeBackend({7: chat})
+    p = tmp_path / appmute.STATE_FILE
+    p.write_text(json.dumps({"version": 2, "entries": [{"pid": 7, "created": 1007, "ts": 1.0}]}),
+                 encoding="utf-8")
     m = make(tmp_path, b)
-    m.mute(["chatgpt.exe"])
     assert m.flush()
-    deadline = time.monotonic() + 3
-    while b.held() and time.monotonic() < deadline:
-        time.sleep(0.01)
-    assert b.held() == set()
+    assert chat.presses == 0 and not p.exists()
     m.close()
-
-
-def test_old_file_format_ignored(tmp_path: Path) -> None:
-    (tmp_path / appmute.STATE_FILE).write_text(json.dumps(
-        {"version": 1, "entries": [{"instance": "x", "session": "y", "pid": CHAT_AUDIO,
-                                    "capture": True, "ts": 1.0}]}), encoding="utf-8")
-    b = procs()
+    p.write_text(json.dumps({"version": appmute.FILE_VERSION, "entries": [
+        {"pid": 7, "created": 1007, "ts": time.time() - appmute.RESTORE_TTL_S - 5}]}),
+        encoding="utf-8")
     m = make(tmp_path, b)
     assert m.flush()
-    assert b.suspended == {}
+    assert chat.presses == 0
     m.close()

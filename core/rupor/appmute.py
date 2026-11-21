@@ -1,30 +1,31 @@
 """Голосовые чаты не слышат диктовку (live chat Codex, ChatGPT и т. п.).
 
-Пока зажата клавиша диктовки, приложения из списка (``Settings.app_mute_apps``, имена
-exe: ``chatgpt.exe`` — это и десктопный Codex, ``codex.exe``) не должны слышать голос: он
-уходит в диктовку Рупора.
+Пока зажата клавиша диктовки, голосовой чат приложения из списка (``Settings.app_mute_apps``,
+имена exe: ``chatgpt.exe`` — это и десктопный Codex, ``codex.exe``) не должен слышать голос:
+он уходит в диктовку Рупора.
 
-Почему не беззвук сессии захвата: на многих микрофонах (проверено на ПК автора) беззвук
-одной сессии захвата в Windows глушит все сессии этого устройства — Рупор тоже получал бы
-тишину. Поэтому на время записи **приостанавливаются процессы приложения, которые держат
-аудиосессии** (NtSuspendProcess). У приложений на Electron/Chromium это отдельный звуковой
-процесс (``ChatGPT.exe --utility-sub-type=audio.mojom…``): окно, сеть и сам разговор
-продолжают работать, просто звук на эти секунды не пишется и не играет (ответ ассистента
-доиграет после). Микрофон при этом свободно слышат Рупор и все остальные.
+Как: Рупор сам нажимает в окне чата его кнопку **«Отключить микрофон»** (UI Automation,
+rupor.uia), а после записи — «Включить микрофон». Чат при этом знает, что микрофон выключен,
+и спокойно ждёт; разговор не рвётся.
 
-Процессы находятся через Core Audio: все сессии на активных устройствах записи и вывода
-(IAudioSessionManager2, интерфейсы — из rupor.duck), pid сессии → имя exe
-(QueryFullProcessImageNameW, без пути и регистра). Свои процессы, pid 0/4 и чужие имена не
-трогаются никогда. Появившиеся во время записи — переопросом раз в ``POLL_S``.
+Почему не средствами Windows (проверено на ПК автора):
+- беззвук сессии захвата одного приложения (ISimpleAudioVolume на устройстве записи) на
+  многих микрофонах глушит запись всем — Рупор получал тишину (0.8.0);
+- приостановка звукового процесса чата (NtSuspendProcess, 0.8.1) ломает чат: Chromium через
+  несколько секунд без данных микрофона считает поток сломанным и закрывает его.
 
-Защита от «замёрзшего» звука чата: приостановленные процессы (pid + время создания,
-чтобы не спутать с новым процессом на том же pid) пишутся в
-``%APPDATA%\\Rupor\\appmute.json`` **до** приостановки; при старте ядра всё, что там
-осталось, возобновляется. Дольше ``MAX_SUSPEND_S`` подряд процесс не держится (потерянное
-отпускание клавиши) — возобновляется сам.
+Нажимается по одной кнопке на процесс приложения (окна Electron — один процесс; кнопка есть
+и в главном окне, и в плавающем окне разговора, и это один и тот же микрофон). Если
+микрофон уже выключен (видна только «Включить микрофон») — это сделал пользователь: не
+трогаем и потом не включаем. Включил сам во время записи — тоже его, не выключаем снова.
+Чат, начатый во время записи, — переопросом раз в ``POLL_S``.
+
+Защита от «забытого» выключенного микрофона: процессы, где мы выключили микрофон (pid и
+время создания), пишутся в ``%APPDATA%\\Rupor\\appmute.json`` **до** нажатия; при старте ядра
+по свежим (``RESTORE_TTL_S``) записям микрофон включается обратно.
 
 Все вызовы — в фоновом потоке ``rupor-appmute``; движок только ставит команды в очередь.
-Приватность: в лог — только числа, имён процессов нет.
+Приватность: в лог — только числа, имён процессов, окон и кнопок нет.
 """
 from __future__ import annotations
 
@@ -33,6 +34,7 @@ import json
 import logging
 import os
 import queue
+import re
 import threading
 import time
 from dataclasses import asdict, dataclass
@@ -41,14 +43,28 @@ from typing import Any, Callable, Iterable, Protocol
 
 log = logging.getLogger(__name__)
 
-POLL_S = 0.5                 # во время записи: новые звуковые процессы приложений
-MAX_SUSPEND_S = 660.0        # дольше записи (MAX_RECORD_S = 600) процесс не держим
-CLOSE_TIMEOUT_S = 2.0
+POLL_S = 0.7                 # во время записи: чат, начатый позже, и включённый вручную
+SETTLE_S = 1.5               # после нажатия интерфейс чата успевает перерисоваться
+RESTORE_TTL_S = 30 * 60.0    # при старте ядра включаем микрофон по записям не старше
+CLOSE_TIMEOUT_S = 3.0
 STATE_FILE = "appmute.json"
-FILE_VERSION = 2
-MAX_ENTRIES = 64
+FILE_VERSION = 3
+MAX_ENTRIES = 32
 
 DEFAULT_APPS = ["codex.exe", "chatgpt.exe"]
+
+# Кнопка микрофона голосового чата (Codex / ChatGPT, русский и английский интерфейс)
+_MUTE = re.compile(r"^\s*(отключить|выключить)\s+микрофон|^\s*mute(\s+the)?\s+(mic|microphone)\b",
+                   re.I)
+_UNMUTE = re.compile(r"^\s*включить\s+микрофон|^\s*unmute(\s+the)?\s+(mic|microphone)\b", re.I)
+
+
+def is_mute(name: str) -> bool:
+    return bool(_MUTE.search(name))
+
+
+def is_unmute(name: str) -> bool:
+    return bool(_UNMUTE.search(name))
 
 
 def norm_app(name: str) -> str:
@@ -59,32 +75,28 @@ def norm_app(name: str) -> str:
     return n
 
 
-# ---------- процессы (Windows или фейк в тестах) ----------
+# ---------- окна и кнопки (Windows + UIA или фейк в тестах) ----------
 
 class Backend(Protocol):
-    def audio_pids(self) -> set[int]: ...          # pid всех процессов с аудиосессиями
-    def process_name(self, pid: int) -> str: ...
-    def created(self, pid: int) -> int | None: ...   # время создания (None — процесса нет)
-    def suspend(self, pid: int) -> bool: ...
-    def resume(self, pid: int) -> bool: ...
+    def windows(self, apps: frozenset[str]) -> dict[int, list[int]]: ...   # pid → окна
+    def created(self, pid: int) -> int | None: ...
+    def buttons(self, hwnd: int) -> list[str] | None: ...                 # None — не прочитано
+    def press(self, hwnd: int, match: Callable[[str], bool]) -> bool: ...
 
 
 class NullBackend:
-    """Нет Windows (тесты): процессов нет."""
+    """Нет Windows (тесты): окон нет."""
 
-    def audio_pids(self) -> set[int]:
-        return set()
-
-    def process_name(self, pid: int) -> str:
-        return ""
+    def windows(self, apps: frozenset[str]) -> dict[int, list[int]]:
+        return {}
 
     def created(self, pid: int) -> int | None:
         return None
 
-    def suspend(self, pid: int) -> bool:
-        return False
+    def buttons(self, hwnd: int) -> list[str] | None:
+        return None
 
-    def resume(self, pid: int) -> bool:
+    def press(self, hwnd: int, match: Callable[[str], bool]) -> bool:
         return False
 
 
@@ -92,7 +104,19 @@ class NullBackend:
 class Entry:
     pid: int
     created: int
-    ts: float          # когда приостановили (unix, с)
+    ts: float          # когда выключили (unix, с)
+
+
+def _state(b: Backend, hwnds: list[int]) -> tuple[int | None, int | None]:
+    """(окно с «Отключить микрофон», окно с «Включить микрофон») среди окон процесса."""
+    mute = unmute = None
+    for h in hwnds:
+        names = b.buttons(h) or []
+        if mute is None and any(is_mute(n) for n in names):
+            mute = h
+        if unmute is None and any(is_unmute(n) for n in names):
+            unmute = h
+    return mute, unmute
 
 
 class AppMuter:
@@ -109,12 +133,13 @@ class AppMuter:
         # дальше — только поток rupor-appmute
         self._backend: Backend | None = None
         self._entries: list[Entry] = []
+        self._pressed: dict[int, float] = {}    # pid → когда нажали (monotonic), эта запись
+        self._skip: set[int] = set()            # в этой записи не трогаем (пользователь)
         self._active = False
-        self._since = 0.0
         self._apps: frozenset[str] = frozenset()
         self._saved: str | None = None
         self._warned = False
-        self.changed = 0                    # сколько процессов сейчас приостановлено нами
+        self.changed = 0                        # у скольких процессов микрофон выключен нами
 
     # ---------- API ----------
 
@@ -126,8 +151,7 @@ class AppMuter:
                 self._thread.start()
 
     def mute(self, apps: Iterable[str], output: bool = True) -> None:
-        """Приостановить звуковые процессы приложений apps до restore(). output — прежний
-        параметр (звук приостановленного процесса не играет в любом случае)."""
+        """Выключить микрофон голосовым чатам приложений apps до restore()."""
         self._q.put(("mute", frozenset(a for a in (norm_app(x) for x in apps) if a)))
 
     def restore(self) -> None:
@@ -163,130 +187,123 @@ class AppMuter:
 
     def _run(self) -> None:
         try:
-            left = self._load()
+            left = [e for e in self._load() if time.time() - e.ts < RESTORE_TTL_S]
             if left:
                 self._entries = left
-                n = self._resume_all()
-                log.info("Голосовые чаты: возобновлено после прошлого запуска %d", n)
+                self._unmute_all()
+            elif self._saved is None:
+                self._save()             # старый или устаревший файл — убрать
         except Exception:
-            log.exception("Голосовые чаты: не удалось возобновить после прошлого запуска")
+            log.exception("Голосовые чаты: не удалось включить микрофон после прошлого запуска")
         while True:
             try:
                 cmd = self._q.get(timeout=POLL_S if self._active else None)
             except queue.Empty:
                 try:
-                    if self._active and time.monotonic() - self._since > MAX_SUSPEND_S:
-                        log.warning("Голосовые чаты: запись слишком долгая — возобновлены")
-                        self._active = False
-                        self._resume_all()
-                    elif self._active:
+                    if self._active:
                         self._poll()
                 except Exception:
                     log.debug("Голосовые чаты: переопрос не удался", exc_info=True)
-                    self._backend = None
                 continue
             try:
                 if cmd[0] == "mute":
                     self._apps = cmd[1]
                     if not self._active:
-                        self._since = time.monotonic()
+                        self._skip.clear()
+                        self._pressed.clear()
                     self._active = bool(self._apps)
-                    self._release_unwanted()
                     if self._active:
                         self._poll()
+                    else:
+                        self._unmute_all()
                 elif cmd[0] == "restore":
                     self._active = False
-                    self._resume_all()
+                    self._unmute_all()
                 elif cmd[0] == "flush":
                     cmd[1].set()
                 elif cmd[0] == "stop":
                     return
             except Exception:
                 log.exception("Голосовые чаты: команда %s не выполнена", cmd[0])
-                self._backend = None
                 if cmd[0] == "flush":
                     cmd[1].set()
-
-    def _wanted(self, b: Backend, pid: int) -> bool:
-        if pid in self._own or pid in (0, 4):
-            return False
-        try:
-            return norm_app(b.process_name(pid)) in self._apps
-        except Exception:
-            return False
 
     def _poll(self) -> None:
         b = self._ensure_backend()
         if b is None:
             return
-        ours = {e.pid for e in self._entries}
-        new: list[Entry] = []
-        for pid in sorted(b.audio_pids()):
-            if pid in ours or not self._wanted(b, pid):
+        wins = {pid: hw for pid, hw in b.windows(self._apps).items()
+                if pid not in self._own and pid not in (0, 4)}
+        ours = {e.pid: e for e in self._entries}
+        now = time.monotonic()
+        for pid, hwnds in wins.items():
+            if pid in self._skip:
                 continue
+            if pid in ours:
+                # уже выключили: снова видна «Отключить» и нет «Включить» — пользователь
+                # включил сам; это его, больше не трогаем
+                if now - self._pressed.get(pid, 0.0) < SETTLE_S:
+                    continue
+                mute, unmute = _state(b, hwnds)
+                if mute is not None and unmute is None:
+                    self._entries.remove(ours[pid])
+                    self._skip.add(pid)
+                    self._save()
+                continue
+            mute, unmute = _state(b, hwnds)
+            if mute is None:
+                if unmute is not None:
+                    self._skip.add(pid)  # уже выключен пользователем — не наше
+                continue                 # голосового чата нет — переопросим
             c = b.created(pid)
             if c is None:
                 continue
-            new.append(Entry(pid, c, time.time()))
-        if not new:
-            return
-        self._entries += new
-        self._save()                     # до приостановки: падение не оставит чат без звука
-        n = 0
-        for e in new:
+            e = Entry(pid, c, time.time())
+            self._entries.append(e)
+            self._save()                 # до нажатия: падение не оставит микрофон выключенным
             ok = False
             try:
-                ok = b.suspend(e.pid)
+                ok = b.press(mute, is_mute)
             except Exception:
-                log.debug("Голосовые чаты: не приостановлен", exc_info=True)
+                log.debug("Голосовые чаты: кнопка не нажата", exc_info=True)
             if ok:
-                n += 1
+                self._pressed[pid] = time.monotonic()
+                log.info("Голосовые чаты: микрофон чата выключен")
             else:
                 self._entries.remove(e)
-        self._save()
-        self.changed = len(self._entries)
-        if n:
-            log.info("Голосовые чаты: приостановлено звуковых процессов %d", n)
-
-    def _resume(self, b: Backend, e: Entry) -> bool:
-        if b.created(e.pid) != e.created:
-            return False                 # процесс закрылся (или pid уже чужой)
-        return bool(b.resume(e.pid))
-
-    def _release_unwanted(self) -> None:
-        b = self._ensure_backend()
-        if b is None:
-            return
-        drop = [e for e in self._entries if not self._active or not self._wanted(b, e.pid)]
-        for e in drop:
-            try:
-                self._resume(b, e)
-            except Exception:
-                log.debug("Голосовые чаты: не возобновлён", exc_info=True)
-            self._entries.remove(e)
-        if drop:
-            self.changed = len(self._entries)
+                self._skip.add(pid)
             self._save()
+        self.changed = len(self._entries)
 
-    def _resume_all(self) -> int:
+    def _unmute_all(self) -> None:
         if not self._entries:
-            return 0
+            return
         b = self._ensure_backend()
         if b is None:
-            return 0                     # остаются в файле — возобновит следующий запуск
+            return                       # остаются в файле — включит следующий запуск
+        wins = b.windows(self._apps) if self._apps else {}
         n = 0
         for e in list(self._entries):
-            try:
-                if self._resume(b, e):
-                    n += 1
-            except Exception:
-                log.debug("Голосовые чаты: не возобновлён", exc_info=True)
+            if b.created(e.pid) == e.created:
+                hwnds = wins.get(e.pid)
+                if hwnds is None:        # список приложений сменился — окна процесса заново
+                    hwnds = b.windows(frozenset({"*"})).get(e.pid, [])
+                wait = SETTLE_S - (time.monotonic() - self._pressed.get(e.pid, -1e9))
+                if wait > 0:
+                    time.sleep(min(wait, SETTLE_S))   # нажатие только что — дать перерисоваться
+                _, unmute = _state(b, hwnds)
+                if unmute is not None:
+                    try:
+                        if b.press(unmute, is_unmute):
+                            n += 1
+                    except Exception:
+                        log.debug("Голосовые чаты: кнопка не нажата", exc_info=True)
             self._entries.remove(e)
+        self._pressed.clear()
         self.changed = 0
         self._save()
         if n:
-            log.info("Голосовые чаты: возобновлено звуковых процессов %d", n)
-        return n
+            log.info("Голосовые чаты: микрофон чата включён (%d)", n)
 
     # ---------- файл ----------
 
@@ -306,8 +323,7 @@ class AppMuter:
             log.warning("Голосовые чаты: %s не прочитан", STATE_FILE)
             return []
         if not isinstance(raw, dict) or raw.get("version") != FILE_VERSION:
-            self._saved = None
-            return []                    # 0.8.0 (беззвук сессий) — Windows не помнит его
+            return []                    # 0.8.0/0.8.1 — другой способ, возвращать нечего
         out: list[Entry] = []
         for it in raw.get("entries", []):
             try:
@@ -338,41 +354,29 @@ class AppMuter:
 
 # ---------- Windows ----------
 
-_E_RENDER, _E_CAPTURE = 0, 1
-_DEVICE_STATE_ACTIVE = 0x1
-_STATE_EXPIRED = 2
 _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
-_PROCESS_SUSPEND_RESUME = 0x0800
 
 
 class WinBackend:
-    """Процессы с аудиосессиями (Core Audio) и их приостановка (поток rupor-appmute)."""
+    """Окна приложений (EnumWindows) и их кнопки (rupor.uia)."""
 
     def __init__(self) -> None:
-        from . import duck
-        self._duck = duck
-        comtypes = duck._com_init()
-        self._i = duck._interfaces()
-        self._enum = comtypes.CoCreateInstance(
-            self._i.GUID(duck._CLSID_MMDEVICE_ENUMERATOR), interface=self._i.IMMDeviceEnumerator,
-            clsctx=comtypes.CLSCTX_INPROC_SERVER)
-        self._managers: dict[str, Any] = {}
+        from ctypes import wintypes as wt
+        self._wt = wt
+        self._u32 = ctypes.WinDLL("user32", use_last_error=True)
         self._k32 = ctypes.WinDLL("kernel32", use_last_error=True)
-        self._nt = ctypes.WinDLL("ntdll")
         self._k32.OpenProcess.restype = ctypes.c_void_p
         self._k32.OpenProcess.argtypes = [ctypes.c_uint32, ctypes.c_int, ctypes.c_uint32]
         self._k32.CloseHandle.argtypes = [ctypes.c_void_p]
         self._k32.QueryFullProcessImageNameW.argtypes = [
             ctypes.c_void_p, ctypes.c_uint32, ctypes.c_wchar_p, ctypes.POINTER(ctypes.c_uint32)]
         self._k32.GetProcessTimes.argtypes = [ctypes.c_void_p] + [ctypes.c_void_p] * 4
-        self._nt.NtSuspendProcess.argtypes = [ctypes.c_void_p]
-        self._nt.NtResumeProcess.argtypes = [ctypes.c_void_p]
-
-    def _open(self, pid: int, access: int) -> Any:
-        return self._k32.OpenProcess(access, 0, int(pid))
+        self._u32.GetWindowThreadProcessId.argtypes = [wt.HWND, ctypes.POINTER(wt.DWORD)]
+        self._u32.IsWindowVisible.argtypes = [wt.HWND]
+        self._names: dict[int, str] = {}
 
     def process_name(self, pid: int) -> str:
-        h = self._open(pid, _PROCESS_QUERY_LIMITED_INFORMATION)
+        h = self._k32.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, 0, int(pid))
         if not h:
             return ""
         try:
@@ -385,7 +389,7 @@ class WinBackend:
             self._k32.CloseHandle(h)
 
     def created(self, pid: int) -> int | None:
-        h = self._open(pid, _PROCESS_QUERY_LIMITED_INFORMATION)
+        h = self._k32.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, 0, int(pid))
         if not h:
             return None
         try:
@@ -396,51 +400,34 @@ class WinBackend:
         finally:
             self._k32.CloseHandle(h)
 
-    def _call(self, pid: int, fn: Any) -> bool:
-        h = self._open(pid, _PROCESS_SUSPEND_RESUME)
-        if not h:
-            return False
-        try:
-            return int(fn(h)) == 0       # NTSTATUS STATUS_SUCCESS
-        finally:
-            self._k32.CloseHandle(h)
+    def windows(self, apps: frozenset[str]) -> dict[int, list[int]]:
+        wt = self._wt
+        out: dict[int, list[int]] = {}
+        names: dict[int, str] = {}
+        cb_t = ctypes.WINFUNCTYPE(wt.BOOL, wt.HWND, wt.LPARAM)
 
-    def suspend(self, pid: int) -> bool:
-        return self._call(pid, self._nt.NtSuspendProcess)
+        def cb(h: Any, _l: Any) -> bool:
+            if not self._u32.IsWindowVisible(h):
+                return True
+            pid = wt.DWORD()
+            self._u32.GetWindowThreadProcessId(h, ctypes.byref(pid))
+            p = int(pid.value)
+            if p not in names:
+                names[p] = norm_app(self.process_name(p))
+            if "*" in apps or names[p] in apps:
+                out.setdefault(p, []).append(int(h))
+            return True
 
-    def resume(self, pid: int) -> bool:
-        return self._call(pid, self._nt.NtResumeProcess)
-
-    def audio_pids(self) -> set[int]:
-        i, take = self._i, self._duck._take_str
-        out: set[int] = set()
-        for flow in (_E_CAPTURE, _E_RENDER):
-            col = self._enum.EnumAudioEndpoints(flow, _DEVICE_STATE_ACTIVE)
-            for k in range(int(col.GetCount())):
-                try:
-                    dev = col.Item(k)
-                    dev_id = take(dev.GetId())
-                    mgr = self._managers.get(dev_id)
-                    if mgr is None:
-                        if len(self._managers) > 32:
-                            self._managers.clear()
-                        unk = dev.Activate(i.IAudioSessionManager2._iid_, self._duck._CLSCTX_ALL,
-                                           None)
-                        mgr = unk.QueryInterface(i.IAudioSessionManager2)
-                        self._managers[dev_id] = mgr
-                    en = mgr.GetSessionEnumerator()
-                    count = int(en.GetCount())
-                except Exception:
-                    continue
-                for j in range(count):
-                    try:
-                        c2 = en.GetSession(j).QueryInterface(i.IAudioSessionControl2)
-                        if int(c2.GetState()) == _STATE_EXPIRED:
-                            continue
-                        out.add(int(c2.GetProcessId()))
-                    except Exception:
-                        continue
+        self._u32.EnumWindows(cb_t(cb), 0)
         return out
+
+    def buttons(self, hwnd: int) -> list[str] | None:
+        from . import uia
+        return uia.button_names(hwnd)
+
+    def press(self, hwnd: int, match: Callable[[str], bool]) -> bool:
+        from . import uia
+        return uia.press_button(hwnd, match) is not None
 
 
 def default_backend() -> Backend:
