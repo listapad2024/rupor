@@ -28,8 +28,8 @@ class FakeMuter:
     def start(self) -> None:
         self._add("start")
 
-    def mute(self, apps: Any, output: bool = True) -> None:
-        self._add("mute", tuple(apps), output)
+    def mute(self, apps: Any) -> None:
+        self._add("mute", tuple(apps))
 
     def restore(self) -> None:
         self._add("restore")
@@ -57,7 +57,7 @@ def menv(monkeypatch: pytest.MonkeyPatch, env: Env  # noqa: F811
 
 def test_defaults_and_validation() -> None:
     s = config.Settings()
-    assert s.app_mute_enabled and s.app_mute_output
+    assert s.app_mute_enabled
     assert s.app_mute_apps == ["codex.exe", "chatgpt.exe"]
     assert appmute.DEFAULT_APPS == s.app_mute_apps
     s2 = config.Settings()
@@ -71,7 +71,7 @@ def test_mutes_on_press_and_restores_on_stop(menv: tuple[Env, FakeMuter]) -> Non
     env, m = menv
     act(env, Kind.START)
     wait_until(lambda: bool(m.ops()))
-    assert m.ops()[0] == ("mute", ("codex.exe", "chatgpt.exe"), True)
+    assert m.ops()[0] == ("mute", ("codex.exe", "chatgpt.exe"))
     act(env, Kind.CANCEL)
     wait_until(lambda: m.ops()[-1] == ("restore",))
 
@@ -95,8 +95,8 @@ def test_turned_off_during_recording_restores(menv: tuple[Env, FakeMuter]) -> No
     env, m = menv
     act(env, Kind.START)
     wait_until(lambda: bool(m.ops()))
-    env.client().call("set_settings", {"patch": {"app_mute_output": False}})
-    assert ("mute", ("codex.exe", "chatgpt.exe"), False) in m.ops()
+    env.client().call("set_settings", {"patch": {"app_mute_apps": ["chatgpt.exe"]}})
+    assert ("mute", ("chatgpt.exe",)) in m.ops()
     env.client().call("set_settings", {"patch": {"app_mute_enabled": False}})
     assert m.ops()[-1] == ("restore",)
     act(env, Kind.CANCEL)

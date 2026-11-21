@@ -1,32 +1,30 @@
-"""Выключение голосовых чатов на время диктовки (live chat Codex, ChatGPT и т. п.).
+"""Голосовые чаты не слышат диктовку (live chat Codex, ChatGPT и т. п.).
 
 Пока зажата клавиша диктовки, приложения из списка (``Settings.app_mute_apps``, имена
-exe: ``codex.exe``, ``chatgpt.exe``) не должны слышать голос: он уходит в диктовку Рупора.
-Для этого выключается (беззвук) их **сессия захвата** микрофона — та же аудиосессия Core
-Audio, что видна в микшере громкости, только на устройстве записи: Windows отдаёт такому
-приложению тишину, а Рупор и все прочие слышат микрофон как обычно (у каждого процесса своя
-сессия). С ``app_mute_output`` выключается и их звук (ответ голосового ассистента не
-перебивает диктовку). После записи всё возвращается как было.
+exe: ``chatgpt.exe`` — это и десктопный Codex, ``codex.exe``) не должны слышать голос: он
+уходит в диктовку Рупора.
 
-Core Audio: IMMDeviceEnumerator → все активные устройства записи и вывода →
-IAudioSessionManager2 → IAudioSessionControl2 + ISimpleAudioVolume (описания интерфейсов —
-из rupor.duck). Процесс сессии узнаётся по pid (QueryFullProcessImageNameW, имя exe без
-пути, без учёта регистра); у приложений на Electron/Chromium звук пишет дочерний процесс
-с тем же именем exe — он тоже подходит.
+Почему не беззвук сессии захвата: на многих микрофонах (проверено на ПК автора) беззвук
+одной сессии захвата в Windows глушит все сессии этого устройства — Рупор тоже получал бы
+тишину. Поэтому на время записи **приостанавливаются процессы приложения, которые держат
+аудиосессии** (NtSuspendProcess). У приложений на Electron/Chromium это отдельный звуковой
+процесс (``ChatGPT.exe --utility-sub-type=audio.mojom…``): окно, сеть и сам разговор
+продолжают работать, просто звук на эти секунды не пишется и не играет (ответ ассистента
+доиграет после). Микрофон при этом свободно слышат Рупор и все остальные.
 
-Приглушается всё, что подходит, сразу при нажатии клавиши (не дожидаясь подтверждения
-записи: первые слова не должны уйти в чат), и то, что появилось во время записи, —
-переопросом раз в ``POLL_S``. Возвращается только то, что выключили мы. Если пользователь во
-время записи сам включил звук выключенной сессии — это его: не трогаем до конца записи.
+Процессы находятся через Core Audio: все сессии на активных устройствах записи и вывода
+(IAudioSessionManager2, интерфейсы — из rupor.duck), pid сессии → имя exe
+(QueryFullProcessImageNameW, без пути и регистра). Свои процессы, pid 0/4 и чужие имена не
+трогаются никогда. Появившиеся во время записи — переопросом раз в ``POLL_S``.
 
-Защита от «залипшего» беззвука — как в rupor.duck: выключенные сессии пишутся в
-``%APPDATA%\\Rupor\\appmute.json`` **до** изменения; при старте ядра всё, что там осталось,
-включается обратно. Windows помнит беззвук приложения между запусками (по идентификатору
-сессии без pid), поэтому запись о закрывшемся приложении ждёт его нового экземпляра
-не дольше ``PENDING_TTL_S``.
+Защита от «замёрзшего» звука чата: приостановленные процессы (pid + время создания,
+чтобы не спутать с новым процессом на том же pid) пишутся в
+``%APPDATA%\\Rupor\\appmute.json`` **до** приостановки; при старте ядра всё, что там
+осталось, возобновляется. Дольше ``MAX_SUSPEND_S`` подряд процесс не держится (потерянное
+отпускание клавиши) — возобновляется сам.
 
-Все вызовы Core Audio — в фоновом потоке ``rupor-appmute`` (COM MTA); движок только ставит
-команды в очередь. Приватность: в лог — только числа, имён процессов нет.
+Все вызовы — в фоновом потоке ``rupor-appmute``; движок только ставит команды в очередь.
+Приватность: в лог — только числа, имён процессов нет.
 """
 from __future__ import annotations
 
@@ -43,13 +41,12 @@ from typing import Any, Callable, Iterable, Protocol
 
 log = logging.getLogger(__name__)
 
-POLL_S = 0.5                 # во время записи: новые сессии, включённые пользователем
-PENDING_POLL_S = 3.0         # вне записи, пока есть невозвращённые записи
-PENDING_TTL_S = 7 * 86400.0
-MAX_ENTRIES = 256
+POLL_S = 0.5                 # во время записи: новые звуковые процессы приложений
+MAX_SUSPEND_S = 660.0        # дольше записи (MAX_RECORD_S = 600) процесс не держим
 CLOSE_TIMEOUT_S = 2.0
 STATE_FILE = "appmute.json"
-FILE_VERSION = 1
+FILE_VERSION = 2
+MAX_ENTRIES = 64
 
 DEFAULT_APPS = ["codex.exe", "chatgpt.exe"]
 
@@ -62,50 +59,44 @@ def norm_app(name: str) -> str:
     return n
 
 
-# ---------- сессии ----------
-
-class AppSession(Protocol):
-    @property
-    def instance(self) -> str: ...      # идентификатор экземпляра (с pid)
-    @property
-    def session(self) -> str: ...       # идентификатор сессии (приложение + устройство)
-    @property
-    def pid(self) -> int: ...
-    @property
-    def capture(self) -> bool: ...      # сессия на устройстве записи
-    @property
-    def system(self) -> bool: ...
-
-    def muted(self) -> bool: ...
-    def set_muted(self, m: bool) -> None: ...
-
+# ---------- процессы (Windows или фейк в тестах) ----------
 
 class Backend(Protocol):
-    def sessions(self) -> list[AppSession]: ...
+    def audio_pids(self) -> set[int]: ...          # pid всех процессов с аудиосессиями
     def process_name(self, pid: int) -> str: ...
+    def created(self, pid: int) -> int | None: ...   # время создания (None — процесса нет)
+    def suspend(self, pid: int) -> bool: ...
+    def resume(self, pid: int) -> bool: ...
 
 
 class NullBackend:
-    """Нет Core Audio (тесты): сессий нет."""
+    """Нет Windows (тесты): процессов нет."""
 
-    def sessions(self) -> list[AppSession]:
-        return []
+    def audio_pids(self) -> set[int]:
+        return set()
 
     def process_name(self, pid: int) -> str:
         return ""
 
+    def created(self, pid: int) -> int | None:
+        return None
+
+    def suspend(self, pid: int) -> bool:
+        return False
+
+    def resume(self, pid: int) -> bool:
+        return False
+
 
 @dataclass(eq=False)
 class Entry:
-    instance: str
-    session: str
     pid: int
-    capture: bool
-    ts: float
+    created: int
+    ts: float          # когда приостановили (unix, с)
 
 
 class AppMuter:
-    """``mute(apps, output)`` и ``restore()`` не блокируют (поток ``rupor-appmute``)."""
+    """``mute(apps)`` и ``restore()`` не блокируют (поток ``rupor-appmute``)."""
 
     def __init__(self, own_pids: Iterable[int] = (), path: Path | None = None,
                  backend_factory: Callable[[], Backend] | None = None) -> None:
@@ -118,15 +109,12 @@ class AppMuter:
         # дальше — только поток rupor-appmute
         self._backend: Backend | None = None
         self._entries: list[Entry] = []
-        self._pending: list[Entry] = []     # приложение закрылось выключенным — ждём его
         self._active = False
+        self._since = 0.0
         self._apps: frozenset[str] = frozenset()
-        self._output = True
-        self._user_off: set[str] = set()
-        self._names: dict[int, str] = {}
         self._saved: str | None = None
         self._warned = False
-        self.changed = 0                    # сколько сессий сейчас выключено нами
+        self.changed = 0                    # сколько процессов сейчас приостановлено нами
 
     # ---------- API ----------
 
@@ -138,8 +126,9 @@ class AppMuter:
                 self._thread.start()
 
     def mute(self, apps: Iterable[str], output: bool = True) -> None:
-        self._q.put(("mute", frozenset(a for a in (norm_app(x) for x in apps) if a),
-                     bool(output)))
+        """Приостановить звуковые процессы приложений apps до restore(). output — прежний
+        параметр (звук приостановленного процесса не играет в любом случае)."""
+        self._q.put(("mute", frozenset(a for a in (norm_app(x) for x in apps) if a)))
 
     def restore(self) -> None:
         self._q.put(("restore",))
@@ -168,45 +157,46 @@ class AppMuter:
             except Exception as e:
                 if not self._warned:
                     self._warned = True
-                    log.warning("Голосовые чаты: Core Audio недоступен (%s)", type(e).__name__)
+                    log.warning("Голосовые чаты: недоступно (%s)", type(e).__name__)
                 return None
         return self._backend
 
     def _run(self) -> None:
         try:
-            self._pending = self._load()
-            if self._pending:
-                self._settle_pending()
+            left = self._load()
+            if left:
+                self._entries = left
+                n = self._resume_all()
+                log.info("Голосовые чаты: возобновлено после прошлого запуска %d", n)
         except Exception:
-            log.exception("Голосовые чаты: не удалось вернуть звук после прошлого запуска")
+            log.exception("Голосовые чаты: не удалось возобновить после прошлого запуска")
         while True:
-            wait = POLL_S if self._active else (PENDING_POLL_S if self._pending else None)
             try:
-                cmd = self._q.get(timeout=wait)
+                cmd = self._q.get(timeout=POLL_S if self._active else None)
             except queue.Empty:
                 try:
-                    if self._active:
+                    if self._active and time.monotonic() - self._since > MAX_SUSPEND_S:
+                        log.warning("Голосовые чаты: запись слишком долгая — возобновлены")
+                        self._active = False
+                        self._resume_all()
+                    elif self._active:
                         self._poll()
-                    elif self._pending:
-                        self._settle_pending()
                 except Exception:
                     log.debug("Голосовые чаты: переопрос не удался", exc_info=True)
                     self._backend = None
                 continue
             try:
                 if cmd[0] == "mute":
-                    self._apps, self._output = cmd[1], cmd[2]
+                    self._apps = cmd[1]
                     if not self._active:
-                        self._user_off.clear()
+                        self._since = time.monotonic()
                     self._active = bool(self._apps)
-                    # список или «и звук» поменялись — лишнее включаем обратно
-                    self._release(lambda e: not self._wanted_entry(e))
+                    self._release_unwanted()
                     if self._active:
                         self._poll()
                 elif cmd[0] == "restore":
                     self._active = False
-                    self._user_off.clear()
-                    self._release(lambda e: True)
+                    self._resume_all()
                 elif cmd[0] == "flush":
                     cmd[1].set()
                 elif cmd[0] == "stop":
@@ -217,132 +207,86 @@ class AppMuter:
                 if cmd[0] == "flush":
                     cmd[1].set()
 
-    def _name(self, b: Backend, pid: int) -> str:
-        n = self._names.get(pid)
-        if n is None:
-            try:
-                n = norm_app(b.process_name(pid))
-            except Exception:
-                n = ""
-            if len(self._names) > 512:
-                self._names.clear()
-            self._names[pid] = n
-        return n
-
-    def _wanted_entry(self, e: Entry) -> bool:
-        if not self._active:
+    def _wanted(self, b: Backend, pid: int) -> bool:
+        if pid in self._own or pid in (0, 4):
             return False
-        if not e.capture and not self._output:
+        try:
+            return norm_app(b.process_name(pid)) in self._apps
+        except Exception:
             return False
-        b = self._backend
-        return b is not None and self._name(b, e.pid) in self._apps
 
     def _poll(self) -> None:
         b = self._ensure_backend()
         if b is None:
             return
-        sessions = b.sessions()
-        live = {s.instance: s for s in sessions}
-        ours = {e.instance for e in self._entries}
-        # включил сам пользователь — его, отпускаем
-        for e in list(self._entries):
-            s = live.get(e.instance)
-            if s is not None:
-                try:
-                    if not s.muted():
-                        self._entries.remove(e)
-                        self._user_off.add(e.instance)
-                except Exception:
-                    pass
-        new: list[tuple[AppSession, Entry]] = []
-        for s in sessions:
-            if (s.instance in ours or s.instance in self._user_off or s.system
-                    or s.pid in self._own or not s.pid):
+        ours = {e.pid for e in self._entries}
+        new: list[Entry] = []
+        for pid in sorted(b.audio_pids()):
+            if pid in ours or not self._wanted(b, pid):
                 continue
-            if not s.capture and not self._output:
+            c = b.created(pid)
+            if c is None:
                 continue
-            if self._name(b, s.pid) not in self._apps:
-                continue
-            try:
-                if s.muted():
-                    self._user_off.add(s.instance)   # уже без звука — не наше
-                    continue
-            except Exception:
-                continue
-            new.append((s, Entry(s.instance, s.session, s.pid, s.capture, time.time())))
+            new.append(Entry(pid, c, time.time()))
         if not new:
-            self._save()
             return
-        self._entries += [e for _, e in new]
-        self._save()                     # до изменения: падение не оставит беззвук
+        self._entries += new
+        self._save()                     # до приостановки: падение не оставит чат без звука
         n = 0
-        for s, e in new:
+        for e in new:
+            ok = False
             try:
-                s.set_muted(True)
-                n += 1
+                ok = b.suspend(e.pid)
             except Exception:
+                log.debug("Голосовые чаты: не приостановлен", exc_info=True)
+            if ok:
+                n += 1
+            else:
                 self._entries.remove(e)
         self._save()
         self.changed = len(self._entries)
         if n:
-            log.info("Голосовые чаты: выключено сессий %d (захват %d)", n,
-                     sum(1 for _, e in new if e.capture))
+            log.info("Голосовые чаты: приостановлено звуковых процессов %d", n)
 
-    def _release(self, which: Callable[[Entry], bool]) -> None:
-        sel = [e for e in self._entries if which(e)]
-        if not sel:
-            return
-        b = self._ensure_backend()
-        live: dict[str, AppSession] = {}
-        if b is not None:
-            try:
-                live = {s.instance: s for s in b.sessions()}
-            except Exception:
-                self._backend = None
-                log.debug("Голосовые чаты: сессии не перечислены", exc_info=True)
-                return                   # остаются в файле — вернём при следующем случае
-        back = 0
-        for e in sel:
-            s = live.get(e.instance)
-            self._entries.remove(e)
-            if s is None:
-                self._pending.append(e)  # приложение закрылось — ждём его
-                continue
-            try:
-                if s.muted():
-                    s.set_muted(False)
-                    back += 1
-            except Exception:
-                self._pending.append(e)
-        self.changed = len(self._entries)
-        self._save()
-        if back:
-            log.info("Голосовые чаты: звук возвращён сессиям %d", back)
+    def _resume(self, b: Backend, e: Entry) -> bool:
+        if b.created(e.pid) != e.created:
+            return False                 # процесс закрылся (или pid уже чужой)
+        return bool(b.resume(e.pid))
 
-    def _settle_pending(self) -> None:
+    def _release_unwanted(self) -> None:
         b = self._ensure_backend()
         if b is None:
             return
-        now = time.time()
-        self._pending = [e for e in self._pending if now - e.ts < PENDING_TTL_S]
-        sessions = b.sessions()
-        by_inst = {s.instance: s for s in sessions}
-        by_sess: dict[str, AppSession] = {}
-        for x in sessions:
-            by_sess.setdefault(x.session, x)
-        left: list[Entry] = []
-        for e in self._pending:
-            s = by_inst.get(e.instance) or by_sess.get(e.session)
-            if s is None:
-                left.append(e)
-                continue
+        drop = [e for e in self._entries if not self._active or not self._wanted(b, e.pid)]
+        for e in drop:
             try:
-                if s.muted():
-                    s.set_muted(False)
+                self._resume(b, e)
             except Exception:
-                left.append(e)
-        self._pending = left
+                log.debug("Голосовые чаты: не возобновлён", exc_info=True)
+            self._entries.remove(e)
+        if drop:
+            self.changed = len(self._entries)
+            self._save()
+
+    def _resume_all(self) -> int:
+        if not self._entries:
+            return 0
+        b = self._ensure_backend()
+        if b is None:
+            return 0                     # остаются в файле — возобновит следующий запуск
+        n = 0
+        for e in list(self._entries):
+            try:
+                if self._resume(b, e):
+                    n += 1
+            except Exception:
+                log.debug("Голосовые чаты: не возобновлён", exc_info=True)
+            self._entries.remove(e)
+        self.changed = 0
         self._save()
+        if n:
+            log.info("Голосовые чаты: возобновлено звуковых процессов %d", n)
+        return n
 
     # ---------- файл ----------
 
@@ -361,19 +305,21 @@ class AppMuter:
         except Exception:
             log.warning("Голосовые чаты: %s не прочитан", STATE_FILE)
             return []
+        if not isinstance(raw, dict) or raw.get("version") != FILE_VERSION:
+            self._saved = None
+            return []                    # 0.8.0 (беззвук сессий) — Windows не помнит его
         out: list[Entry] = []
-        for it in raw.get("entries", []) if isinstance(raw, dict) else []:
+        for it in raw.get("entries", []):
             try:
-                out.append(Entry(str(it["instance"]), str(it["session"]), int(it["pid"]),
-                                 bool(it["capture"]), float(it["ts"])))
+                out.append(Entry(int(it["pid"]), int(it["created"]), float(it["ts"])))
             except Exception:
                 continue
         return out[-MAX_ENTRIES:]
 
     def _save(self) -> None:
-        all_ = (self._pending + self._entries)[-MAX_ENTRIES:]
+        all_ = self._entries[-MAX_ENTRIES:]
         text = "" if not all_ else json.dumps(
-            {"version": FILE_VERSION, "entries": [asdict(e) for e in all_]}, ensure_ascii=False)
+            {"version": FILE_VERSION, "entries": [asdict(e) for e in all_]})
         if text == self._saved:
             return
         p = self._file()
@@ -390,30 +336,17 @@ class AppMuter:
             log.debug("Голосовые чаты: %s не записан", STATE_FILE, exc_info=True)
 
 
-# ---------- Core Audio ----------
+# ---------- Windows ----------
 
 _E_RENDER, _E_CAPTURE = 0, 1
 _DEVICE_STATE_ACTIVE = 0x1
 _STATE_EXPIRED = 2
 _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+_PROCESS_SUSPEND_RESUME = 0x0800
 
 
-class _CoreSession:
-    def __init__(self, instance: str, session: str, pid: int, capture: bool, system: bool,
-                 vol: Any) -> None:
-        self.instance, self.session, self.pid = instance, session, pid
-        self.capture, self.system = capture, system
-        self._vol = vol
-
-    def muted(self) -> bool:
-        return bool(self._vol.GetMute())
-
-    def set_muted(self, m: bool) -> None:
-        self._vol.SetMute(1 if m else 0, None)
-
-
-class CoreAudioBackend:
-    """Сессии на всех активных устройствах записи и вывода (поток rupor-appmute)."""
+class WinBackend:
+    """Процессы с аудиосессиями (Core Audio) и их приостановка (поток rupor-appmute)."""
 
     def __init__(self) -> None:
         from . import duck
@@ -424,24 +357,63 @@ class CoreAudioBackend:
             self._i.GUID(duck._CLSID_MMDEVICE_ENUMERATOR), interface=self._i.IMMDeviceEnumerator,
             clsctx=comtypes.CLSCTX_INPROC_SERVER)
         self._managers: dict[str, Any] = {}
+        self._k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        self._nt = ctypes.WinDLL("ntdll")
+        self._k32.OpenProcess.restype = ctypes.c_void_p
+        self._k32.OpenProcess.argtypes = [ctypes.c_uint32, ctypes.c_int, ctypes.c_uint32]
+        self._k32.CloseHandle.argtypes = [ctypes.c_void_p]
+        self._k32.QueryFullProcessImageNameW.argtypes = [
+            ctypes.c_void_p, ctypes.c_uint32, ctypes.c_wchar_p, ctypes.POINTER(ctypes.c_uint32)]
+        self._k32.GetProcessTimes.argtypes = [ctypes.c_void_p] + [ctypes.c_void_p] * 4
+        self._nt.NtSuspendProcess.argtypes = [ctypes.c_void_p]
+        self._nt.NtResumeProcess.argtypes = [ctypes.c_void_p]
+
+    def _open(self, pid: int, access: int) -> Any:
+        return self._k32.OpenProcess(access, 0, int(pid))
 
     def process_name(self, pid: int) -> str:
-        k32 = ctypes.windll.kernel32
-        h = k32.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, False, int(pid))
+        h = self._open(pid, _PROCESS_QUERY_LIMITED_INFORMATION)
         if not h:
             return ""
         try:
             buf = ctypes.create_unicode_buffer(1024)
-            n = ctypes.c_uint(1024)
-            if not k32.QueryFullProcessImageNameW(h, 0, buf, ctypes.byref(n)):
+            n = ctypes.c_uint32(1024)
+            if not self._k32.QueryFullProcessImageNameW(h, 0, buf, ctypes.byref(n)):
                 return ""
             return buf.value
         finally:
-            k32.CloseHandle(h)
+            self._k32.CloseHandle(h)
 
-    def sessions(self) -> list[AppSession]:
+    def created(self, pid: int) -> int | None:
+        h = self._open(pid, _PROCESS_QUERY_LIMITED_INFORMATION)
+        if not h:
+            return None
+        try:
+            t = [ctypes.c_uint64() for _ in range(4)]
+            if not self._k32.GetProcessTimes(h, *[ctypes.byref(x) for x in t]):
+                return None
+            return int(t[0].value)
+        finally:
+            self._k32.CloseHandle(h)
+
+    def _call(self, pid: int, fn: Any) -> bool:
+        h = self._open(pid, _PROCESS_SUSPEND_RESUME)
+        if not h:
+            return False
+        try:
+            return int(fn(h)) == 0       # NTSTATUS STATUS_SUCCESS
+        finally:
+            self._k32.CloseHandle(h)
+
+    def suspend(self, pid: int) -> bool:
+        return self._call(pid, self._nt.NtSuspendProcess)
+
+    def resume(self, pid: int) -> bool:
+        return self._call(pid, self._nt.NtResumeProcess)
+
+    def audio_pids(self) -> set[int]:
         i, take = self._i, self._duck._take_str
-        out: list[AppSession] = []
+        out: set[int] = set()
         for flow in (_E_CAPTURE, _E_RENDER):
             col = self._enum.EnumAudioEndpoints(flow, _DEVICE_STATE_ACTIVE)
             for k in range(int(col.GetCount())):
@@ -462,20 +434,14 @@ class CoreAudioBackend:
                     continue
                 for j in range(count):
                     try:
-                        ctl = en.GetSession(j)
-                        c2 = ctl.QueryInterface(i.IAudioSessionControl2)
+                        c2 = en.GetSession(j).QueryInterface(i.IAudioSessionControl2)
                         if int(c2.GetState()) == _STATE_EXPIRED:
                             continue
-                        out.append(_CoreSession(
-                            take(c2.GetSessionInstanceIdentifier()),
-                            take(c2.GetSessionIdentifier()),
-                            int(c2.GetProcessId()), flow == _E_CAPTURE,
-                            c2.IsSystemSoundsSession() == 0,
-                            ctl.QueryInterface(i.ISimpleAudioVolume)))
+                        out.add(int(c2.GetProcessId()))
                     except Exception:
                         continue
         return out
 
 
 def default_backend() -> Backend:
-    return CoreAudioBackend()
+    return WinBackend()

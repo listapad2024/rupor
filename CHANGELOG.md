@@ -6,6 +6,18 @@ All notable changes to Rupor are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.8.1] — 2026-11-21
+
+### Fixed
+
+- **Dictation recorded silence while a voice chat was open.** 0.8.0 muted the voice chat's
+  own microphone session, but on many microphones Windows applies that mute to every app
+  recording from the device, Rupor included. Now Rupor pauses the voice chat's audio process
+  for the time you hold the key instead: the chat doesn't hear you and stays silent, the
+  window and the conversation stay open, and Rupor hears the microphone as usual. The
+  Codex desktop app is `ChatGPT.exe` on Windows, which is already on the default list. The
+  "mute their audio too" switch is gone: a paused chat makes no sound anyway.
+
 ## [0.8.0] — 2026-11-21
 
 ### Added

@@ -1,6 +1,6 @@
 // «Настройки → Диктовка → Голосовые чаты во время диктовки» (app_mute_*).
-// Пока держите клавишу диктовки, ядро выключает микрофон (сессию захвата Core Audio) и,
-// по желанию, звук приложений из списка — live chat Codex, ChatGPT — и возвращает после.
+// Пока держите клавишу диктовки, ядро приостанавливает звуковые процессы приложений из
+// списка (live chat Codex, ChatGPT): они не слышат микрофон и молчат, а после — продолжают.
 import { Info } from "lucide-react";
 import { t } from "../i18n";
 import type { Settings, SettingsPatch } from "../lib/types";
@@ -14,11 +14,10 @@ export function AppMuteSection({
   s,
   set,
 }: {
-  s: Partial<Pick<Settings, "app_mute_enabled" | "app_mute_apps" | "app_mute_output">>;
+  s: Partial<Pick<Settings, "app_mute_enabled" | "app_mute_apps">>;
   set: (p: SettingsPatch) => Promise<boolean>;
 }) {
   const enabled = s.app_mute_enabled ?? true;
-  const output = s.app_mute_output ?? true;
   const apps = s.app_mute_apps ?? APP_MUTE_DEFAULT_APPS;
 
   return (
@@ -30,14 +29,6 @@ export function AppMuteSection({
             checked={enabled}
             label={t("settings.dictation.appMute.enabled")}
             onChange={(v) => void set({ app_mute_enabled: v })}
-          />
-        </SettingRow>
-        <SettingRow title={t("settings.dictation.appMute.output")} description={t("settings.dictation.appMute.outputHint")}>
-          <Switch
-            checked={output}
-            disabled={!enabled}
-            label={t("settings.dictation.appMute.output")}
-            onChange={(v) => void set({ app_mute_output: v })}
           />
         </SettingRow>
         <SettingRow stacked title={t("settings.dictation.appMute.apps")} description={t("settings.dictation.appMute.appsHint")}>

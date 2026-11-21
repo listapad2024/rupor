@@ -293,7 +293,6 @@ const DEFAULT_SETTINGS: Settings = {
   duck_level: 15,
   app_mute_enabled: true,
   app_mute_apps: ["codex.exe", "chatgpt.exe"],
-  app_mute_output: true,
   sounds: true,
   autostart: true,
   default_style: "normal",

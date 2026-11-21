@@ -29,9 +29,9 @@
 возвращается, когда запись кончилась (стоп, отмена, выброс, лимит, пауза, смена микрофона
 или хоткеев), при смене duck_mode/duck_level, при выходе (сразу по команде quit — до
 завершения ядра) и в конце сеанса Windows (session_ending, WM_QUERYENDSESSION).
-Голосовые чаты (app_mute_*, appmute.py): у приложений из списка (live chat Codex, ChatGPT)
-выключаются микрофон и звук сразу при нажатии клавиши диктовки (не ждут подтверждения —
-первые слова не уходят в чат) и возвращаются там же, где звук компьютера.
+Голосовые чаты (app_mute_*, appmute.py): звуковые процессы приложений из списка (live chat
+Codex, ChatGPT) приостанавливаются сразу при нажатии клавиши диктовки (не ждут подтверждения —
+первые слова не уходят в чат) и возобновляются там же, где возвращается звук компьютера.
 
 Вставка только туда, где диктовали: если к моменту вставки активно другое окно (или фокус
 ушёл посреди печати), текст не вставляется, а остаётся в «Вставить последнее» и истории.
@@ -1058,14 +1058,15 @@ class Engine:
             log.exception("Звук компьютера: не удалось вернуть громкость")
 
     def _app_mute_on(self) -> None:
-        """Выключить микрофон (и звук) голосовых чатов из списка (звать под self._lock)."""
+        """Голосовые чаты из списка перестают слышать (и играть) — их звуковые процессы
+        приостанавливаются до конца записи (звать под self._lock)."""
         s = self.s
         apps = s.app_mute_apps if s.app_mute_enabled else []
         if not apps:
             self._app_mute_off()
             return
         try:
-            self.app_muter.mute(apps, s.app_mute_output)
+            self.app_muter.mute(apps)
             self._app_muted = True
         except Exception:
             log.exception("Голосовые чаты: не удалось выключить")
@@ -2772,7 +2773,7 @@ class Engine:
                     self._duck_off()
                 elif self._ducked or self._recording_confirmed():
                     self._duck_on()
-        if {"app_mute_enabled", "app_mute_apps", "app_mute_output"} & set(changed):
+        if {"app_mute_enabled", "app_mute_apps"} & set(changed):
             with self._lock:
                 if self._app_muted:
                     self._app_mute_on()   # выключено или список пуст — вернёт звук

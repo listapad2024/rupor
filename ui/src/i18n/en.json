@@ -740,15 +740,13 @@
       },
       "appMute": {
         "title": "Voice chats while dictating",
-        "hint": "While you hold the dictation key, Codex live chat, ChatGPT and other voice chats on the list can't hear you: your voice goes only to Rupor. Release it and the chat hears and talks again.",
-        "enabled": "Mute the microphone for voice chats",
-        "enabledHint": "The microphone is muted only for these apps; everything else (and Rupor) hears it as usual.",
-        "output": "Mute their audio too",
-        "outputHint": "The assistant's reply doesn't play over your dictation.",
+        "hint": "While you hold the dictation key, Codex live chat, ChatGPT and other voice chats on the list can't hear you: your voice goes only to Rupor. Release it and the conversation goes on.",
+        "enabled": "Voice chats don't hear dictation",
+        "enabledHint": "While recording, these apps' audio is paused: they don't hear the microphone and stay silent. The window and the conversation stay open; the assistant's reply plays afterwards.",
         "apps": "Apps",
-        "appsHint": "Program names (exe), separated by commas or new lines. Find the name in Task Manager → Details.",
+        "appsHint": "Program names (exe), separated by commas or new lines. The Codex desktop app is ChatGPT.exe on Windows. Find the name in Task Manager → Details.",
         "placeholder": "codex.exe, chatgpt.exe",
-        "note": "A browser (chrome.exe, msedge.exe) is muted as a whole, with all its tabs. If Rupor closes mid-recording, the chat's audio and microphone are restored the next time it starts."
+        "note": "A browser (chrome.exe, msedge.exe) is paused as a whole, with the audio of all its tabs. If Rupor closes mid-recording, the chat's audio comes back the next time it starts."
       }
     },
     "insert": {
