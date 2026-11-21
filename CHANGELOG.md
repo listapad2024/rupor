@@ -6,6 +6,20 @@ All notable changes to Rupor are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.8.0] — 2026-11-21
+
+### Added
+
+- **Voice chats don't hear your dictation.** While you hold the dictation key, Codex live chat,
+  ChatGPT voice and other voice chats on the list can't hear you: Rupor mutes their microphone
+  (their own capture session in Windows, the rest of the system and Rupor itself hear the mic
+  as usual) and, optionally, their audio, so the assistant's reply doesn't play over you. Your
+  voice goes only into the dictated prompt; release the key and the chat hears and talks
+  again. It kicks in the moment the key goes down, so the first words don't leak into the chat.
+  Settings → Dictation → *Voice chats while dictating*: on/off, "mute their audio too", and the
+  list of apps (exe names; `codex.exe`, `chatgpt.exe` by default). If Rupor closes
+  mid-recording, the chat's microphone and audio are restored the next time it starts.
+
 ## [0.6.0] — 2026-11-08
 
 ### Added
