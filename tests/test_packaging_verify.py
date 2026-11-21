@@ -45,8 +45,16 @@ d.mkdir(parents=True)
        else ", локализация: ok (ru 370, en 370)")
     + ("" if os.environ.get("FAKE", "") in ("NOAUDIO", "OLDSELFTEST", "NOLOCALES", "NOSPELL")
        else ", орфография: ошибка (API недоступно)" if "BADSPELL" in os.environ.get("FAKE", "")
-       else ", орфография: ok (ru да, en да)") + "\n", encoding="utf-8")
-if os.environ.get("FAKE", "") in ("BADAUDIO", "BADLOCALES", "BADSPELL"):
+       else ", орфография: ok (ru да, en да)")
+    + ("" if os.environ.get("FAKE", "") in ("NOAUDIO", "OLDSELFTEST", "NOLOCALES", "NOSPELL",
+                                             "NOCAPTURE")
+       else ", захват звука: ошибка (GetActivateResult: 0x8000000E E_ILLEGAL_METHOD_CALL)"
+       if "BADCAPTURE" in os.environ.get("FAKE", "")
+       else ", захват звука: недоступен (программы: нет (сборка Windows 19045, нужна 20348), "
+            "весь звук: да, помощник: да)" if "OLDWINCAPTURE" in os.environ.get("FAKE", "")
+       else ", захват звука: ok (программы: да, весь звук: да, помощник: да)") + "\n",
+    encoding="utf-8")
+if os.environ.get("FAKE", "") in ("BADAUDIO", "BADLOCALES", "BADSPELL", "BADCAPTURE"):
     sys.exit(1)
 if "LITTER" in os.environ.get("FAKE", ""):
     (pathlib.Path(os.environ["TEMP"]) / "comtypes_gen.py").write_text("x")
@@ -66,6 +74,29 @@ def test_fresh_core_passes(tmp_path: Path) -> None:
     assert "своё поле: ok" in why and "Core Audio: ok, сессий 7" in why
     assert "локализация: ok (ru 370, en 370)" in why
     assert "орфография: ok (ru да, en да)" in why
+    assert "захват звука: ok (программы: да, весь звук: да, помощник: да)" in why
+
+
+def test_core_without_capture_is_rejected_as_old(tmp_path: Path,
+                                                monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("FAKE", "NOCAPTURE")
+    ok, why = vc.verify(_fake(tmp_path, GOOD), runner=(sys.executable,))
+    assert not ok and "старая сборка" in why and "захват звука" in why
+
+
+def test_core_with_broken_capture_is_rejected(tmp_path: Path,
+                                              monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("FAKE", "BADCAPTURE")
+    ok, why = vc.verify(_fake(tmp_path, GOOD), runner=(sys.executable,))
+    assert not ok and "захват звука: ошибка" in why
+
+
+def test_capture_unavailable_on_old_windows_is_accepted(tmp_path: Path,
+                                                        monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("FAKE", "OLDWINCAPTURE")
+    ok, why = vc.verify(_fake(tmp_path, GOOD), runner=(sys.executable,))
+    assert ok, why
+    assert "захват звука: недоступен (" in why
 
 
 def test_core_without_spell_is_rejected_as_old(tmp_path: Path,

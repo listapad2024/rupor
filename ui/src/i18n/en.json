@@ -6,6 +6,7 @@
   "nav": {
     "home": "Home",
     "history": "History",
+    "speech": "Speech",
     "dictionary": "Dictionary",
     "snippets": "Snippets",
     "styles": "Styles",
@@ -32,7 +33,9 @@
     "noModel": "Model not loaded",
     "aiOn": "AI on",
     "aiOff": "AI off",
-    "admin": "Administrator"
+    "admin": "Administrator",
+    "version": "Version {v}",
+    "coreVersion": "engine {v}"
   },
   "mock": {
     "simulate": "Demo: simulate dictation",
@@ -90,6 +93,7 @@
     "relaunchAdmin": "Restart as administrator",
     "openAiSettings": "Open AI settings",
     "openRdpSettings": "Choose sessions",
+    "meetingStart": "Turn on",
     "openRecordings": "Open recordings"
   },
   "tray": {
@@ -107,7 +111,8 @@
       "starting": "Starting engine…",
       "restarting": "Restarting engine…",
       "failed": "Engine won't start",
-      "already_running": "Another Rupor is already running"
+      "already_running": "Another Rupor is already running",
+      "meeting": "Meeting translation running"
     },
     "pause": "Pause",
     "insertMode": "Insert method",
@@ -116,6 +121,8 @@
     "style": "Style",
     "lastInsert": "Paste last",
     "pillRestore": "Bring back the indicator",
+    "meeting": "Meeting translation",
+    "meetingRunning": "Meeting translation (running)",
     "rdp": "Broadcast to RDP",
     "rdpEmpty": "No open RDP sessions",
     "open": "Open Rupor",
@@ -164,6 +171,7 @@
     "snippets": { "one": "{n} snippet", "other": "{n} snippets" },
     "calls": { "one": "{n} request", "other": "{n} requests" },
     "threads": { "one": "{n} thread", "other": "{n} threads" },
+    "lines": { "one": "{n} line", "other": "{n} lines" },
     "mb": "{n} MB",
     "gb": "{n} GB"
   },
@@ -221,6 +229,10 @@
       "day": "Good afternoon",
       "evening": "Good evening",
       "night": "Working late?"
+    },
+    "meeting": {
+      "button": "Meeting translation",
+      "running": "Translating · {lines}"
     },
     "todaySummary": "You've dictated {words} today — typing that would have taken about {minutes}.",
     "todayEmpty": "No dictations yet today. Hold {key} and speak — the text appears wherever your cursor is.",
@@ -365,8 +377,10 @@
       "play": "Play the recording",
       "copy": "Copy",
       "reinsert": "Insert again",
-      "delete": "Delete"
+      "delete": "Delete",
+      "retranscribe": "Transcribe again"
     },
+    "retranscribed": "Transcribed again — the new text is at the top of the feed and in “Paste last”",
     "draft": {
       "hint": "Dictate right here: click into the field and hold",
       "saving": "Saving…",
@@ -589,8 +603,81 @@
       "dictation": "Dictation",
       "insert": "Insertion",
       "ai": "AI",
+      "meeting": "Meetings",
       "history": "History",
       "about": "About"
+    },
+    "meeting": {
+      "windowTitle": "Meeting translation window",
+      "windowHint": "Rupor listens to the meeting's audio in your browser and shows the translation in a narrow panel at the right edge of the screen. Your microphone isn't transcribed, and dictation works as usual during the meeting.",
+      "show": "Show the translation window",
+      "openFolder": "Open the transcripts folder",
+      "running": "Translating: {source}",
+      "translation": "Translation",
+      "translationHint": "Translation uses the same AI as text cleanup (the AI section). Lines already in the target language are only transcribed — no AI requests.",
+      "targetLang": "Translate into",
+      "targetLangHint": "The language you read the translation in",
+      "sourceLang": "Speakers' language",
+      "sourceLangHint": "Detect automatically for each line, or pick the language if recognition gets confused.",
+      "translate": "Translate",
+      "translateHint": "Off — transcript only, the AI doesn't translate",
+      "refine": "Refine each line's translation",
+      "refineHint": "When a line ends, translate it again as a whole and replace the word-by-word translation. More accurate, but one more AI request per long line",
+      "model": "Translation model",
+      "modelHint": "Empty — same as for cleanup: {model}",
+      "timeout": "Translation timeout",
+      "timeoutHint": "If the translation is late, the line stays untranslated and the transcript goes on",
+      "window": "Window",
+      "showOriginal": "Show the original",
+      "showOriginalHint": "In small print under the translation",
+      "fontSize": "Text size",
+      "fontSizeHint": "You can also change it in the window itself, under its settings button",
+      "protect": "Hide from screen sharing",
+      "protectHint": "When you share your screen in a meeting, others don't see the translation window",
+      "position": "Window position",
+      "positionHint": "The window was moved or resized. By default it's docked to the right edge of the screen, full height.",
+      "dock": "Dock to the right edge",
+      "suggest": "Meeting suggestion",
+      "autosuggest": "Offer to turn on translation",
+      "autosuggestHint": "When an app holds the microphone for over 10 seconds and plays audio — in any browser. A “New meeting detected” card appears in the top-right corner",
+      "desktopApps": "Also in meeting apps",
+      "desktopAppsHint": "Zoom, Teams, Telegram, Discord and others — not just browsers",
+      "autostop": "Stop automatically when the meeting ends",
+      "autostopHint": "The meeting app released the microphone and nobody has spoken for half a minute (for “All computer sound” — 3 minutes of silence): translation stops by itself in 10 seconds, the transcript is saved and notes are written. The translation window offers “Keep going”",
+      "ignoreApps": "Don't suggest for",
+      "ignoreAppsHint": "Program file name (exe), case-insensitive. The card's “Don't suggest for …” button adds it here",
+      "ignoreAppsPlaceholder": "e.g. obs64.exe",
+      "patterns": "Meeting window titles",
+      "patternsHint": "Part of the window title, case-insensitive: it names the meeting on the card",
+      "patternsPlaceholder": "e.g. Webex",
+      "record": "Transcripts",
+      "save": "Save the transcript",
+      "saveHint": "Each session is a Markdown file: time, translation and original",
+      "aiTitle": "Name recordings by their content (AI)",
+      "aiTitleHint": "The AI comes up with a short title from the transcript, using the same key as translation. Without a key the recording is named after the meeting window or its first words",
+      "dir": "Transcripts folder",
+      "dirHint": "Empty — %APPDATA%\\Rupor\\meetings",
+      "browse": "Browse…",
+      "dirDefault": "Default",
+      "dirPick": "Folder for meeting transcripts",
+      "notesSection": "Meeting notes",
+      "notes": "Notes after the meeting",
+      "notesHint": "When the meeting ends, a stronger model writes notes: summary, decisions, action items and key moments — in the translation window and at the top of the transcript file. Same key as translation; their title becomes the recording's title",
+      "notesModel": "Notes model",
+      "notesModelHint": "A stronger model gets decisions and action items more accurately. About {cost} per hour of meeting",
+      "notesModelHintUnknown": "Rupor doesn't know the price of a custom model — you'll see it in AI spending after the first notes",
+      "notesModelOllama": "Ollama writes the notes with the local model {model} — free, but slower and simpler. Another model:",
+      "notesModelCustom": "Custom model",
+      "notesModelCustomHint": "Any model of the provider — by its id",
+      "notesModelPlaceholder": "Model id at {provider}",
+      "notesPresets": {
+        "sonnet": "Claude Sonnet 5.5 — default",
+        "opus": "Claude Opus 5.5 — best",
+        "haiku": "Claude Haiku 5.5 — cheapest",
+        "deepseek": "DeepSeek V4 Pro",
+        "gemini": "Gemini 3.1 Pro"
+      },
+      "notesCost": "≈ {cost} per hour"
     },
     "accents": {
       "violet": "Violet",
@@ -737,6 +824,16 @@
         "levelHint": "A share of each app's previous volume: music at 80% will play at {n}%. 0% means silence.",
         "levelValue": "{n}%",
         "note": "Rupor's own sounds and Windows system sounds aren't lowered; audio from a remote computer over RDP is. If you change an app's volume yourself while recording, Rupor leaves it alone. If Rupor closes mid-recording, the volume is restored the next time it starts."
+      },
+      "appMute": {
+        "title": "Voice chats while dictating",
+        "hint": "While you hold the dictation key, Codex live chat, ChatGPT and other voice chats on the list can't hear you: your voice goes only to Rupor. Release it and the conversation goes on.",
+        "enabled": "Voice chats don't hear dictation",
+        "enabledHint": "While you hold the key, Rupor presses the chat's own “Mute microphone” button, and “Unmute microphone” afterwards. The conversation goes on. If you muted the chat yourself, Rupor leaves it alone.",
+        "apps": "Apps",
+        "appsHint": "Program names (exe), separated by commas or new lines. The Codex desktop app is ChatGPT.exe on Windows. Find the name in Task Manager → Details.",
+        "placeholder": "codex.exe, chatgpt.exe",
+        "note": "Works with chats that have a mute-microphone button (Codex, ChatGPT; English and Russian interface). If Rupor closes mid-recording, the chat's microphone is turned back on the next time it starts."
       }
     },
     "insert": {
@@ -957,7 +1054,10 @@
     "kinds": {
       "cleanup": "Text cleanup",
       "command": "Command mode",
-      "test": "Tests in settings"
+      "test": "Tests in settings",
+      "translate": "Meeting translation",
+      "title": "Meeting titles",
+      "notes": "Meeting notes"
     },
     "unknownModel": "Model not specified",
     "empty": {
@@ -1213,7 +1313,137 @@
     "command": "command",
     "relaunchAdmin": "Restart as administrator",
     "openSettings": "AI settings",
-    "openRecordings": "Recordings"
+    "openRecordings": "Recordings",
+    "meetingStart": "Turn on"
+  },
+  "meeting": {
+    "windowTitle": "Rupor — meeting translation",
+    "title": "Meeting translation",
+    "langs": {
+      "ru": "Russian",
+      "en": "English",
+      "de": "German",
+      "fr": "French",
+      "es": "Spanish",
+      "it": "Italian",
+      "pt": "Portuguese",
+      "pl": "Polish",
+      "uk": "Ukrainian",
+      "zh": "Chinese",
+      "ja": "Japanese",
+      "ko": "Korean",
+      "tr": "Turkish"
+    },
+    "langAuto": "Detect automatically",
+    "state": {
+      "idle": "Not running",
+      "listening": "Listening",
+      "waiting_gpu": "Waiting for the GPU",
+      "no_audio": "No audio",
+      "error": "Error",
+      "offline": "No connection to the engine"
+    },
+    "stateHint": {
+      "waiting_gpu": "Dictation is running — the transcript catches up right after it",
+      "no_audio": "The source has been silent for 20 seconds. Is the meeting audio coming from this app?",
+      "ended": "The meeting seems to be over: the microphone has been free and silent for half a minute",
+      "ending": "The meeting has ended — stopping in {n} s"
+    },
+    "source": {
+      "label": "Audio source",
+      "auto": "Automatic",
+      "autoHint": "The meeting tab, or else a browser playing audio",
+      "meeting": "meeting",
+      "playing": "playing audio",
+      "silent": "silent",
+      "systemHint": "Everything you hear in the speakers",
+      "needsWin11": "Needs Windows 11",
+      "refresh": "Refresh the list"
+    },
+    "start": "Start",
+    "stop": "Stop",
+    "starting": "Starting…",
+    "settings": "Translation settings",
+      "minimize": "Minimize",
+      "close": "Close",
+      "keepGoing": "Keep going",
+      "closeConfirm": {
+        "running": "Translation is running.",
+        "minimize": "Minimize",
+        "stopClose": "Stop and close"
+      },
+      "mini": {
+        "expand": "Expand",
+        "stop": "Stop translation",
+        "hide": "Hide to tray — translation keeps going",
+        "listening": "Listening…",
+        "stopped": "Translation stopped",
+        "notesReady": "Notes are ready",
+      "endingTitle": "The meeting has ended",
+      "endingIn": "Stopping in {n} s",
+        "bar": "Meeting translation — double-click to expand the window"
+      },
+    "translate": "Translate",
+    "transcriptOnly": "Transcript only",
+    "showOriginal": "Show the original",
+    "fontSize": "Text size",
+    "targetLang": "Translate into",
+    "sourceLang": "Speakers' language",
+    "dock": "Dock to the right edge",
+    "allSettings": "All meeting settings",
+    "emptyTitle": "The translation will appear here",
+    "emptyIdle": "Pick an audio source and press Start. Rupor only listens to the meeting app's audio — your microphone isn't transcribed.",
+    "emptyIdleSystem": "Press Start. On this version of Windows, Rupor listens to all computer sound, not a single app: turn off music and videos so they don't end up in the transcript. Your microphone isn't transcribed.",
+    "emptyListening": "Listening to {source}. The first line appears as soon as someone speaks.",
+    "pending": "translating…",
+    "lineError": "not translated",
+    "newLines": "New lines",
+    "earlier": "Show earlier lines",
+    "copy": "Copy",
+    "copied": "Transcript copied to the clipboard",
+    "copyEmpty": "Nothing to copy yet",
+    "openFile": "Open the transcript",
+    "stopped": "Session stopped",
+    "startFailed": "Couldn't start",
+    "failed": "That didn't work",
+    "live": "Still speaking",
+    "refined": "Translation refined for the whole line",
+    "latency": {
+      "hint": "Average delay this session: text {asr}, first words of the translation {first}, full translation {done}"
+    },
+    "suggest": {
+      "title": "New meeting detected",
+      "start": "Start transcribing",
+      "later": "Not now",
+      "never": "Don't suggest for {app}",
+      "translate": "With translation into {lang}",
+      "transcribe": "Transcript only, no translation",
+      "neverDone": "Won't suggest for {app} again. Undo in Settings → Meetings"
+    },
+    "view": {
+      "transcript": "Transcript",
+      "notes": "Notes"
+    },
+    "notes": {
+      "emptyTitle": "Meeting notes",
+      "emptyIdle": "Start a meeting — after it, notes will appear here: summary, decisions, action items and key moments.",
+      "emptyLive": "When the meeting ends, a stronger model will write notes here: summary, decisions, action items and key moments. You can also make them now from what has been said so far.",
+      "emptyLiveOff": "Notes aren't written automatically after the meeting — that's turned off in the meeting settings. You can make them with the button.",
+      "emptyStopped": "There are no notes for this meeting: it was short or notes are turned off. You can make them with the button.",
+      "make": "Make notes now",
+      "running": "The model is writing the notes…",
+      "refresh": "Refresh",
+      "retry": "Retry",
+      "failed": "Couldn't make the notes",
+      "copy": "Copy notes",
+      "copied": "Notes copied to the clipboard",
+      "ready": "Notes are ready",
+      "generated": "Ready at {time}",
+      "tasks": { "one": "{n} action item", "other": "{n} action items" },
+      "stale": "The meeting is still on — the notes cover what has been said so far. Refresh adds the rest",
+      "staleAuto": "The meeting is still on — the notes cover what has been said so far and will update after Stop",
+      "jump": "Go to {time} in the transcript"
+    }
   },
   "aiKeys": {
     "add": "Add key",
@@ -1269,5 +1499,83 @@
       "no_key": "no key",
       "bad_request": "request error"
     }
+  },
+  "speech": {
+    "title": "Speech",
+    "subtitle": "Filler words in your speech. Counted from the raw speech-recognition text, before AI cleanup, locally and for free.",
+    "period": {
+      "d7": "7 days",
+      "d30": "30 days",
+      "d90": "90 days",
+      "all": "All time"
+    },
+    "kpi": {
+      "per100": "Per 100 words",
+      "per100Foot": "fillers in every 100 words you say",
+      "total": "Fillers in period",
+      "totalFoot": "out of {words}",
+      "top": "Top filler",
+      "topFoot": "{count} · {per100} per 100 words",
+      "topValue": "“{phrase}”",
+      "topNone": "None found yet"
+    },
+    "trend": {
+      "down": "{x} fewer than the previous period",
+      "up": "{x} more than the previous period",
+      "same": "same as the previous period",
+      "none": "nothing to compare with yet"
+    },
+    "chart": {
+      "title": "Fillers per 100 words by day",
+      "tip": "{per100} per 100 words · {fillers} of {words}",
+      "emptyTitle": "No data yet",
+      "emptyText": "Just dictate as usual: the stats build up with every dictation."
+    },
+    "topList": {
+      "title": "Most frequent",
+      "hint": "How many times it came up in the period and how much that is per 100 words",
+      "showAll": "Show all ({n})",
+      "showLess": "Show less",
+      "colCount": "Count",
+      "colPer100": "Per 100 words",
+      "times": { "one": "{n} time", "other": "{n} times" },
+      "empty": "No fillers in this period. Either great speech or the list needs more phrases."
+    },
+    "list": {
+      "title": "Filler list",
+      "hint": "What counts as a filler. Add your own words and phrases: Enter or a comma starts a new one.",
+      "enabled": "Count filler words",
+      "enabledHint": "Turn off if you don't need the stats: new dictations will no longer be counted.",
+      "placeholder": "Add a word or phrase…",
+      "save": "Save list",
+      "saved": "List saved",
+      "savedRebuild": "Recount past dictations with the new list?",
+      "defaults": "Restore defaults",
+      "rebuild": "Recount from history",
+      "rebuilt": "Recounted: {days}, {dictations}",
+      "count": "{n} in the list"
+    },
+    "ai": {
+      "title": "Find my phrases with AI",
+      "hint": "The AI reads up to 80 recent dictations from history and suggests phrases you repeat out of habit. It is one paid request to your cleanup model; counting stays local.",
+      "run": "Find phrases",
+      "none": "The AI found no new phrases in {n} dictations",
+      "found": "Suggestions from {n} dictations. Click to add to the list:",
+      "add": "Add \"{phrase}\"",
+      "added": "\"{phrase}\" added to the list"
+    },
+    "reset": {
+      "button": "Reset stats",
+      "title": "Reset filler stats?",
+      "body": "All collected numbers will be deleted. The filler list and dictation history stay.",
+      "confirm": "Reset",
+      "done": "Stats reset"
+    },
+    "note": {
+      "whisper": "Whisper often drops \"uh\", \"um\" and broken-off words by itself, so hesitation sounds usually show up less in the stats than in real speech. Words like \"like\", \"basically\", \"you know\" are transcribed reliably.",
+      "meaning": "The counter doesn't understand meaning: \"I like it\" also counts as \"like\". If a word is usually meaningful for you, remove it from the list.",
+      "rebuild": "A new list applies to new dictations. To apply it to past ones, click \"Recount from history\": days with saved history are recounted."
+    },
+    "since": "Stats since {date}"
   }
 }

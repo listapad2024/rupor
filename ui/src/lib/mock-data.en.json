@@ -436,6 +436,25 @@
     "noteMedium": "More accurate than small but noticeably slower; slow on a processor",
     "noteTurbo": "Best for Russian and English: almost as accurate as large-v3 but several times faster; needs an NVIDIA graphics card",
     "noteLarge": "Most accurate and slowest; turbo is nearly as good",
+    "meetingSuggest": "Looks like a meeting is on in {name}. Turn on live transcription and translation?",
+    "meetingNoSource": "No meeting audio source: open the meeting in a browser or pick a source from the list",
+    "meetingUnknownSource": "Audio source “{id}” not found — refresh the list",
+    "meetingSystem": "All computer audio",
+    "meetingTitleGeneric": "Meeting",
+    "meetingTranslateError": "The translation didn't arrive within {seconds} s",
+    "meetingBadLimit": "limit must be 1 to 500",
+    "meetingNothingToCopy": "The transcript is empty — nothing to copy",
+    "meetingSuggestExpired": "This suggestion has expired — start meeting translation from the translation window",
+    "meetingLoopbackFallback": "Capturing a single app needs Windows 11 or Windows Server 2022 — listening to the whole computer sound instead, so other apps' sounds get into the transcript too",
+    "meetingAutostoppedNotes": "The meeting has ended — transcript saved, notes are being written",
+    "meetingAutostopped": "The meeting has ended — transcript saved",
+    "suggestAnswer": "Meeting suggestion answer: start, later or never",
+    "meetingNotesEmpty": "The transcript is empty — there is nothing to make notes from",
+    "meetingNotesNoMeeting": "There has been no meeting yet — nothing to make notes from",
+    "meetingNotesNothing": "There are no notes yet — nothing to copy",
+    "meetingNotesFailed": "Couldn't make the meeting notes: {error}. The transcript is saved",
+    "copyWhat": "What to copy: transcript, notes or all",
+    "aiNoKey": "No {name} key. Add one in Settings → AI",
     "noKeys": "No AI keys yet. Add one in Settings → AI",
     "keyUnknown": "This key isn't in the list. Refresh the page",
     "balanceNoApi": "{name} doesn't report the balance through its API. Enter it yourself and Rupor will subtract what it spends",
@@ -780,5 +799,141 @@
   "vocabExcluded": [
     "dashboard",
     "Slack"
+  ],
+  "meeting": {
+    "sources": [
+      {
+        "pid": 11234,
+        "exe": "brave.exe",
+        "name": "Brave",
+        "title": "Meet: Daily standup",
+        "meeting": true,
+        "active": true
+      },
+      {
+        "pid": 8812,
+        "exe": "chrome.exe",
+        "name": "Google Chrome",
+        "title": "Lo-fi beats — YouTube",
+        "meeting": false,
+        "active": true
+      },
+      {
+        "pid": 5520,
+        "exe": "telegram.exe",
+        "name": "Telegram Desktop",
+        "title": "Telegram",
+        "meeting": false,
+        "active": false
+      }
+    ],
+    "lines": [
+      {
+        "lang": "de",
+        "text": "Okay, fangen wir an. Könnt ihr mich alle hören?",
+        "translation": "Okay, let's get started. Can you all hear me?"
+      },
+      {
+        "lang": "de",
+        "text": "Gestern habe ich die Abrechnungstabellen nach ClickHouse umgezogen.",
+        "translation": "Yesterday I moved the billing tables to ClickHouse.",
+        "heard": "Gestern habe ich die Abrechnungstabellen nach Click House umgezogen.",
+        "draft": "Yesterday I have moved the billing tables to ClickHouse."
+      },
+      {
+        "lang": "de",
+        "text": "Die Dashboards in Grafana lesen schon aus dem neuen Cluster.",
+        "translation": "The Grafana dashboards are already reading from the new cluster."
+      },
+      {
+        "lang": "de",
+        "text": "Heute schaue ich mir die langsamen Abfragen auf der Zahlungsseite an.",
+        "translation": "Today I'm looking at the slow queries on the payments page.",
+        "draft": "Today I look at the slow queries on the payment page."
+      },
+      {
+        "lang": "en",
+        "text": "Sure, I can help with that after lunch.",
+        "translation": null
+      },
+      {
+        "lang": "de",
+        "text": "Super, danke. Anna, gibt es bei dir Blocker?",
+        "translation": "Great, thanks. Anna, any blockers on your side?"
+      },
+      {
+        "lang": "de",
+        "text": "Eigentlich nicht. Ich warte noch auf den Zugang zum Staging-Server.",
+        "translation": "Not really. I'm still waiting for access to the staging server."
+      },
+      {
+        "lang": "de",
+        "text": "Ich schreibe dem Infrastruktur-Team direkt nach dem Call.",
+        "translation": "I'll message the infrastructure team right after the call."
+      },
+      {
+        "lang": "de",
+        "text": "Außerdem ist das Release für Donnerstag geplant, also merged eure Änderungen bitte bis Mittwochabend.",
+        "translation": "Also, the release is planned for Thursday, so please merge your changes by Wednesday evening.",
+        "draft": "Besides, the release is planned for Thursday, so merge your changes please until Wednesday evening."
+      },
+      {
+        "lang": "de",
+        "text": "Verschieben wir die Retro dann auf Freitag?",
+        "translation": "Should we move the retro to Friday then?"
+      },
+      {
+        "lang": "de",
+        "text": "Freitag passt mir. Sagen wir um drei.",
+        "translation": "Friday works for me. Let's say three."
+      },
+      {
+        "lang": "de",
+        "text": "Noch etwas: Die API-Limits haben sich gestern Abend geändert.",
+        "translation": "One more thing: the API limits changed last night.",
+        "error": true
+      },
+      {
+        "lang": "de",
+        "text": "Die Partner-Integration hat viele 429-Fehler bekommen.",
+        "translation": "The partner integration was getting a lot of 429 errors.",
+        "draft": "The partner integration has gotten many 429 errors."
+      },
+      {
+        "lang": "de",
+        "text": "Ich habe Wiederholungen mit Backoff eingebaut, jetzt sieht es stabil aus.",
+        "translation": "I added retries with backoff, and it looks stable now.",
+        "heard": "Ich habe Wiederholungen mit Back-off eingebaut, jetzt sieht es stabil aus.",
+        "draft": "I have built in retries with backoff, now it looks stable."
+      },
+      {
+        "lang": "de",
+        "text": "Perfekt. Wenn sonst nichts ist, machen wir Schluss.",
+        "translation": "Perfect. If there's nothing else, let's wrap up."
+      },
+      {
+        "lang": "de",
+        "text": "Danke euch allen, einen schönen Tag noch!",
+        "translation": "Thanks, everyone, have a nice day!"
+      }
+    ],
+    "suggest": {
+      "pid": 11234,
+      "app": "Brave",
+      "title": "Google Meet"
+    },
+    "title": "Billing move to ClickHouse and Grafana dashboards",
+    "notes": "# Billing move to ClickHouse and Thursday release\n\n## Summary\nMorning team sync. The billing tables have moved to ClickHouse and the Grafana dashboards already read from the new cluster. The team went over the slow queries on the payments page, Anna's access to the staging server and the Thursday release. The retro moves to Friday; the partner integration's 429 errors are fixed with retries and backoff.\n\n## Decisions\n- The release is on Thursday; changes are merged by Wednesday evening.\n- The retro moves to Friday at **3 pm**.\n\n## Action items\n- [ ] — — look into the slow queries on the payments page — today, after lunch\n- [ ] — — message the infrastructure team about Anna's staging access — right after the call\n- [ ] Everyone — merge changes for the release — by Wednesday evening\n\n## Open questions\n- Will retries with backoff be enough if the API limits change again?\n\n## Key moments\n- {t1} — the billing tables have moved to ClickHouse\n- {t3} — slow queries on the payments page\n- {t6} — Anna is waiting for staging access\n- {t8} — release on Thursday, changes by Wednesday evening\n- {t11} — the API limits changed, 429 errors"
+  },
+  "meetingPatterns": [
+    "Google Meet",
+    "Meet –",
+    "Meet -",
+    "Zoom",
+    "Microsoft Teams",
+    "Teams",
+    "Телемост",
+    "Контур.Толк",
+    "Jitsi Meet"
   ]
 }

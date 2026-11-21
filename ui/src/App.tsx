@@ -24,11 +24,14 @@ import { useEvent, useLoad } from "./lib/hooks";
 import { errorText } from "./lib/hub";
 import { isLearnNotice, learnNoticeArrived, resolveLearn, type LearnNotice } from "./lib/learn";
 import { aiTrayLine, balanceMode, setBalanceMode, useAiUsage } from "./lib/aiUsage";
+import { startMeeting } from "./lib/meeting";
 import { pollRdp, RDP_SESSIONS_ROUTE, sameKey, toggleRdp, useRdpWindows } from "./lib/rdp";
 import { useLocation, type Route } from "./lib/router";
 import { CoreProvider, useCore } from "./lib/store";
 import {
   inTauri,
+  meetingSuggestShow,
+  meetingWindowToggle,
   onNavigate,
   onTrayAction,
   relaunchAdmin,
@@ -49,6 +52,7 @@ import { HistoryPage } from "./pages/History";
 import { HomePage } from "./pages/Home";
 import { SettingsPage } from "./pages/Settings";
 import { SnippetsPage } from "./pages/Snippets";
+import { SpeechPage } from "./pages/Speech";
 import { StylesPage } from "./pages/Styles";
 import { Wizard } from "./wizard/Wizard";
 
@@ -84,6 +88,7 @@ function trayLabels(): TrayLabels {
     status_restarting: t("tray.status.restarting"),
     status_failed: t("tray.status.failed"),
     status_already_running: t("tray.status.already_running"),
+    status_meeting: t("tray.status.meeting"),
     pause: t("tray.pause"),
     insert_mode: t("tray.insertMode"),
     mode_auto: t("insertModes.auto"),
@@ -92,6 +97,8 @@ function trayLabels(): TrayLabels {
     style: t("tray.style"),
     last_insert: t("tray.lastInsert"),
     pill_restore: t("tray.pillRestore"),
+    meeting: t("tray.meeting"),
+    meeting_running: t("tray.meetingRunning"),
     rdp: t("tray.rdp"),
     rdp_empty: t("tray.rdpEmpty"),
     open: t("tray.open"),
@@ -135,6 +142,15 @@ function Bridge({ navigate }: { navigate: (to: string) => void }) {
     : null;
   const rdpSig = JSON.stringify(rdpItems);
 
+  // Перевод встречи идёт (статус ядра: hello/state и событие meeting) — пункт трея «Перевод
+  // встречи (идёт)» и подсказка значка: окно перевода могло быть скрыто, перевод идёт «в трее»
+  const [meetingRunning, setMeetingRunning] = useState(false);
+  const coreMeetingRunning = state?.meeting?.running;
+  useEffect(() => {
+    if (coreMeetingRunning !== undefined) setMeetingRunning(coreMeetingRunning);
+  }, [coreMeetingRunning]);
+  useEvent("meeting", (m) => setMeetingRunning(m.running));
+
   // Трей: состояние → меню и иконка; строка расхода ИИ, подменю рассылки и строки меню на
   // языке интерфейса (labels) — всегда (null в ai_line/rdp — скрыть)
   useEffect(() => {
@@ -148,9 +164,10 @@ function Bridge({ navigate }: { navigate: (to: string) => void }) {
       ai_line: aiLine,
       rdp: rdpItems,
       labels: trayLabels(),
+      meeting_running: meetingRunning,
     });
     // rdpItems сравниваем по содержимому (rdpSig): новый массив при каждом опросе — не повод
-  }, [state?.state, state?.paused, state?.insert_mode, state?.style, styles, aiLine, rdpSig, locale]);
+  }, [state?.state, state?.paused, state?.insert_mode, state?.style, styles, aiLine, rdpSig, locale, meetingRunning]);
 
   // Трей: действия из меню
   useEffect(
@@ -171,6 +188,10 @@ function Bridge({ navigate }: { navigate: (to: string) => void }) {
         } else if (id === "pill_restore") {
           // Пилюлю на место ставит Rust; здесь — запомнить это место (позиция по умолчанию)
           void updateSettings({ pill_position: null });
+        } else if (id === "meeting" && !inTauri()) {
+          // «Перевод встречи» в Tauri показывает и прячет окно сама оболочка (tray-action не
+          // приходит); здесь — только демо в браузере (window.__ruporTrayAction("meeting"))
+          void meetingWindowToggle();
         } else if (id.startsWith("rdp:")) {
           // Флажок сессии в подменю «Рассылка в RDP ▸»: key — как пришёл в update_tray
           const key = id.slice(4);
@@ -244,6 +265,7 @@ function Bridge({ navigate }: { navigate: (to: string) => void }) {
   };
 
   // Уведомления ядра → тосты
+  const fail = (e: unknown) => toast({ tone: "error", title: t("errors.generic"), description: errorText(e) });
   useEvent("notice", (n) => {
     if (isLearnNotice(n)) {
       learnToast(n);
@@ -257,14 +279,24 @@ function Bridge({ navigate }: { navigate: (to: string) => void }) {
           ? { label: t("notice.openAiSettings"), onClick: () => navigate("settings/ai") }
           : n.action === "open_settings_insert"
             ? { label: t("notice.openRdpSettings"), onClick: () => navigate(RDP_SESSIONS_ROUTE) }
-            : n.action === "open_recordings"
-              ? { label: t("notice.openRecordings"), onClick: () => navigate("history/recordings") }
-              : undefined;
+            : n.action === "meeting_start"
+              ? { label: t("notice.meetingStart"), onClick: () => void startMeeting().catch(fail) }
+              : n.action === "open_recordings"
+                ? { label: t("notice.openRecordings"), onClick: () => navigate("history/recordings") }
+                : undefined;
     toast({
       tone: n.level === "error" ? "error" : n.level === "warn" ? "warn" : "info",
       title: n.text,
       action,
     });
+  });
+
+  // Ядро заметило встречу: карточку «Обнаружена новая встреча» показывает оболочка (окно
+  // перевода в компактном виде). Событие приходит сюда — клиент ядра главного окна живёт
+  // всегда, а окна перевода может ещё не быть; у самой оболочки клиента ядра нет.
+  useEvent("meeting_suggest", (sg) => {
+    if (stateRef.current?.meeting?.running) return;
+    meetingSuggestShow(sg).catch((e: unknown) => console.warn("meeting_suggest_show", e));
   });
 
   return null;
@@ -273,6 +305,7 @@ function Bridge({ navigate }: { navigate: (to: string) => void }) {
 const PAGES: Record<Exclude<Route, "wizard">, (p: { sub: string | null }) => ReactNode> = {
   home: () => <HomePage />,
   history: ({ sub }) => <HistoryPage tab={sub} />,
+  speech: () => <SpeechPage />,
   dictionary: ({ sub }) => <DictionaryPage tab={sub} />,
   snippets: () => <SnippetsPage />,
   styles: () => <StylesPage />,

@@ -185,13 +185,17 @@ export function activeModel(s: Settings): { provider: string; model: string } {
 
 /**
  * Нужен ли баланс ключа, который первым в очереди. Очистка через облачные ключи (ИИ включён) —
- * опрос; через них только командный режим — после платных вызовов; иначе (Ollama, Claude Code,
- * ключей нет) — не нужен: ядро не ходит к провайдеру, которым Рупор не пользуется.
+ * опрос; через них только командный режим, перевод встреч, названия их записей или заметки — после
+ * платных вызовов; иначе (Ollama, Claude Code, ключей нет) — не нужен: ядро не ходит к провайдеру,
+ * которым Рупор не пользуется.
  */
-export function balanceMode(s: KeySettings | null | undefined): BalanceMode {
+export function balanceMode(
+  s: (KeySettings & Pick<Settings, "meeting_translate" | "meeting_ai_title" | "meeting_notes">) | null | undefined,
+): BalanceMode {
   if (!s) return "off";
   if (s.ai_enabled && firstKey(s, s.ai_provider)) return "poll";
   if (firstKey(s, s.command_provider)) return "on_use";
+  if ((s.meeting_translate || s.meeting_ai_title || s.meeting_notes) && firstKey(s, s.ai_provider)) return "on_use";
   return "off";
 }
 
@@ -254,9 +258,11 @@ export function aiTrayLine(s: AiUsageSnapshot, withBalance: boolean): string | n
 /**
  * Средняя цена запроса — avg_cost_per_call ядра: по удачным вызовам (таймауты и ошибки стоят
  * $0 и среднюю не занижают). by_kind для этого не годится: в нём и неудачные вызовы.
- * cleanupOnly — командного режима не было, значит это средняя цена очистки.
+ * cleanupOnly — были только очистка и её проверки (ни командного режима, ни перевода встреч,
+ * ни названий их записей, ни заметок), значит это средняя цена очистки. Оплаченный, но негодный
+ * ответ (обрезан, не название) в расходе — с ценой, а в средней — нет: она по удачным.
  */
 export function avgCost(s: AiUsageStats): { value: number; cleanupOnly: boolean } {
-  const commands = s.by_kind.find((k) => k.kind === "command")?.calls ?? 0;
-  return { value: s.avg_cost_per_call, cleanupOnly: commands === 0 };
+  const others = s.by_kind.filter((k) => k.kind !== "cleanup" && k.kind !== "test").reduce((n, k) => n + k.calls, 0);
+  return { value: s.avg_cost_per_call, cleanupOnly: others === 0 };
 }

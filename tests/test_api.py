@@ -21,8 +21,8 @@ from rupor.hotkeys import parse_keyset
 from websockets.exceptions import ConnectionClosed
 from websockets.sync.client import ClientConnection, connect
 
-from rupor import ai, api, config, credman, engine, fetch, textproc, winutil
-from rupor.asr import Result
+from rupor import ai, api, config, credman, engine, fetch, meeting, textproc, winutil
+from rupor.asr import ChunkResult, Result
 from rupor.engine import Delivery, Engine
 from rupor.hotkeys import Action, Kind
 from rupor.server import WsServer
@@ -68,6 +68,10 @@ class FakeRecognizer:
         self.texts: list[str] = []
         self.prompts: list[str | None] = []
         self._loaded = True
+        self.bg: list[ChunkResult | str] = []
+        self.bg_calls: list[dict[str, Any]] = []
+        self.bg_interim = 0
+        self.bg_yielded = 0
 
     @property
     def loaded(self) -> bool:
@@ -86,6 +90,34 @@ class FakeRecognizer:
         self.prompts.append(self.prompt_provider())
         text = self.texts.pop(0) if self.texts else ""
         return Result(text, language or "ru", len(audio) / 16000, 12.0)
+
+    # встреча: куски по очереди из bg (строка — английский текст), уступает диктовке, как
+    # настоящий ModelGate (yield_to истинно — None, кусок ждёт). Промежуточный проход
+    # потокового распознавания (одна температура) — та же следующая фраза из bg, не вынимая
+    # её (bg_calls — только последние проходы фраз)
+    def transcribe_background(self, audio: np.ndarray, *, language: str | None,
+                              prompt: str | None, yield_to: Callable[[], bool] | None,
+                              timeout: float | None = None, beam_size: int = 1,
+                              temperature: float | tuple[float, ...] = (0.0, 0.2, 0.4)
+                              ) -> ChunkResult | None:
+        if not self._loaded:
+            return None
+        if yield_to is not None and yield_to():
+            self.bg_yielded += 1
+            time.sleep(0.02)
+            return None
+        if not isinstance(temperature, tuple):
+            self.bg_interim += 1
+            head = self.bg[0] if self.bg else ""
+            if isinstance(head, str):
+                return ChunkResult(head, language or "en", 0.95, len(audio) / 16000, 5)
+            return head
+        self.bg_calls.append({"audio_s": len(audio) / 16000, "language": language,
+                              "prompt": prompt, "beam_size": beam_size})
+        item = self.bg.pop(0) if self.bg else ChunkResult("", "en", 0.9, len(audio) / 16000, 5)
+        if isinstance(item, str):
+            item = ChunkResult(item, language or "en", 0.95, len(audio) / 16000, 5)
+        return item
 
 
 class Calls:
@@ -119,9 +151,38 @@ class Calls:
         self.balance: dict[str, Any] = {"valid": True, "label": None, "balance_usd": 12.34,
                                         "usage_usd": 1.0, "limit_usd": None, "error": None}
         self.balance_checks: list[str] = []
+        # Перевод встречи: источники звука и процессы захвата — фейки (настоящие аудиосессии
+        # и окна пользователя тесты не перебирают и ничего не захватывают)
+        self.sources: list[dict[str, Any]] = []
+        self.streams: list[FakeStream] = []
 
     def read_selection(self) -> str | None:
         return self.selections.pop(0) if self.selections else self.selection
+
+
+class FakeStream:
+    """Процесс захвата звука встречи: звук подаёт тест (on_audio), выход — on_exit."""
+
+    def __init__(self, on_audio: Callable[[np.ndarray], None],
+                 on_exit: Callable[[int, str], None]) -> None:
+        self.on_audio, self.on_exit = on_audio, on_exit
+        self.target: str | None = None
+        self.stopped = False
+
+    def start(self, target: str) -> None:
+        self.target = target
+
+    def stop(self) -> None:
+        self.stopped = True
+
+    @property
+    def alive(self) -> bool:
+        return self.target is not None and not self.stopped
+
+
+def value_vad(frames: np.ndarray) -> np.ndarray:
+    """VAD для тестов: вероятность речи кадра — его наибольший отсчёт (речь — 0.9, тишина 0)."""
+    return np.clip(np.asarray(frames, np.float32).reshape(-1, 512).max(axis=1), 0.0, 1.0)
 
 
 # ---------- WS-клиент ----------
@@ -289,9 +350,18 @@ def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Env]:
     storage = Storage(tmp_path / "rupor.db")
     rec = FakeRecognizer()
     recorder = FakeRecorder()
+    def fake_stream(on_audio: Callable[[np.ndarray], None],
+                    on_exit: Callable[[int, str], None]) -> FakeStream:
+        st = FakeStream(on_audio, on_exit)
+        calls.streams.append(st)
+        return st
+
     eng = Engine(s, storage, recognizer=rec, recorder_factory=lambda dev, cb: recorder,
                  field_reader=lambda: calls.field_reader(),
-                 context_reader=lambda: calls.context_reader())
+                 context_reader=lambda: calls.context_reader(),
+                 meeting_sources=lambda patterns, own: [dict(x) for x in calls.sources],
+                 meeting_stream=fake_stream, meeting_vad=lambda: value_vad,
+                 loopback_available=lambda: True)
     srv = WsServer(api.Api(eng), eng.bus, 0, TOKEN)
     srv.start()
     eng.start(hook=False, track_focus=False)
@@ -326,6 +396,14 @@ def test_hello_is_state(env: Env) -> None:
     assert st["device"] == "cuda" and st["style"] == "normal"
     got = c.call("get_state")
     assert got["version"] == st["version"] and got["state"] in ("idle", "loading")
+    # перевод встречи: hello восстанавливает его состояние (встречи нет — пустое)
+    assert st["meeting"] == {"running": False, "source": None, "started_at": None, "lines": 0,
+                             "level": 0.0, "state": "idle", "error": None, "translate": True,
+                             "target_lang": "ru", "file": None, "title": None, "hint": None,
+                             "ending_in_s": None,
+                             "latency": {"asr_ms": None, "first_token_ms": None,
+                                         "done_ms": None},
+                             "loopback_available": True, "notes": None}
     c.close()
 
 
@@ -1661,4 +1739,50 @@ def test_any_command_error_is_scrubbed_of_keys(env: Env) -> None:
     err = c.error("ai_test", {"text": "проверка", "style": "normal"})
     assert FAKE_KEY not in err and "sk-or-v1-fff" not in err
     assert not any(FAKE_KEY in raw for raw in c.raw)
+    c.close()
+
+
+# ---------- перевод встречи: команды ----------
+
+MEET_SRC = {"id": "proc:4100", "kind": "process", "pid": 4100, "exe": "brave.exe",
+            "name": "Brave", "title": "Meet – abc-defg-hij", "meeting": True, "active": True}
+SYSTEM_SRC = {"id": "system", "kind": "system", "pid": None, "exe": "",
+              "name": "Весь звук компьютера", "title": "", "meeting": False, "active": False}
+
+
+def test_meeting_commands_are_long_and_events_public() -> None:
+    from rupor import server
+    assert {"meeting_start", "meeting_sources"} <= server.LONG_COMMANDS
+    assert {"meeting", "meeting_line"} <= engine.PUBLIC_EVENTS
+
+
+def test_meeting_commands_over_ws(env: Env) -> None:
+    c = env.client()
+    assert {"meeting_sources", "meeting_start", "meeting_stop", "meeting_status",
+            "meeting_lines", "meeting_copy", "meeting_open_folder"} <= set(
+        api.Api(env.eng).commands)
+    assert c.call("meeting_sources") == []
+    st = c.call("meeting_status")
+    assert st["running"] is False and st["state"] == "idle" and st["source"] is None
+    # ни встречи, ни играющего браузера — понятная ошибка, ничего не запущено
+    env.calls.sources = [SYSTEM_SRC]
+    assert "Нет источника звука встречи" in c.error("meeting_start", {})
+    assert "не найден" in c.error("meeting_start", {"source_id": "proc:1"})
+    assert "строкой" in c.error("meeting_start", {"source_id": 5})
+    assert env.calls.streams == []
+    assert c.call("meeting_lines") == [] and c.call("meeting_lines", {"after_id": 3}) == []
+    assert "от 1 до 500" in c.error("meeting_lines", {"limit": 0})
+    assert "от 1 до 500" in c.error("meeting_lines", {"limit": 501})
+    assert "целым" in c.error("meeting_lines", {"after_id": "x"})
+    assert "копировать нечего" in c.error("meeting_copy")
+    assert c.call("meeting_stop")["running"] is False
+    c.call("meeting_open_folder")              # встречи нет — папка расшифровок
+    assert env.calls.opened == [str(env.tmp / "Rupor" / "meetings")]
+    assert (env.tmp / "Rupor" / "meetings").is_dir()
+    # «весь звук компьютера» выбирается явно
+    st = c.call("meeting_start", {"source_id": "system"})
+    assert st["running"] is True and st["source"]["id"] == "system"
+    assert env.calls.streams[-1].target == "system"
+    assert c.call("meeting_stop")["running"] is False
+    assert env.calls.streams[-1].stopped
     c.close()

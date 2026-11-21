@@ -189,6 +189,28 @@ const MOCK_CORE = {
   noteMedium: "rec.note_medium",
   noteTurbo: "rec.note_turbo",
   noteLarge: "rec.note_large",
+  // перевод встречи (подсказка о встрече, ошибки meeting_start / meeting_copy)
+  meetingSuggest: "meeting.suggest",
+  meetingNoSource: "meeting.no_source",
+  meetingUnknownSource: "meeting.source_not_found",
+  meetingNothingToCopy: "meeting.nothing_to_copy",
+  // Windows 10: встреча с программой — по всему звуку компьютера (notice ядра)
+  meetingLoopbackFallback: "meeting.loopback_fallback",
+  // встреча кончилась — автоостановка (notice ядра)
+  meetingAutostoppedNotes: "meeting.autostopped_notes",
+  meetingAutostopped: "meeting.autostopped_saved",
+  // название записи без ИИ, когда ни окна встречи, ни строк (MeetingStatus.title)
+  meetingTitleGeneric: "meeting.title_generic",
+  // предложение встречи (meeting_suggest_answer)
+  meetingSuggestExpired: "meeting.suggest_expired",
+  suggestAnswer: "api.suggest_answer",
+  // заметки к встрече (meeting_notes, meeting_copy {what}) и их ошибка без ключа
+  meetingNotesEmpty: "meeting.notes_empty",
+  meetingNotesNoMeeting: "meeting.notes_no_meeting",
+  meetingNotesNothing: "meeting.notes_nothing_to_copy",
+  meetingNotesFailed: "meeting.notes_failed",
+  copyWhat: "api.copy_what",
+  aiNoKey: "ai.no_key",
 };
 const MOCK_FILES = { ru: "mock-data.json", en: "mock-data.en.json" };
 const coreDir = join(root, "..", "core", "rupor", "locales");

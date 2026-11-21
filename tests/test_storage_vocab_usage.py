@@ -108,10 +108,14 @@ def usage(kind: str = "cleanup", cost: float | None = 0.001, ok: bool = True,
 def test_ai_usage_record_and_error_costs_zero(st: Storage) -> None:
     r = st.add_ai_usage(usage())
     assert r["id"] > 0 and r["cost_usd"] == 0.001 and r["ok"] is True and r["error_kind"] is None
-    e = st.add_ai_usage(usage(cost=0.5, ok=False, error_kind="timeout", tokens_in=None,
+    e = st.add_ai_usage(usage(cost=None, ok=False, error_kind="timeout", tokens_in=None,
                               tokens_out=None))
     assert e["cost_usd"] == 0.0 and e["ok"] is False and e["error_kind"] == "timeout"
     assert e["tokens_in"] is None
+    # ответ пришёл и оплачен, но не подошёл (не название, обрезан) — неудача с его ценой
+    paid = st.add_ai_usage(usage(kind="title", cost=0.0004, ok=False, error_kind="bad_response"))
+    assert paid["cost_usd"] == 0.0004 and paid["ok"] is False
+    assert st.add_ai_usage(usage(cost=-1.0, ok=False))["cost_usd"] == 0.0
     cli = st.add_ai_usage(usage(kind="command", cost=None, model="claude -p"))
     assert cli["cost_usd"] is None                       # claude -p: стоимость неизвестна
     with pytest.raises(ValueError, match="вид вызова"):
@@ -140,7 +144,10 @@ def test_ai_usage_stats_periods_daily_kinds_models(st: Storage) -> None:
     assert set(r["daily"][0]) == {"date", "calls", "tokens_in", "tokens_out", "cost_usd"}
     assert r["by_kind"] == [{"kind": "cleanup", "calls": 3, "cost_usd": 1.002},
                             {"kind": "command", "calls": 1, "cost_usd": 0.01},
-                            {"kind": "test", "calls": 1, "cost_usd": 0.004}]
+                            {"kind": "test", "calls": 1, "cost_usd": 0.004},
+                            {"kind": "translate", "calls": 0, "cost_usd": 0.0},
+                            {"kind": "title", "calls": 0, "cost_usd": 0.0},
+                            {"kind": "notes", "calls": 0, "cost_usd": 0.0}]
     assert r["by_model"][0] == {"model": "anthropic/claude-haiku-4.5", "calls": 4,
                                 "cost_usd": pytest.approx(1.012), "unknown_cost_calls": 0}
     assert r["by_model"][1]["model"] == "anthropic/claude-sonnet-5"
@@ -151,8 +158,34 @@ def test_ai_usage_stats_empty(st: Storage) -> None:
     assert r["total"] == {"calls": 0, "tokens_in": 0, "tokens_out": 0, "cost_usd": 0.0,
                           "unknown_cost_calls": 0}
     assert r["avg_cost_per_call"] == 0.0 and len(r["daily"]) == 30
-    assert [k["kind"] for k in r["by_kind"]] == ["cleanup", "command", "test"]
+    assert [k["kind"] for k in r["by_kind"]] == ["cleanup", "command", "test", "translate",
+                                                 "title", "notes"]
     assert r["by_model"] == []
+
+
+def test_ai_usage_meeting_title_kind(st: Storage) -> None:
+    """Название записи встречи (kind title) — свой вид расхода, в средней цене — как прочие."""
+    st.add_ai_usage(usage(kind="title", cost=0.0003, app="brave.exe"))
+    st.add_ai_usage(usage(kind="title", cost=0.0, ok=False, error_kind="timeout"))
+    r = st.ai_usage_stats(TODAY)
+    kinds = {k["kind"]: k for k in r["by_kind"]}
+    assert kinds["title"] == {"kind": "title", "calls": 2, "cost_usd": 0.0003}
+    assert r["avg_cost_per_call"] == pytest.approx(0.0003)               # только удачный
+
+
+def test_ai_usage_meeting_notes_kind(st: Storage) -> None:
+    """Заметки к встрече (kind notes): свой вид; оплаченный, но негодный ответ — в расходе
+    за день и по виду, но не в средней цене удачного вызова."""
+    st.add_ai_usage(usage(kind="notes", cost=0.05, model="anthropic/claude-sonnet-5.5",
+                          app="brave.exe"))
+    st.add_ai_usage(usage(kind="notes", cost=0.02, ok=False, error_kind="bad_response",
+                          model="anthropic/claude-sonnet-5.5"))
+    r = st.ai_usage_stats(TODAY)
+    kinds = {k["kind"]: k for k in r["by_kind"]}
+    assert kinds["notes"] == {"kind": "notes", "calls": 2, "cost_usd": pytest.approx(0.07)}
+    assert r["today"]["cost_usd"] == pytest.approx(0.07)
+    assert r["avg_cost_per_call"] == pytest.approx(0.05)
+    assert st.ai_usage_today_cost(ts_of(TODAY)) == pytest.approx(0.07)
 
 
 def test_ai_usage_today_cost(st: Storage) -> None:

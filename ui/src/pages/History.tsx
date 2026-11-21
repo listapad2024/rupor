@@ -455,6 +455,26 @@ function HistoryRow({ item, recId, onDelete }: { item: HistoryItem; recId?: stri
     }
   };
 
+  // Распознать запись голоса этой диктовки заново (зациклилось, ослышалось): новый текст
+  // приходит событием history и встаёт в начало ленты, старую запись можно удалить
+  const [retranscribing, setRetranscribing] = useState(false);
+  const retranscribe = async () => {
+    if (!recId || retranscribing) return;
+    setRetranscribing(true);
+    try {
+      const r = await call("recording_transcribe", { id: recId });
+      toast(
+        r.text
+          ? { tone: "success", title: t("history.retranscribed") }
+          : { tone: "warn", title: t("history.rec.resultEmpty") },
+      );
+    } catch (e) {
+      toast({ tone: "error", title: t("errors.generic"), description: errorText(e) });
+    } finally {
+      setRetranscribing(false);
+    }
+  };
+
   const reinsert = async () => {
     try {
       await call("history_reinsert", { id: item.id });
@@ -550,6 +570,18 @@ function HistoryRow({ item, recId, onDelete }: { item: HistoryItem; recId?: stri
               </Badge>
             )}
             {item.target === "test" && <Badge>{t("history.badges.test")}</Badge>}
+            {recId && (
+              <Button
+                size="sm"
+                variant="ghost"
+                className="ml-auto"
+                icon={<Wand2 className="size-4" />}
+                loading={retranscribing}
+                onClick={() => void retranscribe()}
+              >
+                {retranscribing ? t("history.rec.transcribing") : t("history.actions.retranscribe")}
+              </Button>
+            )}
           </div>
         </div>
         <div className="flex shrink-0 flex-col gap-1 opacity-0 transition-opacity duration-150 group-hover:opacity-100 focus-within:opacity-100">

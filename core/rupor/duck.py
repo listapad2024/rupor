@@ -17,9 +17,12 @@ eCommunications — обычно это одно-два устройства), �
 
 Не трогаются: сессии процессов Рупора (звуки начала/конца записи играет само ядро —
 ``own_pids``), сессия системных звуков (IsSystemSoundsSession), сессии, которые уже без звука
-или тише цели. Приглушаются играющие сессии (AudioSessionStateActive); те, что заиграли во
-время записи, — переопросом раз в ``POLL_S``. RDP: звук удалённой машины играет mstsc —
-обычная сессия, приглушается.
+или тише цели, и сессии исключённых деревьев процессов (``set_excluded``: пока идёт перевод
+встречи, браузер со встречей не приглушается — захват звука идёт после громкости сессии, и
+приглушённая встреча не расшифровалась бы; встреча слушает весь звук компьютера —
+``everything``, не приглушается ничего). Приглушаются играющие сессии
+(AudioSessionStateActive); те, что заиграли во время записи, — переопросом раз в ``POLL_S``.
+RDP: звук удалённой машины играет mstsc — обычная сессия, приглушается.
 
 Возвращается только то, что поменяли мы, и к исходному значению. Громкость и беззвук
 ведутся порознь: если пользователь во время записи сам поменял то, что поставили мы
@@ -69,6 +72,8 @@ PENDING_TTL_S = 7 * 86400.0  # столько ждём приложение, з�
 MAX_ENTRIES = 256            # записей в duck.json не больше (старые забываются)
 VOL_EPS = 0.005              # громкость «та же», если отличается меньше (float32 и округления)
 CLOSE_TIMEOUT_S = 2.0        # выход ядра: ждать возврата звука не дольше
+EXCLUDE_TTL_S = 30.0         # столько помним, входит ли pid сессии в исключённое дерево
+EXCLUDE_DEPTH = 16           # предков pid сессии проверяем не больше
 STATE_FILE = "duck.json"
 FILE_VERSION = 1
 
@@ -125,6 +130,11 @@ class Entry:
     mute_ours: bool = True   # то же — беззвук
 
 
+def _default_parent_of() -> Callable[[int], int | None]:
+    from .winutil import parent_pid
+    return parent_pid
+
+
 def _new_entry(s: AudioSession, st: tuple[float, bool], tgt: tuple[float, bool],
                ts: float) -> Entry:
     """Запись о сессии, которой ставим tgt вместо st: наше — только то, что меняется."""
@@ -142,15 +152,19 @@ def _f32(x: float) -> float:
 class Ducker:
     """Приглушает аудиосессии на время записи и возвращает их (поток ``rupor-duck``).
 
-    ``duck(mode, level)`` и ``restore()`` не блокируют: команды выполняются по очереди в
-    своём потоке. ``close()`` — вернуть звук и остановить поток (ждёт до ``timeout``).
-    ``backend_factory`` вызывается в потоке ``rupor-duck`` (COM инициализируется там)."""
+    ``duck(mode, level)``, ``restore()`` и ``set_excluded(pids)`` не блокируют: команды
+    выполняются по очереди в своём потоке. ``close()`` — вернуть звук и остановить поток (ждёт
+    до ``timeout``). ``backend_factory`` вызывается в потоке ``rupor-duck`` (COM
+    инициализируется там); ``parent_of(pid)`` — pid родителя (тесты; по умолчанию
+    ``winutil.parent_pid``)."""
 
     def __init__(self, own_pids: Iterable[int] = (), path: Path | None = None,
-                 backend_factory: Callable[[], Backend] | None = None) -> None:
+                 backend_factory: Callable[[], Backend] | None = None,
+                 parent_of: Callable[[int], int | None] | None = None) -> None:
         self._own = frozenset(int(p) for p in own_pids if p) | {os.getpid()}
         self._path = path
         self._factory = backend_factory     # None — default_backend (ищется при запуске)
+        self._parent_of = parent_of         # None — winutil.parent_pid
         self._q: queue.Queue[tuple[Any, ...]] = queue.Queue()
         self._thread: threading.Thread | None = None
         self._start_lock = threading.Lock()
@@ -166,6 +180,11 @@ class Ducker:
         self._user_off: set[str] = set()
         self._skip: set[str] = set()
         self._known: set[str] = set()       # экземпляры, виденные при прошлом переборе
+        # Корни деревьев процессов, которые не приглушаем (перевод встречи), и решения по
+        # pid сессий: входит ли pid в такое дерево (pid → (да/нет, когда решено))
+        self._excluded: frozenset[int] = frozenset()
+        self._exclude_all = False           # встреча слушает весь звук — не приглушать ничего
+        self._excl_cache: dict[int, tuple[bool, float]] = {}
         self._saved: str | None = None      # что сейчас в duck.json ("" — файла нет; None — ?)
         self._list_warned = False
         self._save_warned = False
@@ -192,6 +211,14 @@ class Ducker:
     def restore(self) -> None:
         """Вернуть всё, что поменяли (кроме сессий, которые пользователь поменял сам)."""
         self._q.put(("restore",))
+
+    def set_excluded(self, pids: Iterable[int], everything: bool = False) -> None:
+        """Не приглушать сессии этих процессов и всех их потомков (дерево процессов, звук
+        которого захватывается для перевода встречи; frozenset() — снять исключение).
+        ``everything`` — не приглушать ничего (встреча слушает весь звук компьютера: любая
+        приглушённая программа пропала бы из захвата). Уже приглушённые сессии исключённого
+        возвращаются сразу, не дожидаясь конца записи."""
+        self._q.put(("exclude", frozenset(int(p) for p in pids if p), bool(everything)))
 
     def flush(self, timeout: float = 5.0) -> bool:
         """Дождаться, пока поток выполнит всё, что уже в очереди (тесты). True — успел."""
@@ -260,6 +287,8 @@ class Ducker:
                     self._duck(str(item[1]), int(item[2]))
                 elif cmd in ("restore", "stop"):
                     self._restore()
+                elif cmd == "exclude":
+                    self._set_excluded(item[1], bool(item[2]) if len(item) > 2 else False)
                 elif cmd == "tick":
                     if self._active:
                         self._poll()
@@ -394,6 +423,8 @@ class Ducker:
                     continue              # не на устройстве по умолчанию / не играет (пока)
             except Exception:
                 continue
+            if self._is_excluded(s.pid):
+                continue                  # звук встречи захватывается — не приглушаем
             st = self._read(s)
             if st is None:
                 continue
@@ -426,6 +457,72 @@ class Ducker:
         self._save()                      # пишется, только если записи изменились
         self.changed = sum(1 for e in self._entries if e.instance in live)
         return added
+
+    def _is_excluded(self, pid: int) -> bool:
+        """pid сессии — в исключённом дереве (сам корень или его потомок любой глубины:
+        у браузеров звук играет дочерний процесс). Решение помнится EXCLUDE_TTL_S: pid
+        сессии живёт, пока жив процесс, а цепочка предков — несколько вызовов ядра.
+        Исключено всё (встреча слушает весь звук) — любой pid."""
+        if self._exclude_all:
+            return True
+        if not self._excluded or not pid:
+            return False
+        if pid in self._excluded:
+            return True
+        now = time.monotonic()
+        hit = self._excl_cache.get(pid)
+        if hit is not None and now - hit[1] < EXCLUDE_TTL_S:
+            return hit[0]
+        parent_of = self._parent_of or _default_parent_of()
+        found = False
+        cur, seen = pid, {pid}
+        for _ in range(EXCLUDE_DEPTH):
+            try:
+                p = parent_of(cur)
+            except Exception:
+                p = None
+            if not p or p in seen:
+                break
+            if p in self._excluded:
+                found = True
+                break
+            seen.add(p)
+            cur = p
+        if len(self._excl_cache) > 512:
+            self._excl_cache.clear()
+        self._excl_cache[pid] = (found, now)
+        return found
+
+    def _set_excluded(self, pids: frozenset[int], everything: bool = False) -> None:
+        """Сменить исключённые деревья (``everything`` — исключить всё); приглушённые нами
+        сессии нового исключения вернуть сразу (как в конце записи: только то, что ещё
+        наше)."""
+        self._excluded = pids
+        self._exclude_all = everything
+        self._excl_cache.clear()
+        if not (pids or everything) or not self._entries:
+            return
+        sessions = self._list()
+        if sessions is None:
+            return
+        live = {s.instance: s for s in sessions}
+        back = 0
+        for e in list(self._entries):
+            s = live.get(e.instance)
+            if s is None or not self._is_excluded(e.pid):
+                continue
+            st = self._read(s)
+            if st is None:
+                continue
+            if self._release(st, e) and not self._put_back(s, e):
+                continue                  # не вернулась — вернём в конце записи
+            self._drop(e)
+            back += 1
+        if back:
+            self._save()
+            self.changed = sum(1 for e in self._entries if e.instance in live)
+            log.info("Звук компьютера: %s исключено из приглушения, отпущено сессий %d",
+                     "всё" if everything else "дерево процессов", back)
 
     def _resolve_lost(self, sessions: list[AudioSession], live: dict[str, AudioSession],
                       adopt: bool) -> int:

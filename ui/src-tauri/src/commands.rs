@@ -147,11 +147,101 @@ pub fn pill_raise() {
 /// упавшая пилюля пропадает молча. Одна строка, не длиннее LOG_MESSAGE_MAX символов.
 #[tauri::command(rename_all = "snake_case")]
 pub fn pill_log(level: String, message: String) {
-    let msg = log_line(&message);
-    match level.as_str() {
-        "error" => crate::log_error!("Пилюля: {msg}"),
-        "warn" => crate::log_warn!("Пилюля: {msg}"),
-        _ => crate::log_info!("Пилюля: {msg}"),
+    page_log("Пилюля", &level, &message);
+}
+
+/// `meeting_window_show` — показать окно перевода встречи (при первом открытии — создать):
+/// без активации, поверх всех, под пилюлей. Async: окно строится не в главном потоке.
+#[tauri::command]
+pub async fn meeting_window_show(app: AppHandle) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || crate::meeting::show_blocking(&app))
+        .await
+        .map_err(|e| internal_error(&e))?
+}
+
+/// `meeting_window_minimize` — окно перевода свернуть в полоску (справа внизу или где её
+/// оставили), поверх всех, без фокуса; окна нет — ничего.
+#[tauri::command]
+pub async fn meeting_window_minimize(app: AppHandle) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || crate::meeting::minimize_blocking(&app))
+        .await
+        .map_err(|e| internal_error(&e))?
+}
+
+/// `meeting_window_restore` — полоску (или скрытое окно) снова панелью на её месте.
+#[tauri::command]
+pub async fn meeting_window_restore(app: AppHandle) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || crate::meeting::show_blocking(&app))
+        .await
+        .map_err(|e| internal_error(&e))?
+}
+
+/// `meeting_window_hide` — скрыть окно перевода (сеанс перевода идёт дальше).
+#[tauri::command]
+pub fn meeting_window_hide(app: AppHandle) -> Result<(), String> {
+    crate::meeting::hide(&app)
+}
+
+/// `meeting_window_toggle` → видно ли окно теперь: видно — скрыть, нет — показать.
+#[tauri::command]
+pub async fn meeting_window_toggle(app: AppHandle) -> Result<bool, String> {
+    tauri::async_runtime::spawn_blocking(move || crate::meeting::toggle_blocking(&app))
+        .await
+        .map_err(|e| internal_error(&e))?
+}
+
+/// `meeting_window_reset` — окно перевода снова к правому краю рабочей области, на всю высоту.
+/// (Сохранить `meeting_rect: null` в настройках ядра фронтенд должен сам.)
+#[tauri::command]
+pub async fn meeting_window_reset(app: AppHandle) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || crate::meeting::reset(&app))
+        .await
+        .map_err(|e| internal_error(&e))?
+}
+
+/// `meeting_suggest_show {suggestion}` — ядро заметило встречу (`suggestion` — событие
+/// `meeting_suggest` как есть; приносит главное окно): скрытое окно перевода становится
+/// карточкой «Обнаружена новая встреча» в правом верхнем углу (без фокуса), видимая панель
+/// показывает предложение сама. Через 45 с без ответа — пропадает. Async: может создать окно.
+#[tauri::command(rename_all = "snake_case")]
+pub async fn meeting_suggest_show(
+    app: AppHandle,
+    suggestion: serde_json::Value,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || crate::meeting::suggest_blocking(&app, suggestion))
+        .await
+        .map_err(|e| internal_error(&e))?
+}
+
+/// `meeting_suggest_done {id}` — на предложение ответили («Не сейчас», «Не предлагать») или
+/// закрыли его: карточка скрывается, полоска в панели пропадает.
+#[tauri::command(rename_all = "snake_case")]
+pub fn meeting_suggest_done(app: AppHandle, id: String) -> Result<(), String> {
+    crate::meeting::suggest_done(&app, &id)
+}
+
+/// `meeting_window_mode` → `{mode: "full" | "suggest", suggestion, hide_in_ms}` — что сейчас
+/// показывает окно перевода (страница спрашивает при загрузке, дальше — событие
+/// `meeting-window-mode`).
+#[tauri::command]
+pub fn meeting_window_mode() -> crate::meeting::ModeInfo {
+    crate::meeting::mode_info()
+}
+
+/// `meeting_window_log {level, message}` — ошибка страницы окна перевода в ui.log
+/// («Окно перевода: …»), как `pill_log`.
+#[tauri::command(rename_all = "snake_case")]
+pub fn meeting_window_log(level: String, message: String) {
+    page_log("Окно перевода", &level, &message);
+}
+
+/// Сообщение страницы окна в журнал оболочки с префиксом окна.
+fn page_log(prefix: &str, level: &str, message: &str) {
+    let msg = log_line(message);
+    match level {
+        "error" => crate::log_error!("{prefix}: {msg}"),
+        "warn" => crate::log_warn!("{prefix}: {msg}"),
+        _ => crate::log_info!("{prefix}: {msg}"),
     }
 }
 

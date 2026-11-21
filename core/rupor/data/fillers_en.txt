@@ -1,0 +1,16 @@
+# Default filler words (English). One phrase per line; # starts a comment.
+um
+uh
+er
+hmm
+like
+you know
+i mean
+basically
+actually
+literally
+kind of
+sort of
+you see
+anyway
+right

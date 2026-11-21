@@ -31,6 +31,7 @@ Dictation understands English and Russian, including English terms inside Russia
 - [Usage](#usage)
 - [Dictionary, snippets, history](#dictionary-snippets-history)
 - [AI cleanup](#ai-cleanup)
+- [Meeting translation](#meeting-translation)
 - [Privacy and data](#privacy-and-data)
 - [Settings](#settings)
 - [Benchmarks](#benchmarks)
@@ -64,6 +65,9 @@ The screenshots were taken in the interface's demo mode; all data in them is mad
   dictation**.
 - **Command mode**: select some text, hold Ctrl+Win+Alt and say "make it more polite",
   "translate to German" or "cut it in half" — the selection is replaced with the result.
+- **Meeting translation**: the audio of a browser meeting is transcribed locally and
+  translated into Russian (or another language) in a side window; the transcript is saved.
+  Dictation isn't slowed down — see [Meeting translation](#meeting-translation).
 - **Dictionary** of terms and spelling variants ("click house" → ClickHouse), with Russian case
   endings handled. **One term is usually enough**: spellings that sound like it are recognized
   on their own («Xena браузер», "Zenobowser" → ZennoBrowser). Dictionary terms are passed to
@@ -397,6 +401,85 @@ key and balance, Rupor calls OpenRouter (`/api/v1/key`, `/api/v1/credits`) when 
 and automatically at most once every 5 minutes — only if cleanup or commands go through
 OpenRouter. With Ollama everything stays on your computer.
 
+## Meeting translation
+
+In a browser meeting (Google Meet, Zoom, Microsoft Teams, Yandex Telemost, Kontur.Talk, Jitsi
+and other web clients), Rupor listens to **that browser's audio only** — the other people's
+voices; your microphone isn't in it — transcribes it with the same model as dictation and shows
+a rolling transcript in a window at the right edge of the screen. Foreign speech is translated
+into the language you choose (Russian by default); speech already in that language is just
+transcribed. Translation can be switched off, leaving a plain transcript.
+
+- **Starting.** The *Meeting translation* button on the home page, the *Meeting translation*
+  tray item, or *Start transcription* in the suggestion: Rupor notices a meeting by itself in any
+  browser and in meeting apps (Zoom, Teams, Telegram, Discord…) — a program holds the microphone
+  for 10 seconds and plays sound (a minute for a browser whose window title doesn't name a
+  meeting) — and offers to start, once per call. *Don't offer for …*
+  removes a program from the suggestions; all of it can be turned off in *Settings → Meetings*.
+  The audio source is picked in the translation window (automatically: the program on the
+  microphone); *All computer sound* is the fallback.
+- **Translation stops by itself when the meeting ends.** When the meeting app releases the
+  microphone for 15 seconds and nobody has spoken for half a minute (for *All computer sound* —
+  three minutes of silence), the window and the bar say *The meeting has ended — stopping in
+  10 s* with *Keep going*; if someone speaks or the microphone is taken again, the countdown is
+  dropped by itself. Then it works like *Stop*: the transcript is saved, the final title and the
+  notes are written, and a notice tells you. A muted microphone in Meet doesn't count as the
+  end. Closing the meeting app stops the translation at once. Turn it off in *Settings →
+  Meetings → Stop automatically when the meeting ends*.
+- **Dictation comes first.** While you dictate, the meeting waits for the model, so dictation
+  isn't slowed down; phrases that piled up meanwhile are recognised right after. The meeting
+  browser isn't turned down while you dictate — its audio would be lost otherwise.
+- **Requirements.** Capturing a single program needs Windows 11 (or Windows Server 2022, build
+  20348 or later); Windows 10 offers the whole computer sound only. An NVIDIA card is
+  recommended: on the CPU the transcript lags noticeably behind the speech.
+- **Translation** goes through the same AI provider as cleanup (OpenRouter, Anthropic or Ollama;
+  a separate translation model can be set). It doesn't depend on the AI cleanup switch. A
+  provider key is needed: without one the meeting is transcribed without translation. A line
+  costs about $0.0005 with Claude Haiku — roughly $0.3–0.5 per hour of talk; *Spending* shows
+  translation separately.
+- **The translation window** never takes the focus (dictation keeps typing into your window)
+  and by default is hidden when you share your screen. Buttons: *Copy* (the whole transcript),
+  *Open the transcript*; *Minimize* and *Close* at the right of the header. *Minimize* turns
+  the panel into a small bar at the bottom right, above all windows: the latest phrase runs in
+  it as a ticker (the newest words stay visible), with *Expand*, *Stop* and *Hide to tray*;
+  double-click it to get the panel back where it was, drag it anywhere — the place is
+  remembered. *Close* just hides the window when nothing is running and asks during a
+  translation: *Minimize* or *Stop and close*. A hidden window keeps translating: the tray
+  shows *Meeting translation (running)*, and clicking it brings the panel back.
+- **Transcripts.** Each meeting is saved as Markdown — the time, the translation and the
+  original of every line — in `%APPDATA%\Rupor\meetings\<date> <time> — <title>.md` (the
+  folder can be changed). Lines are written to disk at once, so a crash loses nothing.
+- **Meaningful recording names.** A recording is named by its content: once there are eight
+  phrases and a minute and a half has passed, and once more after *Stop*, the AI (the same
+  key as translation) reads the transcript and comes up with a short title —
+  "2026-10-19 12-22 — Billing move to ClickHouse.md". The file and the heading in it are
+  renamed by themselves without losing a line, and the title shows in the translation
+  window's header. Without a key, or with *Name recordings by their content (AI)* off, the
+  recording is named after the meeting window ("Google Meet", the meeting name in Teams) or
+  the first words spoken, never after a program like "Python".
+- **Meeting notes.** When the meeting ends (five phrases or two minutes of speech and up), a
+  stronger model — Claude Sonnet 5.5 by default, about $0.07 per hour of meeting — writes notes
+  in the translation language: *Summary* (what the meeting was for and how it ended),
+  *Decisions*, *Action items* ("- [ ] who — what — when", only what was actually said), *Open
+  questions* and *Key moments* with the times of the lines. The notes show on the *Notes* tab
+  of the translation window (each time in them jumps to that line of the transcript) and at the
+  top of the transcript file, above the *Full transcript* section; their title becomes the
+  recording's title. You can also make or refresh them during the meeting with *Make notes
+  now*, and *Copy notes* puts them on the clipboard. Pick the model in *Settings → Meetings*
+  (Opus 5.5 — best, Haiku 5.5 — cheapest, DeepSeek, Gemini or your own) or turn the notes
+  after the meeting off there. Without a key or on an error the file stays as it was and Rupor
+  tells you once that the notes didn't work out. *Spending* shows them separately as *Meeting
+  notes*.
+
+**What goes over the network.** Audio never leaves the computer: recognition is local. With
+translation on, the AI provider receives the text of the line, the two or three previous lines
+for context and a list of terms from your dictionary. To name the recording (*Name recordings
+by their content (AI)*, on by default) it also receives the transcript once or twice per
+meeting — its beginning and end, up to 8,000 characters. For the notes (*Notes after the
+meeting*, on by default, or *Make notes now*) it receives the whole transcript (the translation
+of each line, or the original without one, with its time), the meeting's date, duration,
+source (the program and the meeting window's title) and languages. Audio isn't sent.
+
 ## Privacy and data
 
 - **Recognition is local.** Microphone audio is processed on your computer and never leaves it.
@@ -417,6 +500,7 @@ OpenRouter. With Ollama everything stays on your computer.
 | Logs (rotated; log messages are in Russian) | `%APPDATA%\Rupor\logs\` (`rupor.log`, `ui.log`, `crash.log`) |
 | Recent voice recordings (WAV, rotated) | `%APPDATA%\Rupor\recordings\` |
 | Volume of lowered apps (only while recording) | `%APPDATA%\Rupor\duck.json` |
+| Meeting transcripts | `%APPDATA%\Rupor\meetings\` or your own folder (`meeting_dir`) |
 | Speech model | `%USERPROFILE%\.cache\huggingface\hub` or your own folder (`model_dir`, see [Model folder](#model-folder)) |
 | CUDA libraries | `%LOCALAPPDATA%\Rupor\cuda` |
 | AI keys | Windows Credential Manager: `Rupor/openrouter`, `Rupor/anthropic` |

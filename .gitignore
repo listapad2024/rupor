@@ -12,3 +12,11 @@ samples/
 /build/
 /dist/
 /ui/src-tauri/resources/core/
+
+# граф знаний песочницы (ночной батч graphify)
+graphify-out/
+
+# личное и рабочее локальной машины (хэндоффы, скрипты, спецификации) — не в репозиторий
+.local/
+.claude/
+CLAUDE.local.md

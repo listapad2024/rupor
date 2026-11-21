@@ -47,11 +47,19 @@ CLOSE_UNAUTHORIZED = 4401
 CLOSE_FORBIDDEN = 4403
 MAX_MESSAGE = 32 * 1024 * 1024  # импорт словаря может быть большим
 
-# Команды, которые ждут сеть, модель, NVML или диск (model_dir_set создаёт папку и пишет
-# пробный файл — на недоступном сетевом пути это десятки секунд): идут параллельно, не держат
-# очередь соединения
-LONG_COMMANDS = frozenset({"ai_test", "ai_key_check", "ai_balance", "ai_key_info", "test_record_stop",
-                           "cuda_check", "model_recommend", "model_dir_set"})
+# Команды, которые ждут сеть, модель, NVML, диск (model_dir_set создаёт папку и пишет
+# пробный файл — на недоступном сетевом пути это десятки секунд) или другой процесс
+# (meeting_start запускает процесс захвата звука): идут параллельно, не держат очередь
+# соединения
+LONG_COMMANDS = frozenset({"ai_test", "ai_key_check", "ai_balance", "ai_key_info",
+                           "test_record_stop",
+                           "cuda_check", "model_recommend", "model_dir_set",
+                           # перевод встречи: перебор аудиосессий и запуск процесса захвата
+                           "meeting_sources", "meeting_start",
+                           # «Начать расшифровку» в предложении — тот же meeting_start
+                           "meeting_suggest_answer",
+                           # заметки: отвечает сразу, но собирает расшифровку всей встречи
+                           "meeting_notes"})
 
 # Окна Tauri (Windows: http(s)://tauri.localhost; macOS/Linux: tauri://localhost), dev-сервер
 # Vite (npm run dev / preview) и клиенты без Origin (Rust-проба, тесты, tools/ws_smoke.py).

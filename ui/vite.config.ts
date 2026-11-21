@@ -9,7 +9,8 @@ const pkg = JSON.parse(readFileSync(new URL("./package.json", import.meta.url), 
   version: string;
 };
 
-// Многостраничная сборка: главное окно (index.html) и пилюля (pill.html).
+// Многостраничная сборка: главное окно (index.html), пилюля (pill.html) и окно перевода
+// встречи (meeting.html).
 export default defineConfig({
   root,
   plugins: [react(), tailwindcss()],
@@ -36,9 +37,10 @@ export default defineConfig({
       input: {
         main: fileURLToPath(new URL("./index.html", import.meta.url)),
         pill: fileURLToPath(new URL("./pill.html", import.meta.url)),
+        meeting: fileURLToPath(new URL("./meeting.html", import.meta.url)),
       },
       output: {
-        // Общие библиотеки — одним чанком для обоих окон
+        // Общие библиотеки — одним чанком для всех окон
         manualChunks(id) {
           return id.includes("node_modules") ? "vendor" : undefined;
         },

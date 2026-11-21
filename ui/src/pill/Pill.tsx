@@ -8,6 +8,7 @@ import {
   Download,
   Hand,
   Info,
+  Languages,
   LoaderCircle,
   MonitorSmartphone,
   Pause,
@@ -38,6 +39,7 @@ import {
   sameCorrection,
   type LearnNotice,
 } from "../lib/learn";
+import { startMeeting } from "../lib/meeting";
 import { RDP_SESSIONS_ROUTE } from "../lib/rdp";
 import { pillRaise, relaunchAdmin, setWindowTitle, showMain } from "../lib/tauri";
 import { normalizeAccent, accentForeground } from "../lib/theme";
@@ -762,6 +764,16 @@ function PillBadge({ icon, children, tone }: { icon: ReactNode; children: ReactN
 function Notice({ n }: { n: NoticeEvent }) {
   const err = n.level === "error";
   const info = n.level === "info";
+  const [starting, setStarting] = useState(false);
+  // «Похоже, идёт встреча…» → «Включить»: перевод встречи и окно перевода (без фокуса —
+  // текст диктовки по-прежнему уходит в окно встречи). Ошибку старта покажет окно перевода.
+  const startMeetingNow = () => {
+    if (starting) return;
+    setStarting(true);
+    startMeeting()
+      .catch((e: unknown) => console.warn("meeting_start", e))
+      .finally(() => setStarting(false));
+  };
   const action =
     n.action === "relaunch_admin" ? (
       <button
@@ -779,6 +791,18 @@ function Notice({ n }: { n: NoticeEvent }) {
         className="flex h-6 shrink-0 items-center rounded-full bg-white px-2.5 text-[11px] font-semibold text-[#15151a] transition-transform hover:scale-[1.03] active:scale-95"
       >
         {t("pill.openSettings")}
+      </button>
+    ) : n.action === "meeting_start" ? (
+      <button
+        type="button"
+        tabIndex={-1}
+        disabled={starting}
+        onMouseDown={(e) => e.preventDefault()}
+        onClick={startMeetingNow}
+        className="flex h-6 shrink-0 items-center gap-1 rounded-full bg-white px-2.5 text-[11px] font-semibold text-[#15151a] transition-transform hover:scale-[1.03] active:scale-95 disabled:opacity-70"
+      >
+        {starting ? <LoaderCircle className="size-3 animate-spin" /> : <Languages className="size-3" />}
+        {t("pill.meetingStart")}
       </button>
     ) : n.action === "open_settings_insert" ? (
       <button

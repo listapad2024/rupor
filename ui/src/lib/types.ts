@@ -113,6 +113,8 @@ export interface CoreState {
   hotkeys: CoreHotkeys;
   /** Язык интерфейса и сообщений ядра: settings.language, для "system" — по языку Windows. */
   ui_language: UiLanguage;
+  /** Перевод встречи: идёт ли сеанс и что с ним (как событие meeting). */
+  meeting: MeetingStatus;
 }
 
 export type HistoryTarget = "window" | "rdp_all" | "test" | "command";
@@ -201,6 +203,52 @@ export interface Stats {
   daily: DailyWords[];
 }
 
+/** Слова-паразиты: одна фраза за период (fillers_stats.top). */
+export interface FillerTop {
+  phrase: string;
+  count: number;
+  per100: number;
+  /** Та же фраза на 100 слов в предыдущем таком же периоде; null — сравнивать не с чем. */
+  prev_per100: number | null;
+}
+
+export interface FillerDay {
+  date: string;
+  words: number;
+  fillers: number;
+  per100: number;
+}
+
+/** Статистика паразитов по сырому тексту распознавания (до словаря и ИИ-очистки). */
+export interface FillerStats {
+  enabled: boolean;
+  /** 7, 30, 90 или 0 — всё время. */
+  days: number;
+  words: number;
+  dictations: number;
+  fillers: number;
+  per100: number;
+  prev_per100: number | null;
+  top: FillerTop[];
+  /** По дням (не больше 90 последних дней периода). */
+  daily: FillerDay[];
+  /** Первый день со статистикой (ISO) или null. */
+  since: string | null;
+}
+
+export interface FillerConfig {
+  enabled: boolean;
+  phrases: string[];
+  defaults: string[];
+}
+
+export interface FillerSuggestion {
+  phrase: string;
+  /** Сколько раз фраза нашлась в разобранных диктовках (посчитано локально). */
+  count: number;
+  example: string;
+}
+
 export interface AppRuleSetting {
   insert_mode: InsertMode | null;
   style: string | null;
@@ -270,6 +318,10 @@ export interface Settings {
   duck_mode: DuckMode;
   /** До какого процента от исходной громкости приглушать (duck_mode="duck"), целое 0–100; по умолчанию 15. */
   duck_level: number;
+  /** Голосовые чаты (live chat Codex, ChatGPT) не слышат диктовку: на время записи Рупор выключает им микрофон их же кнопкой; по умолчанию true. */
+  app_mute_enabled: boolean;
+  /** Приложения (имена exe); по умолчанию ["codex.exe", "chatgpt.exe"] (десктопный Codex — ChatGPT.exe). */
+  app_mute_apps: string[];
 
   sounds: boolean;
   autostart: boolean;
@@ -306,6 +358,77 @@ export interface Settings {
   ai_timeout_s: number;
   command_provider: CommandProvider;
   env_path: string;
+
+  // ——— Перевод встречи ———
+  /** На какой язык переводить речь собеседников (по умолчанию "ru"). */
+  meeting_target_lang: MeetingLang;
+  /** Язык собеседников: auto — определять по каждой фразе, иначе — всегда этот. */
+  meeting_source_lang: "auto" | MeetingLang;
+  /** false — только расшифровка: перевод ИИ не вызывается (название записи — meeting_ai_title). */
+  meeting_translate: boolean;
+  /** Показывать оригинал под переводом. */
+  meeting_show_original: boolean;
+  /** Размер текста в окне перевода, 12–28. */
+  meeting_font_size: number;
+  /**
+   * Замечать встречу и предлагать перевод (событие meeting_suggest): приложение держит
+   * микрофон ≥ 10 с и играет звук. false — не следить вовсе.
+   */
+  meeting_autosuggest: boolean;
+  /**
+   * Встреча кончилась (программа отпустила микрофон ≥ 15 с и речи нет ≥ 30 с; у «всего звука
+   * компьютера» — 3 минуты тишины) — через 10 с остановить перевод самому (MeetingStatus.hint
+   * "ending" с отсчётом ending_in_s; «Не останавливать» — meeting_autostop_cancel).
+   */
+  meeting_autostop: boolean;
+  /** Подстроки заголовков окон встреч (без учёта регистра), до 30 штук по ≤ 60 символов — для названия встречи. */
+  meeting_title_patterns: string[];
+  /** Предлагать и для настольных приложений встреч (Zoom, Teams, Telegram, Discord…), не только браузеров. */
+  meeting_detect_desktop_apps: boolean;
+  /** Не предлагать для этих exe (имя файла, без учёта регистра); «Не предлагать для …» добавляет сюда. */
+  meeting_ignore_apps: string[];
+  /** Фраза кончилась — перевести её целиком ещё раз и заменить пословный перевод (MeetingLine.refined). */
+  meeting_refine: boolean;
+  /** Сохранять расшифровку каждого сеанса (Markdown). */
+  meeting_save: boolean;
+  /**
+   * Называть запись по содержанию: короткое название по расшифровке придумывает ИИ (провайдер
+   * ai_provider, расход — ai_usage вида title) после 8 строк и 90 с встречи и ещё раз после
+   * «Стоп». false, нет ключа или ошибка — название без ИИ (окно встречи, первые слова).
+   */
+  meeting_ai_title: boolean;
+  /**
+   * Заметки к встрече: после «Стоп» (встреча от 5 строк или 2 минут речи) модель посильнее пишет
+   * «Кратко», решения, задачи, открытые вопросы и ключевые моменты; их название — название
+   * записи. Расход — ai_usage вида notes. Сделать заметки по кнопке можно и при false.
+   */
+  meeting_notes: boolean;
+  /**
+   * Модель заметок у провайдера ai_provider; "" — сильная по умолчанию: OpenRouter —
+   * anthropic/claude-sonnet-5.5, Anthropic — claude-sonnet-5-5, Ollama — ollama_model.
+   */
+  meeting_notes_model: string;
+  /** Папка расшифровок; "" — %APPDATA%\Rupor\meetings. Путь — абсолютный. */
+  meeting_dir: string;
+  /** Прятать окно перевода от захвата экрана (демонстрация экрана на встрече). */
+  meeting_protect: boolean;
+  /**
+   * Окно перевода [x, y, ширина, высота] в физических пикселях (пишут оболочка и окно);
+   * null — у правого края рабочей области, на всю высоту, ширина 420 логических px.
+   */
+  meeting_rect: [number, number, number, number] | null;
+  /**
+   * Компактная полоска окна перевода («Свернуть»): левый верхний угол её видимой части [x, y]
+   * в физических пикселях (пишет окно после переноса); null — справа внизу рабочей области.
+   */
+  meeting_mini_pos: [number, number] | null;
+  /**
+   * Модель для перевода (у провайдера ai_provider); "" — та же, что для очистки у этого
+   * провайдера (ai_model, anthropic_model или ollama_model).
+   */
+  translate_model: string;
+  /** Сколько ждать перевод одной фразы, с (1–30). */
+  translate_timeout_s: number;
 }
 
 export type SettingsPatch = Partial<Settings>;
@@ -412,7 +535,11 @@ export interface VocabItem {
 
 // ——— Расход ИИ ———
 
-export type AiUsageKind = "cleanup" | "command" | "test";
+/**
+ * translate — перевод встречи, title — название записи встречи (meeting_ai_title), notes —
+ * заметки к ней (meeting_notes; у длинной встречи — несколько вызовов: части и сведение).
+ */
+export type AiUsageKind = "cleanup" | "command" | "test" | "translate" | "title" | "notes";
 
 export interface AiUsageTotals {
   calls: number;
@@ -557,6 +684,16 @@ export interface CommandMap {
     result: { dictionary: number; snippets: number };
   };
   stats_get: { args: void; result: Stats };
+  fillers_stats: { args: { days?: number }; result: FillerStats };
+  fillers_config: { args: void; result: FillerConfig };
+  /** phrases — весь список целиком (нормализуется ядром), enabled — считать ли. */
+  fillers_config_set: { args: { phrases?: string[]; enabled?: boolean }; result: FillerConfig };
+  fillers_defaults: { args: void; result: FillerConfig };
+  /** Пересчитать по истории текущим списком (дни без истории не трогаются). */
+  fillers_rebuild: { args: void; result: { days: number; dictations: number } };
+  fillers_reset: { args: void; result: null };
+  /** ИИ ищет личные обороты в свежих диктовках (платно, по кнопке). */
+  fillers_ai_suggest: { args: void; result: { items: FillerSuggestion[]; sampled: number } };
   draft_get: { args: void; result: { text: string } };
   draft_set: { args: { text: string }; result: null };
   styles_list: { args: void; result: StyleInfo[] };
@@ -594,6 +731,50 @@ export interface CommandMap {
   ai_key_info: { args: { id: string; force?: boolean }; result: AiKeyInfo };
   ai_test: { args: { text: string; style: string }; result: AiTestResult };
   open_logs: { args: void; result: null };
+  /** Откуда можно слушать встречу: процессы со звуком (по корневому процессу) и весь звук. */
+  meeting_sources: { args: void; result: AudioSource[] };
+  /**
+   * Начать перевод встречи. Без source_id (или "auto") — лучший источник встречи, иначе
+   * активный браузер, иначе ошибка. Уже идёт с другим источником — перезапуск на новом.
+   * Модель не загружена — загружается, как перед диктовкой (долгая команда).
+   */
+  meeting_start: { args: { source_id?: string }; result: MeetingStatus };
+  meeting_stop: { args: void; result: MeetingStatus };
+  /**
+   * «Не останавливать»: снять отсчёт автоостановки идущей встречи (до нового использования
+   * микрофона или речи). Встречи нет — просто статус.
+   */
+  meeting_autostop_cancel: { args: void; result: MeetingStatus };
+  meeting_status: { args: void; result: MeetingStatus };
+  /** Строки текущего (или последнего) сеанса с id > after_id, по возрастанию id; limit 1–500 (200). */
+  meeting_lines: { args: { after_id?: number; limit?: number }; result: MeetingLine[] };
+  /**
+   * В буфер обмена силами ядра (окно перевода без фокуса): transcript (по умолчанию) — вся
+   * расшифровка (перевод и оригинал), notes — заметки (Markdown), all — заметки и расшифровка.
+   * Копировать нечего — ошибка.
+   */
+  meeting_copy: { args: { what?: MeetingCopyWhat }; result: { chars: number } };
+  /**
+   * Сделать заметки к встрече сейчас (идущей или последней): ответ сразу (status running,
+   * уже пишутся — тоже их), готовые и ошибка — событием meeting_notes. Встречи не было или
+   * расшифровка пуста — ошибка.
+   */
+  meeting_notes: { args: void; result: MeetingNotes };
+  /** Заметки идущей (или последней) встречи; null — их не было. */
+  meeting_notes_get: { args: void; result: MeetingNotes | null };
+  /** Открыть папку расшифровок (или выделить файл текущего сеанса) в проводнике. */
+  meeting_open_folder: { args: void; result: null };
+  /**
+   * Ответ на предложение meeting_suggest: start — «Начать расшифровку» (ядро начинает перевод
+   * с источником предложения → MeetingStatus, долгая команда), later — «Не сейчас» (до конца
+   * этого разговора не предлагать) → null, never — «Не предлагать для {app}» (exe — в
+   * meeting_ignore_apps) → null. Предложение устарело или неизвестно — ошибка (later — null);
+   * тогда интерфейс сам зовёт meeting_start с источником (или дописывает exe в настройку).
+   */
+  meeting_suggest_answer: {
+    args: { id: string; answer: MeetingSuggestAnswer };
+    result: MeetingStatus | null;
+  };
 }
 
 export type CommandName = keyof CommandMap;
@@ -656,7 +837,9 @@ export type NoticeAction =
   | "open_settings_insert"
   | "open_recordings"
   | "dict_undo"
-  | "dict_add";
+  | "dict_add"
+  /** «Похоже, идёт встреча…» — кнопка «Включить»: meeting_start {} и показать окно перевода. */
+  | "meeting_start";
 
 /** Правка, которую словарь выучил (dict_undo) или предлагает выучить (dict_add). */
 export interface LearnData {
@@ -700,8 +883,220 @@ export interface EventMap {
   progress: ProgressEvent;
   settings: Settings;
   ai_usage: AiUsageEvent;
+  /** Состояние перевода встречи — при каждой смене; level — не чаще 4 раз в секунду. */
+  meeting: MeetingStatus;
+  /**
+   * Новая строка расшифровки и каждое её обновление по тому же id (выросли слова или
+   * перевод, фраза кончилась, уточнён перевод, ошибка) — не чаще 10 раз в секунду на строку.
+   */
+  meeting_line: MeetingLine;
+  /** Замечена встреча (приложение держит микрофон и играет звук) — предложить расшифровку. */
+  meeting_suggest: MeetingSuggest;
+  /**
+   * Заметки к встрече: начали писаться, пишутся (markdown — начало ответа модели, не чаще
+   * 2 раз в секунду), готовы, не удались; и когда название записи сменилось после них.
+   */
+  meeting_notes: MeetingNotes;
 }
 
 export type EventName = keyof EventMap;
+
+// ——— Перевод встречи ———
+
+/** Языки перевода встречи (meeting_target_lang / meeting_source_lang). */
+export type MeetingLang =
+  | "ru"
+  | "en"
+  | "de"
+  | "fr"
+  | "es"
+  | "it"
+  | "pt"
+  | "pl"
+  | "uk"
+  | "zh"
+  | "ja"
+  | "ko"
+  | "tr";
+
+/**
+ * Источник звука встречи. process — дерево процессов (браузер: звук играет дочерний процесс,
+ * захват — по корневому); system — весь звук компьютера (устройство вывода по умолчанию).
+ */
+export interface AudioSource {
+  /** "proc:<корневой pid>" или "system". */
+  id: string;
+  kind: "process" | "system";
+  pid: number | null;
+  exe: string;
+  /** Понятное имя приложения (описание exe), для system — «Весь звук компьютера». */
+  name: string;
+  /** Заголовок самого подходящего окна (совпадающий с шаблонами встреч — в приоритете). */
+  title: string;
+  /** Заголовок совпал с meeting_title_patterns. */
+  meeting: boolean;
+  /** Звук сейчас играет. */
+  active: boolean;
+  /**
+   * Звук этого источника можно захватить. false — у программы в Windows старше Windows 11 /
+   * Server 2022 (сборка 20348): там захватывается только весь звук компьютера, окно перевода
+   * показывает программу неактивной. Ядро присылает поле всегда (check-contract это сверяет);
+   * интерфейс без него считает, что можно.
+   */
+  available?: boolean;
+}
+
+/**
+ * idle — сеанса нет; listening — слушаем; waiting_gpu — распознавание ждёт видеокарту (идёт
+ * диктовка); no_audio — 20 с полной тишины в источнике; error — сеанс упал (error — причина).
+ */
+export type MeetingState = "idle" | "listening" | "waiting_gpu" | "no_audio" | "error";
+
+export interface MeetingStatus {
+  running: boolean;
+  source: AudioSource | null;
+  /** Начало сеанса (локальное время, ISO) или null. */
+  started_at: string | null;
+  /** Строк в сеансе. */
+  lines: number;
+  /** Уровень звука 0–1 (сглаженный) — «звук есть». */
+  level: number;
+  state: MeetingState;
+  error: string | null;
+  /** Переводит ли сеанс (выключено, нет ключа ИИ — только расшифровка). */
+  translate: boolean;
+  target_lang: MeetingLang;
+  /**
+   * Файл расшифровки текущего сеанса или null (meeting_save выключено, строк ещё нет):
+   * «YYYY-MM-DD HH-MM — <title>.md»; новое название — файл переименован (событие meeting).
+   */
+  file: string | null;
+  /**
+   * Название записи: по содержанию (ИИ, meeting_ai_title) или без ИИ — заголовок окна встречи
+   * («Google Meet»), «Встреча — <первые слова>», имя программы. null — сеанса не было.
+   */
+  title: string | null;
+  /** Средние задержки сеанса (окно перевода показывает их в подвале). */
+  latency: MeetingLatency;
+  /**
+   * Подсказка по идущему сеансу: ended — встреча, похоже, закончилась (приложение больше 30 с
+   * не держит микрофон и не играет звук; кнопка «Стоп»); ending — встреча кончилась и сеанс
+   * остановится сам через ending_in_s (meeting_autostop; «Не останавливать» —
+   * meeting_autostop_cancel). null — нет.
+   */
+  hint: MeetingHint | null;
+  /** Секунд до автоостановки (hint "ending"), иначе null. */
+  ending_in_s: number | null;
+  /**
+   * Можно захватить звук одной программы (Windows 11 / Server 2022, сборка 20348). false —
+   * только весь звук компьютера: окно перевода берёт его по умолчанию, программы в выборе
+   * источника неактивны, а встреча с программой (автовыбор, предложение) идёт по всему звуку.
+   * Ядро присылает поле всегда (check-contract это сверяет); интерфейс без него считает, что
+   * можно.
+   */
+  loopback_available?: boolean;
+  /** Заметки к встрече (без текста — он в событии meeting_notes и meeting_notes_get); null — не было. */
+  notes: MeetingNotesInfo | null;
+}
+
+export type MeetingHint = "ended" | "ending";
+
+/** running — модель пишет заметки; done — готовы; error — не удались (error — причина). */
+export type MeetingNotesStatus = "running" | "done" | "error";
+
+/** Что копировать (meeting_copy). */
+export type MeetingCopyWhat = "transcript" | "notes" | "all";
+
+/** Заметки к встрече без текста (MeetingStatus.notes). */
+export interface MeetingNotesInfo {
+  status: MeetingNotesStatus;
+  /** Когда готовы последние удачные (ISO со смещением) или null. */
+  generated_at: string | null;
+  /** Модель последних удачных или null. */
+  model: string | null;
+  /** Сколько они стоили (все вызовы), $; null — неизвестно или их нет. */
+  cost_usd: number | null;
+  /** Почему не удались (status error) или null. */
+  error: string | null;
+  /** Написаны сами после «Стоп» (true) или по кнопке. */
+  auto: boolean;
+}
+
+/**
+ * Заметки к встрече (событие meeting_notes, meeting_notes_get, meeting_notes). markdown:
+ * пока пишутся — начало ответа модели (или null), потом — последние удачные заметки: первая
+ * строка «# <название записи>», дальше разделы «## …» (кратко, решения, задачи «- [ ] кто —
+ * что — срок», открытые вопросы, ключевые моменты со временем строк ЧЧ:ММ:СС); null — их нет.
+ */
+export interface MeetingNotes {
+  status: MeetingNotesStatus;
+  markdown: string | null;
+  generated_at: string | null;
+  model: string | null;
+  cost_usd: number | null;
+  error: string | null;
+  auto: boolean;
+}
+
+/**
+ * Средние задержки строк сеанса, мс от конца сказанного: asr_ms — текст на экране,
+ * first_token_ms — первые слова перевода, done_ms — перевод целиком. null — ещё не измерено
+ * (нет строк или перевода).
+ */
+export interface MeetingLatency {
+  asr_ms: number | null;
+  first_token_ms: number | null;
+  done_ms: number | null;
+}
+
+/**
+ * pending — перевод ещё не начался; streaming — перевод приходит по словам; done — переведено;
+ * original — перевод не нужен (речь уже на языке перевода или перевод выключен); error —
+ * перевести не удалось (error — причина).
+ */
+export type MeetingLineStatus = "pending" | "streaming" | "done" | "original" | "error";
+
+/**
+ * Строка (фраза) расшифровки. Пока говорят, одна и та же строка (тот же id) обновляется:
+ * text растёт подтверждёнными словами, partial — хвост, который ещё может поменяться,
+ * translation растёт по словам; фраза кончилась — final; переведена целиком заново — refined.
+ */
+export interface MeetingLine {
+  /** 1, 2, … внутри сеанса. */
+  id: number;
+  /** Секунды от начала сеанса. */
+  t: number;
+  /** Местное время «ЧЧ:ММ:СС». */
+  ts: string;
+  /** Язык фразы (код Whisper). */
+  lang: string;
+  /** Подтверждённый текст фразы (дальше только растёт; в конце фразы его может уточнить финальное распознавание). */
+  text: string;
+  /** Неподтверждённый хвост после text (ещё может поменяться), "" — нет. */
+  partial: string;
+  /** Фраза кончилась (пауза в речи): text окончательный, partial пустой. */
+  final: boolean;
+  /** Перевод заменён переводом всей фразы целиком (meeting_refine). */
+  refined: boolean;
+  translation: string | null;
+  status: MeetingLineStatus;
+  error?: string;
+}
+
+export type MeetingSuggestAnswer = "start" | "later" | "never";
+
+/** Предложение начать расшифровку: замеченная встреча. */
+export interface MeetingSuggest {
+  /** id предложения — для meeting_suggest_answer. */
+  id: string;
+  /** Откуда слушать (meeting_start {source_id: source.id}). */
+  source: AudioSource;
+  /** Приложение: «Brave», «Zoom»… */
+  app: string;
+  /** Название встречи: «Google Meet», заголовок окна… ("" — неизвестно). */
+  title: string;
+  /** Когда замечена (локальное время, ISO). */
+  detected_at: string;
+}
 
 export type ConnStatus = "connecting" | "open" | "reconnecting" | "no-params";

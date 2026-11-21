@@ -229,7 +229,7 @@ function AiOffCard() {
 // ——— Настройки → ИИ → Расход ———
 
 const PERIODS = ["today", "week", "month", "total"] as const;
-const KINDS: AiUsageKind[] = ["cleanup", "command", "test"];
+const KINDS: AiUsageKind[] = ["cleanup", "command", "translate", "title", "notes", "test"];
 
 export function AiSpendSection() {
   const { settings } = useCore();

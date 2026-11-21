@@ -2,7 +2,7 @@
 // команды тихо ничего не делают, подписки возвращают пустую отписку.
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import type { CoreStateName, InsertMode, UiLanguage } from "./types";
+import type { CoreStateName, InsertMode, MeetingSuggest, UiLanguage } from "./types";
 
 export function inTauri(): boolean {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -40,6 +40,8 @@ export interface TrayInfo {
    * labels, оболочка берёт встроенные строки по языку Windows.
    */
   labels?: TrayLabels;
+  /** Идёт перевод встречи: пункт «Перевод встречи (идёт)» и подсказка значка. */
+  meeting_running?: boolean;
 }
 
 /**
@@ -64,6 +66,8 @@ export interface TrayLabels {
   status_restarting: string;
   status_failed: string;
   status_already_running: string;
+  /** Подсказка значка, пока идёт перевод встречи, а диктовки нет. */
+  status_meeting: string;
   pause: string;
   insert_mode: string;
   mode_auto: string;
@@ -72,6 +76,10 @@ export interface TrayLabels {
   style: string;
   last_insert: string;
   pill_restore: string;
+  /** «Перевод встречи» — показать/скрыть окно перевода (выполняет сама оболочка). */
+  meeting: string;
+  /** …он же, пока перевод встречи идёт: «Перевод встречи (идёт)». */
+  meeting_running: string;
   rdp: string;
   rdp_empty: string;
   open: string;
@@ -148,6 +156,139 @@ export async function pillLog(level: "error" | "warn" | "info", message: string)
   } catch (e) {
     console.warn("pill_log", e);
   }
+}
+
+// ——— Окно перевода встречи (meeting.html) ———
+
+/**
+ * Вне Tauri (демо ?mock=1, проверка в браузере) окна оболочки нет: окно перевода открывается
+ * вкладкой браузера с теми же параметрами адреса (mock, lang, port/token).
+ */
+function openMeetingTab(): void {
+  window.open(`meeting.html${window.location.search}`, "rupor-meeting", "popup,width=440,height=820");
+}
+
+/** Показать окно перевода встречи (при первом открытии оболочка его создаёт), без фокуса. */
+export async function meetingWindowShow(): Promise<void> {
+  if (!inTauri()) {
+    openMeetingTab();
+    return;
+  }
+  await invoke("meeting_window_show");
+}
+
+/** Скрыть окно перевода (сеанс идёт дальше). Вне Tauri — закрыть вкладку окна. */
+export async function meetingWindowHide(): Promise<void> {
+  if (!inTauri()) {
+    window.close();
+    return;
+  }
+  await invoke("meeting_window_hide");
+}
+
+/** Свернуть окно перевода в компактную полоску поверх всех (вне Tauri — ничего: демо &mini=1). */
+export async function meetingWindowMinimize(): Promise<void> {
+  if (!inTauri()) return;
+  await invoke("meeting_window_minimize");
+}
+
+/** Полоску (или скрытое окно) — снова панелью на её месте. */
+export async function meetingWindowRestore(): Promise<void> {
+  if (!inTauri()) return;
+  await invoke("meeting_window_restore");
+}
+
+/** Показать или скрыть окно перевода; true — теперь видно. */
+export async function meetingWindowToggle(): Promise<boolean> {
+  if (!inTauri()) {
+    openMeetingTab();
+    return true;
+  }
+  return invoke<boolean>("meeting_window_toggle");
+}
+
+/** Окно перевода — снова к правому краю экрана (meeting_rect: null сохраняет вызывающий). */
+export async function meetingWindowReset(): Promise<void> {
+  if (!inTauri()) return;
+  await invoke("meeting_window_reset");
+}
+
+/** Ошибка страницы окна перевода — в журнал оболочки (ui.log), как pillLog. */
+export async function meetingWindowLog(level: "error" | "warn" | "info", message: string): Promise<void> {
+  if (!inTauri()) {
+    console.warn("meeting", level, message);
+    return;
+  }
+  try {
+    await invoke("meeting_window_log", { level, message });
+  } catch (e) {
+    console.warn("meeting_window_log", e);
+  }
+}
+
+/**
+ * Вид окна перевода: full — панель; mini — компактная полоска («Свернуть»); suggest — карточка «Обнаружена новая встреча» в правом
+ * верхнем углу (окно было скрыто, когда ядро предложило встречу). suggestion — предложение,
+ * пока на него не ответили (в панели — полоской над лентой); hide_in_ms — через сколько оно
+ * пропадёт само.
+ */
+export interface MeetingWindowMode {
+  mode: "full" | "suggest" | "mini";
+  suggestion: MeetingSuggest | null;
+  hide_in_ms: number | null;
+}
+
+/** Вне Tauri оболочки нет: окно — всегда панель без предложения (демо задаёт вид само). */
+const FULL_MODE: MeetingWindowMode = { mode: "full", suggestion: null, hide_in_ms: null };
+
+/** Что сейчас показывает окно перевода (спросить при загрузке страницы окна). */
+export async function meetingWindowMode(): Promise<MeetingWindowMode> {
+  if (!inTauri()) return FULL_MODE;
+  return invoke<MeetingWindowMode>("meeting_window_mode");
+}
+
+/** Оболочка сменила вид окна перевода или предложение. */
+export function onMeetingWindowMode(fn: (m: MeetingWindowMode) => void): () => void {
+  return onTauriEvent<MeetingWindowMode>("meeting-window-mode", (m) => {
+    if (m && (m.mode === "full" || m.mode === "suggest" || m.mode === "mini")) fn(m);
+  });
+}
+
+/**
+ * Ядро предложило встречу (событие meeting_suggest) — показать предложение: скрытое окно
+ * перевода становится карточкой в правом верхнем углу, видимая панель — полоской. Зовёт
+ * главное окно (его клиент ядра живёт всегда). Вне Tauri — ничего (демо: meeting.html?mock=1&suggest=1).
+ */
+export async function meetingSuggestShow(suggestion: MeetingSuggest): Promise<void> {
+  if (!inTauri()) return;
+  await invoke("meeting_suggest_show", { suggestion });
+}
+
+/** На предложение ответили или его закрыли: карточка скрывается, полоска пропадает. */
+export async function meetingSuggestDone(id: string): Promise<void> {
+  if (!inTauri()) return;
+  try {
+    await invoke("meeting_suggest_done", { id });
+  } catch (e) {
+    console.warn("meeting_suggest_done", e);
+  }
+}
+
+/**
+ * Пользователь передвинул окно перевода или поменял его размер (оболочка: WM_EXITSIZEMOVE) —
+ * новый прямоугольник [x, y, w, h] в физических пикселях, его сохраняют в meeting_rect.
+ */
+export function onMeetingWindowRect(fn: (rect: [number, number, number, number]) => void): () => void {
+  return onTauriEvent<[number, number, number, number]>("meeting-window-rect", (r) => {
+    if (Array.isArray(r) && r.length === 4 && r.every((v) => Number.isFinite(v))) fn(r);
+  });
+}
+
+/** Пользователь передвинул полоску окна перевода: [x, y] видимой части (meeting_mini_pos). */
+export function onMeetingMiniPos(fn: (pos: [number, number]) => void): () => void {
+  return onTauriEvent<[number, number]>("meeting-window-mini-pos", (p) => {
+    if (Array.isArray(p) && p.length === 2 && p.every((v) => Number.isFinite(v))) fn(p);
+  });
 }
 
 export async function quitApp(): Promise<void> {

@@ -11,6 +11,11 @@ DLL CUDA ищет ``fetch`` (pip-пакеты nvidia-* или %LOCALAPPDATA%\\Ru
 (вероятность ≥ ``en_threshold``). Подсказка ``initial_prompt`` для английской диктовки —
 без кириллицы (``adapt_prompt``): русский контекст окна и русские частые слова тянули бы
 Whisper к русскому, остаются латинские термины и фразы.
+
+Модель одна на всех (``ModelGate``): диктовка, загрузка, выгрузка и определение языка —
+высокий приоритет (``with gate:``), распознавание встречи (``transcribe_background``) —
+низкий: ждёт, пока модель занята, пока её ждёт диктовка или пока ``yield_to()`` истинно
+(движок: идёт запись или диктовка ждёт распознавания).
 """
 from __future__ import annotations
 
@@ -19,12 +24,14 @@ import logging
 import re
 import threading
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any, Callable, Iterator
 
 import numpy as np
 
 from . import fetch, i18n
+from .textproc import strip_tail_hallucinations
 from .config import Settings
 
 fetch.add_cuda_dll_dirs()  # до импорта faster-whisper/ctranslate2
@@ -79,6 +86,83 @@ REPEAT_MIN_CHARS = 40
 # 2.4 и без всякого повтора — так длинная диктовка целиком уходила в «мусор».
 REPEAT_WINDOW = 400
 SALVAGE_MIN_WORDS = 4      # оба прохода — мусор, но после чистки осталось столько слов — вставить
+# Короткое зацикливание посреди нормальной фразы («типа какого интерфа, какого интерфа,
+# какого интерфа, интерфа, интерфа интерф» — 08.11.2026): сжимаемость всего текста ещё
+# обычная, а Whisper (часто отравленный подсказкой) уже крутит одно и то же до конца
+# записи вместо сказанного. Признак — фраза из нескольких слов подряд LOOP_REPEATS раз
+# или одно слово подряд LOOP_WORD_REPEATS раз; такое распознаётся ещё раз без подсказки.
+LOOP_MAX_UNIT = 6          # самая длинная повторяющаяся фраза, слов
+LOOP_REPEATS = 3           # фраза из 2+ слов подряд столько раз — зацикливание
+LOOP_WORD_REPEATS = 4      # одно слово (от 3 букв) подряд столько раз — зацикливание
+# Оба прохода зациклены: повтор, которого человек не скажет, сворачивается до одного раза
+COLLAPSE_REPEATS = 4       # фраза из 2+ слов подряд столько раз и больше
+COLLAPSE_WORD_REPEATS = 6  # одно слово подряд столько раз и больше
+_WORD_RE = re.compile(r"[^\W_]+")
+
+
+def _loop_runs(text: str) -> list[tuple[int, int, int]]:
+    """Повторы подряд в тексте: (первое слово, длина фразы в словах, сколько раз подряд),
+    самые длинные по числу повторённых слов, без пересечений. Сравнение — без регистра и
+    «ё». Повтор одного слова короче 3 букв («да да да») не считается."""
+    words = [m.group().casefold().replace("ё", "е") for m in _WORD_RE.finditer(text)]
+    runs: list[tuple[int, int, int]] = []
+    i = 0
+    while i < len(words):
+        best: tuple[int, int] | None = None   # (длина фразы, повторов)
+        for n in range(1, LOOP_MAX_UNIT + 1):
+            if i + 2 * n > len(words):
+                break
+            unit = words[i:i + n]
+            if (n == 1 and len(unit[0]) < 3) or (n > 1 and len(set(unit)) == 1):
+                continue    # «да да да»; фраза из одного слова — это повтор слова (n = 1)
+            k = 1
+            while words[i + k * n:i + (k + 1) * n] == unit:
+                k += 1
+            if k >= 2 and (best is None or k * n > best[0] * best[1]):
+                best = (n, k)
+        if best is None:
+            i += 1
+            continue
+        n, k = best
+        runs.append((i, n, k))
+        i += n * k
+    return runs
+
+
+def _is_loop(n: int, k: int) -> bool:
+    return k >= (LOOP_WORD_REPEATS if n == 1 else LOOP_REPEATS)
+
+
+def looping(text: str) -> bool:
+    """Whisper зациклился: фраза из 2+ слов LOOP_REPEATS раз подряд или одно слово
+    LOOP_WORD_REPEATS раз подряд."""
+    return any(_is_loop(n, k) for _i, n, k in _loop_runs(text))
+
+
+def loop_words(text: str) -> int:
+    """Сколько слов текста — лишние повторы зацикливания (меньше — текст лучше)."""
+    return sum(n * (k - 1) for _i, n, k in _loop_runs(text) if _is_loop(n, k))
+
+
+def collapse_loops(text: str) -> str:
+    """Свернуть повторы, которых человек не говорит (фраза из 2+ слов COLLAPSE_REPEATS раз
+    подряд, одно слово COLLAPSE_WORD_REPEATS раз), до одного раза. Остальной текст —
+    как был, с исходной пунктуацией и регистром."""
+    spans = [m.span() for m in _WORD_RE.finditer(text)]
+    cut: list[tuple[int, int]] = []
+    for i, n, k in _loop_runs(text):
+        if k >= (COLLAPSE_WORD_REPEATS if n == 1 else COLLAPSE_REPEATS):
+            cut.append((spans[i + n - 1][1], spans[i + n * k - 1][1]))
+    if not cut:
+        return text
+    out, pos = [], 0
+    for a, b in cut:
+        out.append(text[pos:a])
+        pos = b
+    out.append(text[pos:])
+    res = "".join(out)
+    res = re.sub(r"\s+([,.!?;:])", r"\1", res)
+    return re.sub(r"\s{2,}", " ", res).strip()
 
 
 def _foreign(text: str) -> bool:
@@ -126,11 +210,20 @@ def salvage(text: str) -> str:
     return out
 
 
-def garbage_reason(text: str) -> str | None:
-    """Почему текст — заведомый мусор (не вставлять), None — текст как текст."""
+# Языки встречи на этих письменностях: их символы — не мусор
+_OWN_SCRIPT_LANGS = frozenset({
+    "zh", "yue", "ja", "ko", "he", "yi", "ar", "fa", "ur", "ps", "sd", "hi", "mr", "ne",
+    "bn", "as", "pa", "gu", "ta", "te", "kn", "ml", "si", "sa", "th", "lo", "km", "my", "bo",
+})
+
+
+def garbage_reason(text: str, language: str | None = None) -> str | None:
+    """Почему текст — заведомый мусор (не вставлять), None — текст как текст.
+    ``language`` — язык речи встречи: у языков на иероглифах, кане, хангыле, арабице,
+    иврите, индийских и тайской письменностях эти символы мусором не считаются."""
     if not text:
         return None
-    if _foreign(text):
+    if _foreign(text) and (language or "").lower() not in _OWN_SCRIPT_LANGS:
         return "чужие символы"
     if _norm_phrase(text) in _HALLUCINATIONS:
         return "фраза субтитров"
@@ -218,12 +311,108 @@ class ModelMissing(RuntimeError):
     """Модели нет в локальном кэше — её нужно скачать (setup_download)."""
 
 
+# ---------- одна модель на диктовку и встречу ----------
+
+GATE_POLL_S = 0.05  # yield_to() — состояние движка без уведомлений: перепроверять так часто
+
+
+class ModelGate:
+    """Замок модели с двумя полосами.
+
+    ``with gate:`` — высокий приоритет (диктовка, загрузка, выгрузка, определение языка):
+    как обычный ``threading.Lock``. ``with gate.background(yield_to, timeout) as ok:`` —
+    низкий (встреча): ждёт, пока замок занят, пока его ждёт кто-то с высоким приоритетом
+    или пока ``yield_to()`` истинно (проверяется каждые GATE_POLL_S); ``ok=False`` — не
+    дождался за ``timeout``. CTranslate2 сам обслуживает потоки по очереди без приоритета —
+    поэтому приоритет здесь. ``yield_to`` зовётся под внутренним замком: только чтение
+    атрибутов, никаких замков движка."""
+
+    def __init__(self) -> None:
+        self._cond = threading.Condition(threading.Lock())
+        self._held = False
+        self._high_waiting = 0
+
+    def __enter__(self) -> "ModelGate":
+        with self._cond:
+            self._high_waiting += 1
+            try:
+                while self._held:
+                    self._cond.wait()
+            finally:
+                self._high_waiting -= 1
+            self._held = True
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        with self._cond:
+            self._held = False
+            self._cond.notify_all()
+
+    @property
+    def held(self) -> bool:
+        return self._held
+
+    @contextmanager
+    def background(self, yield_to: Callable[[], bool] | None = None,
+                   timeout: float | None = None) -> Iterator[bool]:
+        deadline = None if timeout is None else time.monotonic() + timeout
+        got = False
+        with self._cond:
+            while True:
+                busy = self._held or self._high_waiting > 0
+                if not busy and yield_to is not None:
+                    try:
+                        busy = bool(yield_to())
+                    except Exception:      # (перепроверка каждые 50 мс — без потока в журнал)
+                        log.debug("yield_to упал — уступаю модель", exc_info=True)
+                        busy = True
+                if not busy:
+                    self._held = got = True
+                    break
+                left = None if deadline is None else deadline - time.monotonic()
+                if left is not None and left <= 0:
+                    break
+                self._cond.wait(GATE_POLL_S if left is None else min(GATE_POLL_S, left))
+        try:
+            yield got
+        finally:
+            if got:
+                self.__exit__()
+
+
 @dataclass
 class Result:
     text: str
     language: str
     audio_s: float
     elapsed_ms: float
+
+
+@dataclass
+class ChunkResult:
+    """Кусок встречи (transcribe_background). text "" — мусор или угадывание: кусок
+    выброшен (вызывающий его считает), language — язык, который определил Whisper (или
+    заданный), language_prob — его уверенность (1.0 для заданного)."""
+    text: str
+    language: str
+    language_prob: float
+    audio_s: float
+    elapsed_ms: int
+
+
+# Встреча: повторы с повышенной температурой — не дальше 0.4 (дольше держали бы модель),
+# сегмент на последней температуре и всё ещё неуверенный — угадывание
+BG_TEMPERATURES = (0.0, 0.2, 0.4)
+
+
+def bg_guessing(stats: list[tuple[float | None, float]],
+                temperatures: tuple[float, ...] = BG_TEMPERATURES) -> bool:
+    """Кусок встречи угадан: сегмент на последней температуре и всё ещё с низкой
+    уверенностью (или с температурой угадывания диктовки). Одна температура (промежуточный
+    проход встречи, без повторов) — любой неуверенный сегмент."""
+    top = temperatures[-1]
+    return guessing(stats) or any((t is None or t >= top) and lp < LOW_LOGPROB
+                                  for t, lp in stats)
 
 
 def _no_notice(_text: str, _level: str) -> None:
@@ -235,7 +424,8 @@ class Recognizer:
         self.s = settings
         self._on_notice: NoticeFn = on_notice or _no_notice
         self._model: Any = None
-        self._lock = threading.Lock()
+        # Диктовка — высокая полоса (with self._lock), встреча — низкая (transcribe_background)
+        self._lock = ModelGate()
         self.device: str | None = None       # фактическое устройство загруженной модели
         # почему не вышло на GPU (для cuda_check): i18n.Msg — переводится при показе, после
         # смены языка — уже на новом; текст исключения — как есть
@@ -390,6 +580,10 @@ class Recognizer:
             prompt = adapt_prompt(prompt, lang)
             text, stats = self._decode(audio, lang, prompt, guess=True)
             text = self._second_opinion(audio, lang, text, stats)
+        tail = strip_tail_hallucinations(text)
+        if tail != text:
+            log.warning("ASR: убрана фраза субтитров в конце (%d симв.)", len(text) - len(tail))
+            text = tail
         ms = (time.perf_counter() - t0) * 1000
         r = Result(text, lang, len(audio) / SAMPLE_RATE, ms)
         log.info("ASR %.1f с аудио → %.0f мс, язык %s, %d симв.", r.audio_s, ms, lang, len(text))
@@ -402,12 +596,22 @@ class Recognizer:
         просто неуверенный — из двух берётся более уверенный, мусорный повтор не берётся."""
         bad = garbage_reason(text)
         guessed = guessing(stats)
-        if not (bad or guessed or low_confidence(stats)):
+        loop = bad is None and looping(text)
+        if not (bad or guessed or loop or low_confidence(stats)):
             return text
         log.warning("Распознавание сомнительное (%s) — повторяю без подсказки",
-                    bad or ("угадывание" if guessed else "низкая уверенность"))
+                    bad or ("угадывание" if guessed else "зацикливание" if loop
+                            else "низкая уверенность"))
         text2, stats2 = self._decode(audio, lang, None, guess=False)
         again = garbage_reason(text2)
+        if loop and not again and not guessed:
+            # Без подсказки тоже повтор — скорее всего его и правда сказали (или звук такой):
+            # берётся проход с меньшим повтором, нечеловеческие повторы сворачиваются
+            if looping(text2):
+                best = text2 if loop_words(text2) <= loop_words(text) else text
+                log.warning("Повтор без подсказки тоже зациклен — сворачиваю повторы")
+                return collapse_loops(best)
+            return text2
         if again:
             if bad or guessed:
                 # Длинная диктовка с одним «иероглифом» — не мусор целиком: спасти текст
@@ -419,9 +623,9 @@ class Recognizer:
                         return saved
                 log.warning("Повтор тоже мусор (%s) — текст не вставляю", again)
                 return ""
-            return text
+            return collapse_loops(text)
         if bad or guessed or _mean(stats2) >= _mean(stats):
-            return text2
+            return collapse_loops(text2)
         return text
 
     def _decode(self, audio: np.ndarray, lang: str, prompt: str | None, guess: bool
@@ -445,6 +649,68 @@ class Recognizer:
         text = " ".join(s.text.strip() for s in segs).strip()
         return text, [(getattr(s, "temperature", None), float(getattr(s, "avg_logprob", 0.0)))
                       for s in segs]
+
+    # ---------- встреча (низкий приоритет) ----------
+
+    def transcribe_background(self, audio: np.ndarray, *, language: str | None,
+                              prompt: str | None, yield_to: Callable[[], bool] | None,
+                              timeout: float | None = None, beam_size: int = 1,
+                              temperature: float | tuple[float, ...] = BG_TEMPERATURES
+                              ) -> ChunkResult | None:
+        """Распознать кусок встречи на низком приоритете (ModelGate.background).
+
+        None — модель не загружена или замок не взят за ``timeout`` (диктовка, загрузка,
+        перезагрузка модели): кусок стоит в очереди и ждёт. Модель здесь не грузится и на
+        CPU не переходит — сбой на GPU уходит исключением (диктовку он не трогает).
+        Подсказка и язык диктовки не используются: ``language`` None — язык определяет
+        Whisper (это второй проход энкодера, ≈ +0.2 с на GPU — встреча задаёт язык фразы,
+        как только он известен), ``prompt`` — подсказка самой встречи. ``temperature`` —
+        повторы с температурой (по умолчанию до 0.4); одна температура (промежуточный
+        проход потокового распознавания) — без повторов, неуверенный сегмент — угадывание.
+        Второго прохода нет: мусор (garbage_reason) и угадывание — ChunkResult с пустым
+        text. chunk_length не передаётся никогда: он меняет общий FeatureExtractor модели
+        и для диктовки тоже. Отметки времени слов (word_timestamps) не берутся: замер на
+        RTX 3060 Ti — +0.2…0.6 с к проходу в 0.23 с, встрече хватает сравнения текста."""
+        if self._model is None:
+            return None
+        temps = (float(temperature),) if isinstance(temperature, (int, float)) else tuple(
+            float(t) for t in temperature) or BG_TEMPERATURES
+        t0 = time.perf_counter()
+        with self._lock.background(yield_to, timeout) as ok:
+            model = self._model         # только под замком: ссылка держит память GPU
+            if not ok or model is None:
+                return None
+            t1 = time.perf_counter()
+            segs, info = model.transcribe(
+                audio,
+                language=language,
+                beam_size=beam_size,
+                temperature=temps[0] if len(temps) == 1 else temps,
+                vad_filter=False,
+                condition_on_previous_text=False,
+                without_timestamps=True,
+                initial_prompt=prompt,
+            )
+            segs = list(segs)
+            self.last_used = time.monotonic()
+            elapsed = int((time.perf_counter() - t1) * 1000)
+        waited = int((t1 - t0) * 1000)
+        text = " ".join(s.text.strip() for s in segs).strip()
+        stats = [(getattr(s, "temperature", None), float(getattr(s, "avg_logprob", 0.0)))
+                 for s in segs]
+        if language:
+            lang, prob = language, 1.0
+        else:
+            lang = str(getattr(info, "language", "") or "")
+            prob = float(getattr(info, "language_probability", 0.0) or 0.0)
+        bad = garbage_reason(text, lang) or (
+            "угадывание" if text and bg_guessing(stats, temps) else None)
+        if bad:
+            log.info("Встреча: кусок %.1f с выброшен (%s)", len(audio) / SAMPLE_RATE, bad)
+            text = ""
+        log.debug("Встреча: %.1f с аудио → %d мс (ждал %d мс), язык %s (%.2f), %d симв.",
+                  len(audio) / SAMPLE_RATE, elapsed, waited, lang, prob, len(text))
+        return ChunkResult(text, lang, prob, len(audio) / SAMPLE_RATE, elapsed)
 
 
 def load_wav(path: str) -> np.ndarray:

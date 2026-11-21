@@ -1,6 +1,6 @@
 //! Язык оболочки: подписи трея, пока интерфейс их не прислал, заголовки окон по умолчанию и
-//! сообщения самой оболочки (ошибки `backend_info`, `relaunch_admin`, команд пилюли, окно
-//! ошибки запуска).
+//! сообщения самой оболочки (ошибки `backend_info`, `relaunch_admin`, команд пилюли и окна
+//! перевода встречи, окно ошибки запуска).
 //!
 //! Язык при запуске — `language` из settings.json (`ru` | `en`); `system` (по умолчанию) —
 //! по языку интерфейса Windows (GetUserDefaultUILanguage): русский для русского, белорусского,
@@ -130,6 +130,8 @@ pub fn fill(template: &str, params: &[(&str, &dyn Display)]) -> String {
 pub struct Texts {
     /// Заголовок окна пилюли (виден разве что экранному диктору и в списках окон).
     pub pill_title: &'static str,
+    /// Заголовок окна перевода встречи (до того как страница поставит свой).
+    pub meeting_title: &'static str,
     /// Подписи трея по умолчанию; `tray.app` — название программы (заголовок главного окна).
     pub tray: TrayDefaults,
     /// Встроенные стили в трее до `update_tray.styles` — по порядку [`crate::tray::BUILTIN_STYLE_IDS`].
@@ -140,6 +142,8 @@ pub struct Texts {
     /// Внутренняя ошибка (упала фоновая задача). `{error}`.
     pub internal_error: &'static str,
     pub pill_not_found: &'static str,
+    /// Окно перевода встречи не создалось. `{error}`.
+    pub meeting_window_failed: &'static str,
 
     pub relaunch_pending: &'static str,
     pub relaunch_cancelled: &'static str,
@@ -172,6 +176,7 @@ pub struct Texts {
 
 pub const RU: Texts = Texts {
     pill_title: "Рупор — пилюля",
+    meeting_title: "Рупор — перевод встречи",
     tray: TrayDefaults {
         app: "Рупор",
         status_loading: "загрузка модели…",
@@ -186,6 +191,7 @@ pub const RU: Texts = Texts {
         status_restarting: "перезапуск ядра…",
         status_failed: "ядро не запускается",
         status_already_running: "уже запущен другой Рупор",
+        status_meeting: "перевод встречи идёт",
         pause: "Пауза",
         insert_mode: "Режим вставки",
         mode_auto: "Авто",
@@ -196,6 +202,8 @@ pub const RU: Texts = Texts {
         rdp_empty: "Нет открытых RDP-сессий",
         last_insert: "Вставить последнее",
         pill_restore: "Вернуть пилюлю",
+        meeting: "Перевод встречи",
+        meeting_running: "Перевод встречи (идёт)",
         open: "Открыть Рупор",
         quit: "Выход",
     },
@@ -206,6 +214,7 @@ pub const RU: Texts = Texts {
                      %APPDATA%\\Rupor\\logs\\ui.log.",
     internal_error: "Внутренняя ошибка: {error}",
     pill_not_found: "Окно пилюли не найдено",
+    meeting_window_failed: "Не удалось открыть окно перевода встречи: {error}",
 
     relaunch_pending: "Перезапуск от имени администратора уже запрошен — ответьте на запрос \
                        Windows.",
@@ -232,6 +241,7 @@ pub const RU: Texts = Texts {
 
 pub const EN: Texts = Texts {
     pill_title: "Rupor — indicator",
+    meeting_title: "Rupor — meeting translation",
     tray: TrayDefaults {
         app: "Rupor",
         status_loading: "Loading model…",
@@ -246,6 +256,7 @@ pub const EN: Texts = Texts {
         status_restarting: "Restarting engine…",
         status_failed: "Engine won't start",
         status_already_running: "Another Rupor is already running",
+        status_meeting: "Meeting translation running",
         pause: "Pause",
         insert_mode: "Insert method",
         mode_auto: "Auto",
@@ -256,6 +267,8 @@ pub const EN: Texts = Texts {
         rdp_empty: "No open RDP sessions",
         last_insert: "Paste last",
         pill_restore: "Bring back the indicator",
+        meeting: "Meeting translation",
+        meeting_running: "Meeting translation (running)",
         open: "Open Rupor",
         quit: "Quit",
     },
@@ -265,6 +278,7 @@ pub const EN: Texts = Texts {
                      is installed. Details are in %APPDATA%\\Rupor\\logs\\ui.log.",
     internal_error: "Internal error: {error}",
     pill_not_found: "The pill window wasn't found",
+    meeting_window_failed: "Couldn't open the meeting translation window: {error}",
 
     relaunch_pending: "A restart as administrator has already been requested — respond to the \
                        Windows prompt.",
@@ -295,9 +309,11 @@ impl Texts {
     fn pairs(&self) -> Vec<(String, &'static str)> {
         let mut v: Vec<(String, &'static str)> = vec![
             ("pill_title".into(), self.pill_title),
+            ("meeting_title".into(), self.meeting_title),
             ("startup_failed".into(), self.startup_failed),
             ("internal_error".into(), self.internal_error),
             ("pill_not_found".into(), self.pill_not_found),
+            ("meeting_window_failed".into(), self.meeting_window_failed),
             ("relaunch_pending".into(), self.relaunch_pending),
             ("relaunch_cancelled".into(), self.relaunch_cancelled),
             ("relaunch_failed".into(), self.relaunch_failed),
@@ -503,6 +519,11 @@ mod tests {
                 ui.get("pill.windowTitle").map(String::as_str),
                 Some(texts.pill_title),
                 "{lang}: pill_title ↔ pill.windowTitle"
+            );
+            assert_eq!(
+                ui.get("meeting.windowTitle").map(String::as_str),
+                Some(texts.meeting_title),
+                "{lang}: meeting_title ↔ meeting.windowTitle"
             );
             for (id, builtin) in crate::tray::BUILTIN_STYLE_IDS.iter().zip(texts.styles) {
                 let ck = format!("ai.style.{id}.name");
