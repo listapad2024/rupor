@@ -381,6 +381,8 @@
   "setting.double_tap_ms": "Double-press interval",
   "setting.duck_level": "Volume while recording",
   "setting.duck_mode": "Computer audio while recording",
+  "setting.app_mute_enabled": "Voice chats don't hear dictation",
+  "setting.app_mute_apps": "Voice chats",
   "setting.en_threshold": "Language detection threshold",
   "setting.env_path": ".env file path",
   "setting.first_run_done": "Setup wizard",

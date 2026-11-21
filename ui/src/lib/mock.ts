@@ -291,6 +291,8 @@ const DEFAULT_SETTINGS: Settings = {
   context_enabled: true,
   duck_mode: "duck",
   duck_level: 15,
+  app_mute_enabled: true,
+  app_mute_apps: ["codex.exe", "chatgpt.exe"],
   sounds: true,
   autostart: true,
   default_style: "normal",

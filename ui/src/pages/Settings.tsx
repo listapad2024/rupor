@@ -30,6 +30,7 @@ import {
 } from "lucide-react";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { DuckSection } from "../components/Duck";
+import { AppMuteSection } from "../components/AppMute";
 import { CommitInput, Stepper } from "../components/fields";
 import { ChordCapture, HotkeyCapture } from "../components/HotkeyCapture";
 import { KeyChain } from "../components/KeyChain";
@@ -415,6 +416,8 @@ function Dictation({ s, set }: SectionProps) {
       </section>
 
       <DuckSection s={s} set={set} />
+
+      <AppMuteSection s={s} set={set} />
 
       <section>
         <SectionTitle hint={t("settings.dictation.asrHint")}>{t("settings.dictation.asr")}</SectionTitle>

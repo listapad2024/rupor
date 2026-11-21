@@ -389,6 +389,8 @@
   "setting.double_tap_ms": "Интервал двойного нажатия",
   "setting.duck_level": "Громкость во время записи",
   "setting.duck_mode": "Звук компьютера во время записи",
+  "setting.app_mute_enabled": "Голосовые чаты не слышат диктовку",
+  "setting.app_mute_apps": "Голосовые чаты",
   "setting.en_threshold": "Порог второго языка",
   "setting.env_path": "Путь к .env",
   "setting.first_run_done": "Мастер первого запуска",

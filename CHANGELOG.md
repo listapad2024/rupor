@@ -6,6 +6,44 @@ All notable changes to Rupor are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.8.2] — 2026-11-21
+
+### Fixed
+
+- **The voice chat didn't come back after dictation.** 0.8.1 paused the chat's audio
+  process, and after a few seconds without microphone data Codex decided the microphone had
+  failed and dropped it. Now Rupor uses the chat's own button instead: while you hold the
+  key it presses **Mute microphone** in the Codex / ChatGPT window and **Unmute microphone**
+  when you release it, so the conversation carries on. A chat you muted yourself is left
+  alone, and if Rupor closes mid-recording, the chat's microphone is turned back on the next
+  time it starts.
+
+## [0.8.1] — 2026-11-21
+
+### Fixed
+
+- **Dictation recorded silence while a voice chat was open.** 0.8.0 muted the voice chat's
+  own microphone session, but on many microphones Windows applies that mute to every app
+  recording from the device, Rupor included. Now Rupor pauses the voice chat's audio process
+  for the time you hold the key instead: the chat doesn't hear you and stays silent, the
+  window and the conversation stay open, and Rupor hears the microphone as usual. The
+  Codex desktop app is `ChatGPT.exe` on Windows, which is already on the default list. The
+  "mute their audio too" switch is gone: a paused chat makes no sound anyway.
+
+## [0.8.0] — 2026-11-21
+
+### Added
+
+- **Voice chats don't hear your dictation.** While you hold the dictation key, Codex live chat,
+  ChatGPT voice and other voice chats on the list can't hear you: Rupor mutes their microphone
+  (their own capture session in Windows, the rest of the system and Rupor itself hear the mic
+  as usual) and, optionally, their audio, so the assistant's reply doesn't play over you. Your
+  voice goes only into the dictated prompt; release the key and the chat hears and talks
+  again. It kicks in the moment the key goes down, so the first words don't leak into the chat.
+  Settings → Dictation → *Voice chats while dictating*: on/off, "mute their audio too", and the
+  list of apps (exe names; `codex.exe`, `chatgpt.exe` by default). If Rupor closes
+  mid-recording, the chat's microphone and audio are restored the next time it starts.
+
 ## [0.6.0] — 2026-11-08
 
 ### Added

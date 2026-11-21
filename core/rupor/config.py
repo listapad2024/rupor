@@ -170,6 +170,11 @@ class Settings:
     # исходной громкости приглушать (режим duck)
     duck_mode: str = "duck"
     duck_level: int = 15
+    # Голосовые чаты (live chat Codex — его exe ChatGPT.exe, ChatGPT) не слышат диктовку: на
+    # время записи Рупор нажимает в их окне «Отключить микрофон», после — «Включить микрофон»
+    # (rupor.appmute, UI Automation). Имена exe без пути
+    app_mute_enabled: bool = True
+    app_mute_apps: list[str] = field(default_factory=lambda: ["codex.exe", "chatgpt.exe"])
 
     # Прочее
     sounds: bool = True
@@ -667,6 +672,8 @@ _VALIDATORS: dict[str, Callable[[Any], Any]] = {
     "context_enabled": _bool,
     "duck_mode": _choice(DUCK_MODES),
     "duck_level": _int(0, 100),
+    "app_mute_enabled": _bool,
+    "app_mute_apps": _str_list(50),
     "sounds": _bool,
     "autostart": _bool,
     "default_style": _style,
