@@ -45,6 +45,9 @@ log = logging.getLogger(__name__)
 
 POLL_S = 0.7                 # во время записи: чат, начатый позже, и включённый вручную
 SETTLE_S = 1.5               # после нажатия интерфейс чата успевает перерисоваться
+FOCUS_GUARD_S = 1.5          # после нажатия следим, не вышло ли окно чата вперёд
+FOCUS_RETURNS = 3            # сколько раз за одно нажатие возвращаем прежнее окно
+_STATE_CMDS = ("mute", "restore")
 RESTORE_TTL_S = 30 * 60.0    # при старте ядра включаем микрофон по записям не старше
 CLOSE_TIMEOUT_S = 3.0
 STATE_FILE = "appmute.json"
@@ -195,20 +198,39 @@ class AppMuter:
                 self._save()             # старый или устаревший файл — убрать
         except Exception:
             log.exception("Голосовые чаты: не удалось включить микрофон после прошлого запуска")
+        held: tuple[Any, ...] | None = None      # команда, вынутая из очереди раньше времени
         while True:
-            try:
-                cmd = self._q.get(timeout=POLL_S if self._active else None)
-            except queue.Empty:
+            if held is not None:
+                cmd, held = held, None
+            else:
                 try:
-                    if self._active:
-                        self._poll()
-                except Exception:
-                    log.debug("Голосовые чаты: переопрос не удался", exc_info=True)
-                continue
+                    cmd = self._q.get(timeout=POLL_S if self._active else None)
+                except queue.Empty:
+                    try:
+                        if self._active:
+                            self._poll()
+                    except Exception:
+                        log.debug("Голосовые чаты: переопрос не удался", exc_info=True)
+                    continue
+            if cmd[0] in _STATE_CMDS:
+                # Пока читаем окно чата (UI Automation небыстрый), команды копятся: короткое
+                # касание клавиши и следующая за ним диктовка дали бы подряд «выключить —
+                # включить — выключить» уже во время записи. Действует только последняя.
+                while True:
+                    try:
+                        nxt = self._q.get_nowait()
+                    except queue.Empty:
+                        break
+                    if nxt[0] not in _STATE_CMDS:
+                        held = nxt
+                        break
+                    cmd = nxt
             try:
                 if cmd[0] == "mute":
                     self._apps = cmd[1]
-                    if not self._active:
+                    if not self._active and not self._entries:
+                        # новая запись; если микрофон ещё выключен нами (включить не успели:
+                        # снова диктуют) — это продолжение прежней, отметки остаются
                         self._skip.clear()
                         self._pressed.clear()
                     self._active = bool(self._apps)
@@ -227,6 +249,22 @@ class AppMuter:
                 log.exception("Голосовые чаты: команда %s не выполнена", cmd[0])
                 if cmd[0] == "flush":
                     cmd[1].set()
+
+    def _pending(self) -> str | None:
+        """Последняя из ждущих в очереди команд «выключить» / «включить» (mute / restore)."""
+        with self._q.mutex:
+            return next((c[0] for c in reversed(self._q.queue) if c[0] in _STATE_CMDS), None)
+
+    def _mute_arrives(self, timeout: float) -> bool:
+        """Подождать timeout; True — за это время снова начали диктовать."""
+        deadline = time.monotonic() + timeout
+        while True:
+            if self._pending() == "mute":
+                return True
+            left = deadline - time.monotonic()
+            if left <= 0:
+                return False
+            time.sleep(min(0.02, left))
 
     def _poll(self) -> None:
         b = self._ensure_backend()
@@ -258,6 +296,8 @@ class AppMuter:
             c = b.created(pid)
             if c is None:
                 continue
+            if self._pending() == "restore":
+                return                   # клавишу уже отпустили (короткое касание) — не нажимаем
             e = Entry(pid, c, time.time())
             self._entries.append(e)
             self._save()                 # до нажатия: падение не оставит микрофон выключенным
@@ -289,8 +329,11 @@ class AppMuter:
                 if hwnds is None:        # список приложений сменился — окна процесса заново
                     hwnds = b.windows(frozenset({"*"})).get(e.pid, [])
                 wait = SETTLE_S - (time.monotonic() - self._pressed.get(e.pid, -1e9))
-                if wait > 0:
-                    time.sleep(min(wait, SETTLE_S))   # нажатие только что — дать перерисоваться
+                if wait > 0 and self._mute_arrives(min(wait, SETTLE_S)):
+                    # нажатие только что — ждали, пока чат перерисуется, а тут снова диктуют:
+                    # микрофон остаётся выключенным, включит следующий restore
+                    self._save()
+                    return
                 _, unmute = _state(b, hwnds)
                 if unmute is not None:
                     try:
@@ -350,6 +393,36 @@ class AppMuter:
             self._saved = text
         except Exception:
             log.debug("Голосовые чаты: %s не записан", STATE_FILE, exc_info=True)
+
+
+# ---------- активное окно после нажатия ----------
+
+def hold_foreground(before: int, chat_pid: int, foreground: Callable[[], int],
+                    pid_of: Callable[[int], int], activate: Callable[[int], bool],
+                    guard_s: float | None = None, step_s: float = 0.03) -> int:
+    """В ответ на нажатие своей кнопки чат (Codex / ChatGPT) выводит своё окно вперёд, и
+    диктовка вставилась бы не туда («Окно сменилось»). Следим ``guard_s`` после нажатия:
+    активным вместо прежнего окна ``before`` стало окно процесса чата — возвращаем прежнее.
+
+    Диктуют в сам чат (прежнее окно — его) или пользователь ушёл в третье приложение — не
+    вмешиваемся. Возвращает, сколько раз окно вернули."""
+    if not before or pid_of(before) == chat_pid:
+        return 0
+    t0 = time.monotonic()
+    limit = FOCUS_GUARD_S if guard_s is None else guard_s
+    returned = 0
+    while returned < FOCUS_RETURNS and time.monotonic() - t0 < limit:
+        fg = foreground()
+        if fg and fg != before and pid_of(fg) == chat_pid:
+            ok = activate(before)
+            returned += 1
+            log.info("Голосовые чаты: окно чата вышло вперёд через %d мс после нажатия — "
+                     "прежнее окно %s", (time.monotonic() - t0) * 1000,
+                     "возвращено" if ok else "вернуть не удалось")
+            if not ok:
+                break
+        time.sleep(step_s)
+    return returned
 
 
 # ---------- Windows ----------
@@ -425,9 +498,24 @@ class WinBackend:
         from . import uia
         return uia.button_names(hwnd)
 
+    def _pid_of(self, hwnd: int) -> int:
+        pid = self._wt.DWORD()
+        self._u32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        return int(pid.value)
+
     def press(self, hwnd: int, match: Callable[[str], bool]) -> bool:
-        from . import uia
-        return uia.press_button(hwnd, match) is not None
+        from . import _win, uia, winutil
+
+        before = int(_win.user32.GetForegroundWindow() or 0)
+        if uia.press_button(hwnd, match) is None:
+            return False
+        # страж — отдельным потоком: очередь команд (следующая диктовка) его не ждёт
+        threading.Thread(
+            target=hold_foreground, name="rupor-appmute-focus", daemon=True,
+            args=(before, self._pid_of(hwnd),
+                  lambda: int(_win.user32.GetForegroundWindow() or 0), self._pid_of,
+                  lambda h: winutil.is_window(h) and winutil.activate(h, 0.3))).start()
+        return True
 
 
 def default_backend() -> Backend:

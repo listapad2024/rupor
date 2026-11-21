@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import threading
 import time
 from pathlib import Path
 from typing import Callable
@@ -198,3 +199,141 @@ def test_stale_and_old_files_ignored(tmp_path: Path) -> None:
     assert m.flush()
     assert chat.presses == 0
     m.close()
+
+
+# ---------- очередь команд: действует только последняя ----------
+
+class SlowBackend(FakeBackend):
+    """Чтение окна чата «висит», пока не откроют gate (UI Automation небыстрый)."""
+
+    def __init__(self, chats: dict[int, Chat]) -> None:
+        super().__init__(chats)
+        self.gate = threading.Event()
+        self.reading = threading.Event()
+
+    def buttons(self, hwnd: int) -> list[str] | None:
+        self.reading.set()
+        self.gate.wait(5)
+        return super().buttons(hwnd)
+
+
+def test_stale_commands_are_not_replayed(tmp_path: Path) -> None:
+    """Два коротких касания клавиши и диктовка, пока окно чата ещё читается: кнопка
+    нажимается один раз, а не «выключить — включить — выключить»."""
+    chat = Chat()
+    b = SlowBackend({7: chat})
+    m = make(tmp_path, b)
+    m.mute(["chatgpt.exe"])
+    assert b.reading.wait(5)                         # поток занят чтением окна
+    m.restore()
+    m.mute(["chatgpt.exe"])
+    m.restore()
+    m.mute(["chatgpt.exe"])                          # идёт диктовка
+    b.gate.set()
+    assert m.flush()
+    assert chat.muted and chat.presses == 1
+    m.restore()
+    assert m.flush()
+    assert not chat.muted and chat.presses == 2
+    m.close()
+
+
+def test_short_tap_does_not_press(tmp_path: Path) -> None:
+    """Клавишу отпустили раньше, чем окно чата прочиталось, — микрофон чата не трогаем."""
+    chat = Chat()
+    b = SlowBackend({7: chat})
+    m = make(tmp_path, b)
+    m.mute(["chatgpt.exe"])
+    assert b.reading.wait(5)
+    m.restore()
+    b.gate.set()
+    assert m.flush()
+    assert not chat.muted and chat.presses == 0
+    assert not (tmp_path / appmute.STATE_FILE).exists()
+    m.close()
+
+
+def test_new_dictation_right_after_release_keeps_muted(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Отпустили и сразу диктуют снова, пока чат перерисовывается после нажатия: микрофон
+    остаётся выключенным (не «включить — выключить»), включается после второй записи."""
+    monkeypatch.setattr(appmute, "SETTLE_S", 0.4)
+    chat = Chat()
+    m = make(tmp_path, FakeBackend({7: chat}))
+    m.mute(["chatgpt.exe"])
+    assert m.flush()
+    assert chat.muted and chat.presses == 1
+    m.restore()
+    time.sleep(0.05)                                 # поток уже ждёт перерисовки чата
+    m.mute(["chatgpt.exe"])
+    assert m.flush()
+    assert chat.muted and chat.presses == 1
+    assert (tmp_path / appmute.STATE_FILE).exists()  # запись о выключенном микрофоне цела
+    m.restore()
+    assert m.flush()
+    assert not chat.muted and chat.presses == 2
+    m.close()
+
+
+# ---------- активное окно после нажатия кнопки чата ----------
+
+class Desktop:
+    """Активное окно по шагам опроса; окна 70 и 71 — процесса чата (pid 7)."""
+
+    def __init__(self, steps: list[int]) -> None:
+        self.steps, self.i = steps, 0
+        self.fg = steps[0]
+        self.activated: list[int] = []
+        self.activate_ok = True
+
+    def foreground(self) -> int:
+        if self.i < len(self.steps):
+            self.fg = self.steps[self.i]
+            self.i += 1
+        return self.fg
+
+    def pid_of(self, hwnd: int) -> int:
+        return hwnd // 10
+
+    def activate(self, hwnd: int) -> bool:
+        self.activated.append(hwnd)
+        if self.activate_ok:
+            self.fg = hwnd
+            self.steps = []
+        return self.activate_ok
+
+
+def _hold(d: Desktop, before: int) -> int:
+    return appmute.hold_foreground(before, 7, d.foreground, d.pid_of, d.activate,
+                                   guard_s=0.2, step_s=0.001)
+
+
+def test_chat_window_coming_forward_is_undone() -> None:
+    d = Desktop([50, 50, 71, 71])                    # диктовали в окно 50, чат вышел вперёд
+    assert _hold(d, 50) == 1
+    assert d.activated == [50] and d.fg == 50
+
+
+def test_foreground_left_alone_when_nothing_changes_or_user_moves_on() -> None:
+    d = Desktop([50, 50, 50])
+    assert _hold(d, 50) == 0 and d.activated == []
+    d = Desktop([50, 90, 90])                        # пользователь сам ушёл в третье приложение
+    assert _hold(d, 50) == 0 and d.activated == []
+    d = Desktop([70, 71, 70])                        # диктуют в сам чат
+    assert _hold(d, 70) == 0 and d.activated == []
+    d = Desktop([50, 71])                            # активного окна до нажатия не было
+    assert _hold(d, 0) == 0 and d.activated == []
+
+
+def test_foreground_return_gives_up(monkeypatch: pytest.MonkeyPatch) -> None:
+    d = Desktop([71])
+    d.activate_ok = False                            # вернуть не удалось — не долбим
+    assert _hold(d, 50) == 1 and d.activated == [50]
+
+    class Stubborn(Desktop):                         # чат каждый раз выходит вперёд снова
+        def foreground(self) -> int:
+            return 71
+
+    s = Stubborn([71])
+    assert _hold(s, 50) == appmute.FOCUS_RETURNS
+    assert s.activated == [50] * appmute.FOCUS_RETURNS

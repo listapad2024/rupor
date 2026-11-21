@@ -23,6 +23,17 @@ All notable changes to Rupor are listed here. The format follows
   space. The default stays at the last 30. Saving a recording no longer re-reads every
   saved one, so dictation is as fast with thousands of recordings as with thirty.
 
+### Fixed
+
+- **Dictation wasn't inserted while a voice chat was open.** When Rupor pressed the chat's
+  **Mute / Unmute microphone** button, the Codex / ChatGPT window came to the front, so the
+  text was held back with “The window changed”. Rupor now puts the window you were
+  dictating into back in front.
+- **The voice chat's microphone flickered on and off.** A quick tap of the dictation key
+  followed by a dictation could press the chat's button several times in a row, briefly
+  unmuting the chat mid-recording. Now only the latest state is applied, and a tap released
+  before the chat window is read doesn't press anything.
+
 ## [0.8.2] — 2026-11-21
 
 ### Fixed
