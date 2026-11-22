@@ -4,7 +4,7 @@ All notable changes to Rupor are listed here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.8.3] — 2026-11-22
 
 ### Added
 
@@ -37,6 +37,13 @@ All notable changes to Rupor are listed here. The format follows
   dictation twice — as it was and corrected — with a comment in between (“Fixed: … Result:
   …”), and all of it went into the window. Such a reply is now rejected and the recognized
   text is inserted as is, with the usual notice.
+- **Dictation hung for minutes when other programs filled the video memory.** With the
+  graphics card's memory taken by other programs, Windows pushed the speech model out to
+  ordinary memory, and a 20-second dictation took up to 10 minutes to recognize. Now a
+  dictation the GPU doesn't finish in time (4 s plus 0.3 s per second of audio) is
+  recognized again on the processor, which takes a few seconds, with a notice. Until the
+  late GPU pass ends, the next dictations go straight to the processor. The log records how
+  much video memory Rupor had against what Windows allowed it.
 
 ## [0.8.2] — 2026-11-21
 

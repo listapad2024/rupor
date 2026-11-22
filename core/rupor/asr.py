@@ -311,6 +311,27 @@ class ModelMissing(RuntimeError):
     """Модели нет в локальном кэше — её нужно скачать (setup_download)."""
 
 
+class GpuSlow(RuntimeError):
+    """GPU не успевает (видеопамять заняли другие программы) — раннее определение языка
+    не дождались; диктовка распознаётся на CPU."""
+
+
+# ---------- срок для GPU ----------
+#
+# 22.11.2026: видеопамять (8 ГБ) заняли другие программы — Windows вытеснила модель в обычную
+# память, и 23 с аудио распознавались 400 с вместо 0,7 с, а раннее определение языка, стоя
+# в той же очереди, держало диктовку ещё 200 с. Обычный проход на RTX 3060 Ti — до 0,15 от
+# длины аудио (с повтором без подсказки), CPU int8 на той же записи — 4,6 с. Поэтому срок
+# щедрый (в 1,5–4 раза выше худшего обычного), а не уложившаяся диктовка идёт на CPU.
+GPU_DEADLINE_BASE_S = 4.0
+GPU_DEADLINE_PER_AUDIO = 0.3    # секунды срока на секунду аудио
+DETECT_DEADLINE_S = 3.0         # раннее определение языка (≈ 0,2 с на GPU)
+
+
+def gpu_deadline(audio_s: float) -> float:
+    return GPU_DEADLINE_BASE_S + GPU_DEADLINE_PER_AUDIO * audio_s
+
+
 # ---------- одна модель на диктовку и встречу ----------
 
 GATE_POLL_S = 0.05  # yield_to() — состояние движка без уведомлений: перепроверять так часто
@@ -432,6 +453,10 @@ class Recognizer:
         self.last_error: str | i18n.Msg | None = None
         self.last_used = time.monotonic()
         self._force_cpu = False  # GPU упал посреди работы — до выгрузки модели только CPU
+        # Опоздавшие проходы GPU, которые ещё идут (_in_time), и запасная модель на CPU
+        self._stuck = 0
+        self._stuck_lock = threading.Lock()
+        self._spare: Recognizer | None = None
         # Подсказка распознаванию (initial_prompt); движок подставляет термины словаря
         self.prompt_provider: Callable[[], str | None] = self.default_prompt
 
@@ -491,6 +516,7 @@ class Recognizer:
         """Выгрузить модель. Следующая загрузка снова попробует GPU."""
         with self._lock:
             self._force_cpu = False
+            self._spare = None
             if self._model is not None:
                 self._model = None
                 self.device = None
@@ -512,8 +538,21 @@ class Recognizer:
         if fixed != "auto":
             return fixed
         self.load()
-        with self._lock:
-            return self._pick_language(audio)
+
+        def pick() -> str:
+            with self._lock:
+                return self._pick_language(audio)
+        if self.device != "cuda":
+            return pick()
+        if self.gpu_stuck:
+            raise GpuSlow(i18n.tr("asr.gpu_slow"))
+        done, lang = self._in_time(pick, DETECT_DEADLINE_S)
+        if not done:
+            log.warning("Определение языка на GPU не уложилось в %.0f с (%s)",
+                        DETECT_DEADLINE_S, video_memory_note())
+            self._on_notice(i18n.tr("asr.gpu_slow"), "warn")
+            raise GpuSlow(i18n.tr("asr.gpu_slow"))
+        return str(lang)
 
     def _pick_language(self, audio: np.ndarray) -> str:
         fixed = dictation_mode(self.s)
@@ -549,9 +588,10 @@ class Recognizer:
 
     def transcribe(self, audio: np.ndarray, language: str | None = None) -> Result:
         """Распознать. Сбой на GPU посреди работы (память, драйвер) → откат на CPU int8
-        с уведомлением и повтор той же записи — диктовка не теряется."""
+        с уведомлением и повтор той же записи — диктовка не теряется. GPU, не уложившийся
+        в срок (``_transcribe_in_time``), — та же запись на запасной модели на CPU."""
         try:
-            return self._transcribe(audio, language)
+            return self._transcribe_in_time(audio, language)
         except ModelMissing:
             raise
         except Exception as e:
@@ -562,16 +602,95 @@ class Recognizer:
             self.last_error = f"{type(e).__name__}: {e}"
             self._force_cpu = True
             self._on_notice(i18n.tr("asr.gpu_failed", error=type(e).__name__), "warn")
-            return self._transcribe(audio, language)
+            return self._transcribe(audio, language, self._prompt())
 
-    def _transcribe(self, audio: np.ndarray, language: str | None) -> Result:
-        self.load()
-        self.last_used = time.monotonic()
+    def _prompt(self) -> str | None:
+        """Подсказка — в потоке вызывающего: провайдер движка читает данные этого потока."""
         try:
-            prompt = self.prompt_provider()
+            return self.prompt_provider()
         except Exception:
             log.exception("Не удалось собрать подсказку для распознавания")
-            prompt = self.default_prompt()
+            return self.default_prompt()
+
+    def _transcribe_in_time(self, audio: np.ndarray, language: str | None) -> Result:
+        """Диктовка на GPU со сроком ``gpu_deadline``. Не уложилась (видеопамять заняли
+        другие программы, Windows вытеснила модель в обычную память) — та же запись на
+        запасной модели на CPU, проход GPU доживает в фоне, его результат не нужен. Пока он
+        не кончился, GPU занят (``gpu_stuck``) — следующие диктовки сразу идут на CPU."""
+        self.load()
+        prompt = self._prompt()
+        if self.device != "cuda":
+            return self._transcribe(audio, language, prompt)
+        audio_s = len(audio) / SAMPLE_RATE
+        if self.gpu_stuck:
+            log.warning("GPU ещё занят опоздавшим проходом — распознаю на CPU")
+        else:
+            limit = gpu_deadline(audio_s)
+            done, res = self._in_time(lambda: self._transcribe(audio, language, prompt), limit)
+            if done:
+                self._spare = None          # GPU снова успевает — запасная модель не нужна
+                assert isinstance(res, Result)
+                return res
+            log.warning("Распознавание на GPU не уложилось в %.0f с (аудио %.1f с; %s) — "
+                        "распознаю на CPU", limit, audio_s, video_memory_note())
+            self._on_notice(i18n.tr("asr.gpu_slow"), "warn")
+        return self._spare_model()._transcribe(audio, language, prompt)
+
+    def _in_time(self, fn: Callable[[], Any], limit: float) -> tuple[bool, Any]:
+        """``fn`` в отдельном потоке: (True, результат) — уложилась в ``limit`` секунд
+        (её исключение пробрасывается); (False, None) — нет: поток доживает сам, до его
+        конца ``gpu_stuck`` истинно."""
+        box: dict[str, Any] = {}
+        finished = threading.Event()
+        t0 = time.perf_counter()
+
+        def work() -> None:
+            try:
+                box["result"] = fn()
+            except BaseException as e:       # отдаётся вызывающему
+                box["error"] = e
+            with self._stuck_lock:
+                box["done"] = True
+                late = bool(box.get("late"))
+                if late:
+                    self._stuck -= 1
+            finished.set()
+            if late:
+                if "error" in box:
+                    log.warning("Опоздавший проход GPU кончился ошибкой: %r", box["error"])
+                else:
+                    log.warning("Опоздавший проход GPU кончился через %.0f с",
+                                time.perf_counter() - t0)
+
+        threading.Thread(target=work, name="asr-gpu", daemon=True).start()
+        finished.wait(limit)
+        with self._stuck_lock:
+            if not box.get("done"):
+                box["late"] = True
+                self._stuck += 1
+                return False, None
+        if "error" in box:
+            raise box["error"]
+        return True, box["result"]
+
+    @property
+    def gpu_stuck(self) -> bool:
+        return self._stuck > 0
+
+    def _spare_model(self) -> "Recognizer":
+        """Запасная модель на CPU (int8), пока GPU не успевает; замок у неё свой."""
+        spare = self._spare
+        if spare is None:
+            spare = Recognizer(self.s, self._on_notice)
+            spare._force_cpu = True
+            spare.load()
+            self._spare = spare
+        return spare
+
+    def _transcribe(self, audio: np.ndarray, language: str | None,
+                    prompt: str | None) -> Result:
+        self.load()
+        self.last_used = time.monotonic()
         t0 = time.perf_counter()
         with self._lock:
             if self._model is None:  # выгрузили между load() и захватом замка
@@ -586,7 +705,8 @@ class Recognizer:
             text = tail
         ms = (time.perf_counter() - t0) * 1000
         r = Result(text, lang, len(audio) / SAMPLE_RATE, ms)
-        log.info("ASR %.1f с аудио → %.0f мс, язык %s, %d симв.", r.audio_s, ms, lang, len(text))
+        log.info("ASR %.1f с аудио → %.0f мс, язык %s, %d симв. (%s)", r.audio_s, ms, lang,
+                 len(text), self.device)
         return r
 
     def _second_opinion(self, audio: np.ndarray, lang: str, text: str,
@@ -742,6 +862,98 @@ def cuda_compute_types() -> frozenset[str] | None:
     except Exception:
         log.debug("get_supported_compute_types", exc_info=True)
         return None
+
+
+class _Guid(ctypes.Structure):
+    _fields_ = [("a", ctypes.c_uint32), ("b", ctypes.c_uint16), ("c", ctypes.c_uint16),
+                ("d", ctypes.c_ubyte * 8)]
+
+
+def _guid(text: str) -> _Guid:
+    import uuid
+    u = uuid.UUID(text)
+    g = _Guid(u.fields[0], u.fields[1], u.fields[2])
+    g.d[:] = u.bytes[8:]
+    return g
+
+
+class _AdapterDesc1(ctypes.Structure):
+    _fields_ = [("Description", ctypes.c_wchar * 128), ("VendorId", ctypes.c_uint),
+                ("DeviceId", ctypes.c_uint), ("SubSysId", ctypes.c_uint),
+                ("Revision", ctypes.c_uint), ("DedicatedVideoMemory", ctypes.c_size_t),
+                ("DedicatedSystemMemory", ctypes.c_size_t),
+                ("SharedSystemMemory", ctypes.c_size_t), ("Luid", ctypes.c_int64),
+                ("Flags", ctypes.c_uint)]
+
+
+class _VideoMemoryInfo(ctypes.Structure):
+    _fields_ = [("Budget", ctypes.c_uint64), ("CurrentUsage", ctypes.c_uint64),
+                ("AvailableForReservation", ctypes.c_uint64),
+                ("CurrentReservation", ctypes.c_uint64)]
+
+
+def _com(obj: ctypes.c_void_p, index: int, *argtypes: Any) -> Any:
+    fn = ctypes.cast(obj, ctypes.POINTER(ctypes.POINTER(ctypes.c_void_p)))[0][index]
+    return ctypes.WINFUNCTYPE(ctypes.c_long, ctypes.c_void_p, *argtypes)(fn)
+
+
+def video_memory() -> tuple[int, int, int] | None:
+    """(всего, бюджет процесса, занято процессом) видеопамяти первой карты NVIDIA в МБ —
+    DXGI QueryVideoMemoryInfo. Занято больше бюджета — Windows вытесняет память процесса
+    в обычную, и CUDA на ней в разы медленнее. None — узнать не вышло."""
+    try:
+        dxgi = ctypes.WinDLL("dxgi.dll")
+    except OSError:
+        return None
+    fac = ctypes.c_void_p()
+    if dxgi.CreateDXGIFactory1(ctypes.byref(_guid("770aae78-f26f-4dba-a829-253c83d1b387")),
+                               ctypes.byref(fac)) != 0:
+        return None
+    try:
+        i = 0
+        while True:
+            ad = ctypes.c_void_p()
+            if _com(fac, 12, ctypes.c_uint, ctypes.POINTER(ctypes.c_void_p))(  # EnumAdapters1
+                    fac, i, ctypes.byref(ad)) != 0:
+                return None
+            try:
+                desc = _AdapterDesc1()
+                _com(ad, 10, ctypes.POINTER(_AdapterDesc1))(ad, ctypes.byref(desc))  # GetDesc1
+                if desc.VendorId != 0x10DE:
+                    continue
+                a3 = ctypes.c_void_p()
+                if _com(ad, 0, ctypes.POINTER(_Guid), ctypes.POINTER(ctypes.c_void_p))(
+                        ad, ctypes.byref(_guid("645967a4-1392-4310-a798-8053ce3e93fd")),
+                        ctypes.byref(a3)) != 0:                  # QueryInterface(IDXGIAdapter3)
+                    return None
+                try:
+                    info = _VideoMemoryInfo()
+                    if _com(a3, 14, ctypes.c_uint, ctypes.c_uint,  # QueryVideoMemoryInfo, LOCAL
+                            ctypes.POINTER(_VideoMemoryInfo))(a3, 0, 0, ctypes.byref(info)) != 0:
+                        return None
+                    mb = 1024 * 1024
+                    return (int(desc.DedicatedVideoMemory // mb), int(info.Budget // mb),
+                            int(info.CurrentUsage // mb))
+                finally:
+                    _com(a3, 2)(a3)                              # Release
+            finally:
+                _com(ad, 2)(ad)
+                i += 1
+    except (OSError, AttributeError, ValueError):
+        log.debug("DXGI", exc_info=True)
+        return None
+    finally:
+        _com(fac, 2)(fac)
+
+
+def video_memory_note() -> str:
+    """Строка для журнала: видеопамять процесса против его бюджета."""
+    vm = video_memory()
+    if vm is None:
+        return "видеопамять: неизвестно"
+    total, budget, used = vm
+    over = " — больше бюджета, Windows вытесняет модель" if used > budget else ""
+    return f"видеопамять: занято {used} МБ при бюджете {budget} МБ из {total}{over}"
 
 
 class _NvmlMemory(ctypes.Structure):

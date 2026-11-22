@@ -87,6 +87,7 @@
   "app.name": "Rupor",
   "asr.cuda_missing_cpu": "CUDA libraries aren't downloaded, so recognition runs on the CPU (slower). Download them in Settings → About → Setup wizard",
   "asr.gpu_failed": "GPU error ({error}). Recognition switched to the CPU, which is slower",
+  "asr.gpu_slow": "The GPU is too slow right now: other programs seem to have taken its memory. This dictation is recognized on the CPU",
   "asr.gpu_unavailable": "GPU unavailable ({error}). Recognition runs on the CPU, which is slower",
   "asr.model_missing": "The {model} model isn't downloaded. Download it in Settings → About → Setup wizard",
   "asr.model_unloaded": "The model was unloaded",
