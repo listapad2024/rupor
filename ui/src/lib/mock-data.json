@@ -442,6 +442,25 @@
     "noteMedium": "Точнее small, но заметно медленнее; на процессоре — долго",
     "noteTurbo": "Лучшая для русского: почти как large-v3, но в несколько раз быстрее; нужна видеокарта NVIDIA",
     "noteLarge": "Самая точная и самая медленная; turbo почти не уступает ей",
+    "meetingSuggest": "Похоже, идёт встреча в {name}. Включить расшифровку и перевод?",
+    "meetingNoSource": "Нет источника звука встречи: откройте встречу в браузере или выберите источник в списке",
+    "meetingUnknownSource": "Источник звука «{id}» не найден — обновите список",
+    "meetingSystem": "Весь звук компьютера",
+    "meetingTitleGeneric": "Встреча",
+    "meetingTranslateError": "Перевод не успел за {seconds} с",
+    "meetingBadLimit": "limit — от 1 до 500",
+    "meetingNothingToCopy": "Расшифровка пуста — копировать нечего",
+    "meetingSuggestExpired": "Предложение уже неактуально — начните перевод встречи в окне перевода",
+    "meetingLoopbackFallback": "Звук одной программы можно захватить только в Windows 11 или Windows Server 2022 — слушаю весь звук компьютера: в расшифровку попадут и звуки других программ",
+    "meetingAutostoppedNotes": "Встреча закончилась — расшифровка сохранена, заметки готовятся",
+    "meetingAutostopped": "Встреча закончилась — расшифровка сохранена",
+    "suggestAnswer": "Ответ на предложение встречи: start, later или never",
+    "meetingNotesEmpty": "Расшифровка пуста — заметки делать не из чего",
+    "meetingNotesNoMeeting": "Встречи ещё не было — заметки делать не из чего",
+    "meetingNotesNothing": "Заметок ещё нет — копировать нечего",
+    "meetingNotesFailed": "Заметки к встрече не получились: {error}. Расшифровка сохранена",
+    "copyWhat": "Что копировать: transcript, notes или all",
+    "aiNoKey": "Нет ключа {name} — добавьте его в Настройках → ИИ",
     "noKeys": "Ключей ИИ нет — добавьте ключ в Настройках → ИИ",
     "keyUnknown": "Такого ключа в списке нет — обновите страницу",
     "balanceNoApi": "{name} не отдаёт баланс по API — введите остаток вручную, и Рупор будет вычитать свой расход",
@@ -786,5 +805,142 @@
   "vocabExcluded": [
     "дашборд",
     "Slack"
+  ],
+  "meeting": {
+    "sources": [
+      {
+        "pid": 11234,
+        "exe": "brave.exe",
+        "name": "Brave",
+        "title": "Meet: Daily standup",
+        "meeting": true,
+        "active": true
+      },
+      {
+        "pid": 8812,
+        "exe": "chrome.exe",
+        "name": "Google Chrome",
+        "title": "Lo-fi beats — YouTube",
+        "meeting": false,
+        "active": true
+      },
+      {
+        "pid": 5520,
+        "exe": "telegram.exe",
+        "name": "Telegram Desktop",
+        "title": "Telegram",
+        "meeting": false,
+        "active": false
+      }
+    ],
+    "lines": [
+      {
+        "lang": "en",
+        "text": "Okay, let's get started. Can everyone hear me?",
+        "translation": "Так, давайте начнём. Всем меня слышно?"
+      },
+      {
+        "lang": "en",
+        "text": "Yesterday I finished moving the billing tables to ClickHouse.",
+        "translation": "Вчера я закончил перенос таблиц биллинга в ClickHouse.",
+        "heard": "Yesterday I finished moving the billing tables to click house.",
+        "draft": "Вчера я закончил перемещать таблицы биллинга в ClickHouse."
+      },
+      {
+        "lang": "en",
+        "text": "The Grafana dashboards are already reading from the new cluster.",
+        "translation": "Дашборды в Grafana уже читают из нового кластера."
+      },
+      {
+        "lang": "en",
+        "text": "Today I want to look at the slow queries on the payments page.",
+        "translation": "Сегодня хочу разобраться с медленными запросами на странице платежей.",
+        "draft": "Сегодня я хочу посмотреть на медленные запросы на странице платежей."
+      },
+      {
+        "lang": "ru",
+        "text": "Да, могу помочь с этим после обеда.",
+        "translation": null
+      },
+      {
+        "lang": "en",
+        "text": "Great, thanks. Any blockers on your side, Anna?",
+        "translation": "Отлично, спасибо. Анна, у тебя есть блокеры?"
+      },
+      {
+        "lang": "en",
+        "text": "Not really. I'm still waiting for access to the staging server.",
+        "translation": "Не особо. Всё ещё жду доступ к тестовому серверу."
+      },
+      {
+        "lang": "en",
+        "text": "I'll ping the infrastructure team right after this call.",
+        "translation": "Напишу команде инфраструктуры сразу после созвона."
+      },
+      {
+        "lang": "en",
+        "text": "Also, the release is planned for Thursday, so please merge your changes by Wednesday evening.",
+        "translation": "И ещё: релиз запланирован на четверг, так что вливайте изменения до вечера среды.",
+        "draft": "Также релиз запланирован на четверг, поэтому, пожалуйста, слейте ваши изменения к вечеру среды."
+      },
+      {
+        "lang": "en",
+        "text": "Should we move the retro to Friday then?",
+        "translation": "Тогда перенесём ретро на пятницу?"
+      },
+      {
+        "lang": "en",
+        "text": "Friday works for me. Let's say three o'clock.",
+        "translation": "Мне пятница подходит. Давайте в три часа."
+      },
+      {
+        "lang": "en",
+        "text": "One more thing: the API rate limits changed last night.",
+        "translation": "Ещё одно: вчера вечером поменялись лимиты запросов к API.",
+        "error": true
+      },
+      {
+        "lang": "en",
+        "text": "We were getting a lot of 429 errors from the partner integration.",
+        "translation": "Партнёрская интеграция отдавала много ошибок 429.",
+        "heard": "We were getting a lot of 4 to 9 errors from the partner integration.",
+        "draft": "Мы получали много ошибок 429 от партнёрской интеграции."
+      },
+      {
+        "lang": "en",
+        "text": "I added a retry with backoff, and it looks stable now.",
+        "translation": "Я добавил повтор с нарастающей паузой, сейчас вроде стабильно.",
+        "heard": "I added a retry with back off, and it looks stable now.",
+        "draft": "Я добавил повтор с задержкой, и теперь всё выглядит стабильно."
+      },
+      {
+        "lang": "en",
+        "text": "Perfect. If there's nothing else, let's wrap up.",
+        "translation": "Отлично. Если больше ничего нет — заканчиваем."
+      },
+      {
+        "lang": "en",
+        "text": "Thanks, everyone. Have a good day!",
+        "translation": "Всем спасибо, хорошего дня!"
+      }
+    ],
+    "suggest": {
+      "pid": 11234,
+      "app": "Brave",
+      "title": "Google Meet"
+    },
+    "title": "Перенос биллинга в ClickHouse и дашборды Grafana",
+    "notes": "# Перенос биллинга в ClickHouse и релиз в четверг\n\n## Кратко\nУтренний синк команды. Перенос таблиц биллинга в ClickHouse закончен, дашборды Grafana уже читают из нового кластера. Обсудили медленные запросы на странице платежей, доступ Анны к тестовому серверу и релиз в четверг. Ретро переносится на пятницу, ошибки 429 у партнёрской интеграции закрыты повтором с нарастающей паузой.\n\n## Решения\n- Релиз — в четверг; изменения вливать до вечера среды.\n- Ретро переносится на пятницу, **15:00**.\n\n## Задачи\n- [ ] — — разобраться с медленными запросами на странице платежей — сегодня, после обеда\n- [ ] — — написать команде инфраструктуры про доступ Анны к тестовому серверу — сразу после созвона\n- [ ] Все — влить изменения в релиз — до вечера среды\n\n## Открытые вопросы\n- Хватит ли повтора с паузой, если лимиты запросов к API поменяются снова?\n\n## Ключевые моменты\n- {t1} — перенос таблиц биллинга в ClickHouse закончен\n- {t3} — медленные запросы на странице платежей\n- {t6} — Анна ждёт доступ к тестовому серверу\n- {t8} — релиз в четверг, изменения — до вечера среды\n- {t11} — поменялись лимиты запросов к API, ошибки 429"
+  },
+  "meetingPatterns": [
+    "Google Meet",
+    "Meet –",
+    "Meet -",
+    "Zoom",
+    "Microsoft Teams",
+    "Teams",
+    "Телемост",
+    "Контур.Толк",
+    "Jitsi Meet"
   ]
 }

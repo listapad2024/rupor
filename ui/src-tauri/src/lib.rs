@@ -1,4 +1,5 @@
-//! Рупор — оболочка Tauri 2: окна `main` и `pill`, трей, супервизор Python-ядра.
+//! Рупор — оболочка Tauri 2: окна `main`, `pill` и `meeting` (перевод встречи), трей,
+//! супервизор Python-ядра.
 //!
 //! Контракты — docs/ARCHITECTURE.md, разделы «Процессы» и «Tauri (Rust)».
 
@@ -16,6 +17,8 @@ pub(crate) use {log_error, log_info, log_warn};
 mod commands;
 mod i18n;
 mod logger;
+mod meeting;
+mod overlay;
 mod pill;
 mod settings;
 mod sidecar;
@@ -58,7 +61,8 @@ pub fn show_main(app: &AppHandle, route: Option<String>) {
 }
 
 /// Заголовки окон по умолчанию на языке оболочки: «Рупор» / «Rupor». Дальше заголовки
-/// ставит интерфейс (`setTitle`) на языке из настроек.
+/// ставит интерфейс (`setTitle`) на языке из настроек. Окно перевода встречи создаётся
+/// позже — заголовок ему ставит `meeting::build`.
 fn set_default_titles(app: &AppHandle) {
     let t = i18n::t();
     for (label, title) in [(MAIN_LABEL, t.tray.app), (pill::LABEL, t.pill_title)] {
@@ -171,6 +175,16 @@ pub fn run() {
             commands::reset_pill_position,
             commands::pill_raise,
             commands::pill_log,
+            commands::meeting_window_show,
+            commands::meeting_window_hide,
+            commands::meeting_window_minimize,
+            commands::meeting_window_restore,
+            commands::meeting_window_toggle,
+            commands::meeting_window_reset,
+            commands::meeting_window_log,
+            commands::meeting_window_mode,
+            commands::meeting_suggest_show,
+            commands::meeting_suggest_done,
         ])
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
@@ -181,9 +195,10 @@ pub fn run() {
                 if quitting {
                     return;
                 }
-                // Окна не закрываются: главное прячется в трей, пилюля живёт всегда.
+                // Окна не закрываются: главное прячется в трей, окно перевода встречи — тоже
+                // скрывается (сеанс идёт дальше), пилюля живёт всегда.
                 api.prevent_close();
-                if window.label() == MAIN_LABEL {
+                if window.label() == MAIN_LABEL || window.label() == meeting::LABEL {
                     let _ = window.hide();
                 }
             }

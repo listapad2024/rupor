@@ -17,6 +17,16 @@ export interface SelectOption<T> {
   label: string;
   hint?: string;
   icon?: ReactNode;
+  /** Видна, но не выбирается (почему — в hint). */
+  disabled?: boolean;
+}
+
+/** Следующий выбираемый вариант от from в сторону step (±1); нет такого — from. */
+function nextEnabled<T>(options: SelectOption<T>[], from: number, step: 1 | -1): number {
+  for (let i = from + step; i >= 0 && i < options.length; i += step) {
+    if (!options[i]?.disabled) return i;
+  }
+  return from;
 }
 
 interface Pos {
@@ -109,6 +119,7 @@ export function Select<T extends string | number | null>({
   }, [active, open]);
 
   const choose = (o: SelectOption<T>) => {
+    if (o.disabled) return;
     onChange(o.value);
     setOpen(false);
     btnRef.current?.focus();
@@ -124,10 +135,10 @@ export function Select<T extends string | number | null>({
     if (!open) return;
     if (e.key === "ArrowDown") {
       e.preventDefault();
-      setActive((a) => Math.min(options.length - 1, a + 1));
+      setActive((a) => nextEnabled(options, a, 1));
     } else if (e.key === "ArrowUp") {
       e.preventDefault();
-      setActive((a) => Math.max(0, a - 1));
+      setActive((a) => nextEnabled(options, a, -1));
     } else if (e.key === "Enter" || e.key === " ") {
       e.preventDefault();
       const o = options[active];
@@ -194,11 +205,13 @@ export function Select<T extends string | number | null>({
                     data-idx={i}
                     role="option"
                     aria-selected={selected}
-                    onMouseEnter={() => setActive(i)}
+                    aria-disabled={o.disabled || undefined}
+                    title={o.disabled ? o.hint : undefined}
+                    onMouseEnter={() => !o.disabled && setActive(i)}
                     onClick={() => choose(o)}
                     className={cn(
                       "flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-[13.5px] transition-colors duration-100",
-                      i === active ? "bg-surface-2" : "",
+                      o.disabled ? "cursor-default opacity-50" : i === active ? "bg-surface-2" : "",
                     )}
                   >
                     {o.icon && <span className="flex shrink-0 text-muted [&>svg]:size-4">{o.icon}</span>}

@@ -8,6 +8,7 @@ import {
   Gauge,
   Hourglass,
   Keyboard,
+  MessagesSquare,
   Mic,
   Sigma,
   Sparkles,
@@ -17,16 +18,21 @@ import type { ReactNode } from "react";
 import { AiHomeCard } from "../components/AiSpend";
 import { AppIcon } from "../components/AppIcon";
 import { CountUp } from "../components/CountUp";
+import { Button } from "../components/ui/controls";
 import { Card, EmptyState, KeyCombo, Skeleton } from "../components/ui/display";
+import { useToast } from "../components/ui/toast";
 import { WordsChart } from "../components/WordsChart";
 import { t, tp } from "../i18n";
 import { cached } from "../lib/cache";
 import { cn } from "../lib/cn";
 import { appName, fmtDecimal, fmtMinutes, fmtNum, fmtTime } from "../lib/format";
 import { useDebounced, useEvent, useLoad } from "../lib/hooks";
+import { errorText } from "../lib/hub";
 import { navigate } from "../lib/router";
 import { keyLabel } from "../lib/keys";
 import { useCore } from "../lib/store";
+import { useMeetingStatus } from "../lib/meeting";
+import { meetingWindowShow } from "../lib/tauri";
 import { call } from "../lib/ws";
 
 function greeting(): string {
@@ -53,27 +59,30 @@ export function HomePage() {
 
   return (
     <div>
-      <div className="mb-7">
-        <motion.h1
-          initial={{ opacity: 0, y: 6 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.25 }}
-          className="text-[26px] font-semibold tracking-[-0.02em] text-fg"
-        >
-          {greeting()}
-        </motion.h1>
-        <p className="mt-1 text-[14px] text-muted">
-          {!s ? (
-            <span className="inline-block h-4 w-72 align-middle skeleton" />
-          ) : s.words_today > 0 ? (
-            t("home.todaySummary", {
-              words: tp("units.words", s.words_today),
-              minutes: fmtMinutes(typingMinutes),
-            })
-          ) : (
-            t("home.todayEmpty", { key: hk ? keyLabel(hk.ptt) : "" })
-          )}
-        </p>
+      <div className="mb-7 flex items-start justify-between gap-4">
+        <div className="min-w-0">
+          <motion.h1
+            initial={{ opacity: 0, y: 6 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.25 }}
+            className="text-[26px] font-semibold tracking-[-0.02em] text-fg"
+          >
+            {greeting()}
+          </motion.h1>
+          <p className="mt-1 text-[14px] text-muted">
+            {!s ? (
+              <span className="inline-block h-4 w-72 align-middle skeleton" />
+            ) : s.words_today > 0 ? (
+              t("home.todaySummary", {
+                words: tp("units.words", s.words_today),
+                minutes: fmtMinutes(typingMinutes),
+              })
+            ) : (
+              t("home.todayEmpty", { key: hk ? keyLabel(hk.ptt) : "" })
+            )}
+          </p>
+        </div>
+        <MeetingButton />
       </div>
 
       {/* KPI */}
@@ -255,6 +264,37 @@ export function HomePage() {
         </div>
       </div>
     </div>
+  );
+}
+
+/** Вход в перевод встречи: показать окно перевода; идёт сеанс — сколько уже строк. */
+function MeetingButton() {
+  const { state } = useCore();
+  const toast = useToast();
+  const m = useMeetingStatus(state?.meeting);
+  const running = Boolean(m?.running);
+  return (
+    <Button
+      variant={running ? "primary" : "secondary"}
+      className="mt-1 shrink-0"
+      icon={
+        running ? (
+          <span className="relative flex size-2">
+            <span className="absolute inset-0 animate-ping rounded-full bg-current opacity-60" />
+            <span className="relative size-2 rounded-full bg-current" />
+          </span>
+        ) : (
+          <MessagesSquare className="size-4" />
+        )
+      }
+      onClick={() =>
+        meetingWindowShow().catch((e: unknown) =>
+          toast({ tone: "error", title: t("errors.generic"), description: errorText(e) }),
+        )
+      }
+    >
+      {running && m ? t("home.meeting.running", { lines: tp("units.lines", m.lines) }) : t("home.meeting.button")}
+    </Button>
   );
 }
 

@@ -3,11 +3,16 @@
 //! Пункты меню, которые должен выполнить фронтенд (через WS к ядру), приходят в окна событием
 //! `tray-action` `{id}`: `pause`, `mode:auto|type|clipboard`, `style:<id>`, `last_insert`,
 //! `rdp:<key>` (флажок сессии в «Рассылка в RDP», ключ — как прислал фронтенд).
-//! «Открыть Рупор» и «Выход» выполняет сама оболочка. Левый клик по значку — главное окно.
+//! «Открыть Рупор», «Вернуть пилюлю», «Перевод встречи» (показать/скрыть окно перевода) и
+//! «Выход» выполняет сама оболочка. Левый клик по значку — главное окно.
 //!
 //! Меню: статус, [строка расхода ИИ], —, Пауза, Режим вставки ▸, Стиль ▸, [Рассылка в RDP ▸],
-//! Вставить последнее, —, Открыть Рупор, Выход. Пункты в скобках появляются, когда фронтенд
+//! Вставить последнее, Вернуть пилюлю, Перевод встречи, —, Открыть Рупор, Выход. Пункты в скобках появляются, когда фронтенд
 //! присылает `ai_line` / `rdp`, и перестраиваются только при изменении данных.
+//!
+//! Идёт перевод встречи (`update_tray.meeting_running`, от главного окна по статусу ядра) —
+//! пункт «Перевод встречи (идёт)», а подсказка значка без диктовки — «<app> <версия> —
+//! перевод встречи идёт» (окно перевода могло быть скрыто: перевод идёт «в трее»).
 //!
 //! Подписи меню и подсказки значка — [`TrayTexts`]: до первого `update_tray` со словарём
 //! `labels` — встроенные на языке оболочки ([`crate::i18n`]), потом — от интерфейса. Смена
@@ -43,6 +48,8 @@ const RDP_MENU_ID: &str = "rdp_menu";
 const RDP_NONE_ID: &str = "rdp_none";
 /// Префикс id флажков сессий: `rdp:<key>` — он же id события `tray-action`.
 pub const RDP_PREFIX: &str = "rdp:";
+/// «Перевод встречи»: показать/скрыть окно перевода (оболочка сама, `tray-action` не шлётся).
+const MEETING_ID: &str = "meeting";
 
 /// Предельная длина подписей (символов): заголовок окна может быть очень длинным.
 const AI_LINE_MAX: usize = 80;
@@ -162,6 +169,8 @@ tray_texts! {
     status_restarting,
     status_failed,
     status_already_running,
+    /// Подсказка значка, пока идёт перевод встречи, а диктовки нет.
+    status_meeting,
     /// Пункты меню.
     pause,
     insert_mode,
@@ -173,6 +182,10 @@ tray_texts! {
     rdp_empty,
     last_insert,
     pill_restore,
+    /// Показать или скрыть окно перевода встречи.
+    meeting,
+    /// …то же, пока перевод встречи идёт.
+    meeting_running,
     open,
     quit,
 }
@@ -237,6 +250,9 @@ pub struct TrayUpdate {
     /// прежние, `null` — встроенные на текущем языке оболочки.
     #[serde(default)]
     pub labels: Patch<TrayLabels>,
+    /// Идёт ли перевод встречи (`MeetingStatus.running`); нет ключа — как было.
+    #[serde(default)]
+    pub meeting_running: Option<bool>,
 }
 
 impl TrayUpdate {
@@ -305,11 +321,14 @@ fn tooltip_text(text: &str) -> String {
     shorten(clean(text), TOOLTIP_MAX, char::len_utf16)
 }
 
-/// Строка статуса в меню («Рупор: готов») и подсказка значка («Рупор — готов»).
+/// Версия оболочки — в подсказке значка, чтобы было видно, какая запущена.
+const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// Строка статуса в меню («Рупор: готов») и подсказка значка («Рупор 0.5.0 — готов»).
 fn status_texts(t: &TrayTexts, status: &str) -> (String, String) {
     (
         menu_label(&format!("{}: {status}", t.app), STATUS_MAX),
-        tooltip_text(&format!("{} — {status}", t.app)),
+        tooltip_text(&format!("{} {APP_VERSION} — {status}", t.app)),
     )
 }
 
@@ -327,6 +346,8 @@ enum Label {
     RdpEmpty,
     LastInsert,
     PillRestore,
+    Meeting,
+    MeetingRunning,
     Open,
     Quit,
 }
@@ -336,7 +357,7 @@ const MODES: [(&str, Label); 3] =
     [("auto", Label::ModeAuto), ("type", Label::ModeType), ("clipboard", Label::ModeClipboard)];
 
 impl Label {
-    const ALL: [Label; 12] = [
+    const ALL: [Label; 14] = [
         Label::Pause,
         Label::InsertMode,
         Label::ModeAuto,
@@ -347,6 +368,8 @@ impl Label {
         Label::RdpEmpty,
         Label::LastInsert,
         Label::PillRestore,
+        Label::Meeting,
+        Label::MeetingRunning,
         Label::Open,
         Label::Quit,
     ];
@@ -363,6 +386,8 @@ impl Label {
             Label::RdpEmpty => &t.rdp_empty,
             Label::LastInsert => &t.last_insert,
             Label::PillRestore => &t.pill_restore,
+            Label::Meeting => &t.meeting,
+            Label::MeetingRunning => &t.meeting_running,
             Label::Open => &t.open,
             Label::Quit => &t.quit,
         }
@@ -372,6 +397,30 @@ impl Label {
     fn menu_text(self, t: &TrayTexts) -> String {
         menu_label(self.text(t), LABEL_MAX)
     }
+}
+
+/// Пункт «Перевод встречи» — его подпись: пока перевод идёт, — «… (идёт)».
+fn meeting_label(running: bool) -> Label {
+    if running {
+        Label::MeetingRunning
+    } else {
+        Label::Meeting
+    }
+}
+
+/// Статус для подсказки значка и строки статуса: идёт перевод встречи, а диктовки нет
+/// (готов, не пауза) — «перевод встречи идёт».
+fn status_with_meeting(
+    state: &str,
+    paused: bool,
+    meeting: bool,
+    t: &TrayTexts,
+) -> (IconKind, String) {
+    let (icon, text) = describe(state, paused, t);
+    if meeting && !paused && state == "idle" {
+        return (icon, t.status_meeting.clone());
+    }
+    (icon, text)
 }
 
 /// Пункты, чьи подписи поменялись: только они получают новый текст, меню не перестраивается.
@@ -547,6 +596,10 @@ struct View {
     rdp_rows: Option<Vec<RdpRow>>,
     /// Флажки сессий, в том же порядке, что `rdp_rows`.
     rdp_items: Vec<CheckMenuItem<Wry>>,
+    /// Идёт перевод встречи (подпись пункта и подсказка значка).
+    meeting_running: bool,
+    /// Показанная подпись пункта «Перевод встречи».
+    meeting_shown: String,
 }
 
 pub struct TrayMenu {
@@ -561,6 +614,7 @@ pub struct TrayMenu {
     rdp_none: MenuItem<Wry>,
     last: MenuItem<Wry>,
     pill_restore: MenuItem<Wry>,
+    meeting: MenuItem<Wry>,
     open: MenuItem<Wry>,
     quit: MenuItem<Wry>,
     view: Mutex<View>,
@@ -588,6 +642,8 @@ impl TrayMenu {
             Label::RdpEmpty => self.rdp_none.set_text(text),
             Label::LastInsert => self.last.set_text(text),
             Label::PillRestore => self.pill_restore.set_text(text),
+            // у пункта встречи — две подписи: какую показать, решает set_meeting_item
+            Label::Meeting | Label::MeetingRunning => self.meeting.set_text(text),
             Label::Open => self.open.set_text(text),
             Label::Quit => self.quit.set_text(text),
         }
@@ -658,6 +714,8 @@ pub fn create(app: &AppHandle) -> tauri::Result<()> {
     )?;
     let last = item("last_insert", Label::LastInsert)?;
     let pill_restore = item("pill_restore", Label::PillRestore)?;
+    let meeting = item(MEETING_ID, Label::Meeting)?;
+    let meeting_shown = Label::Meeting.menu_text(&texts);
     let open = item("open", Label::Open)?;
     let quit = item("quit", Label::Quit)?;
     let menu = Menu::with_items(
@@ -670,6 +728,7 @@ pub fn create(app: &AppHandle) -> tauri::Result<()> {
             &style_menu,
             &last,
             &pill_restore,
+            &meeting,
             &PredefinedMenuItem::separator(app)?,
             &open,
             &quit,
@@ -706,6 +765,7 @@ pub fn create(app: &AppHandle) -> tauri::Result<()> {
         rdp_none,
         last,
         pill_restore,
+        meeting,
         open,
         quit,
         view: Mutex::new(View {
@@ -722,6 +782,8 @@ pub fn create(app: &AppHandle) -> tauri::Result<()> {
             ai_line: None,
             rdp_rows: None,
             rdp_items: Vec::new(),
+            meeting_running: false,
+            meeting_shown,
         }),
     });
     Ok(())
@@ -731,6 +793,7 @@ fn on_menu(app: &AppHandle, id: &str) {
     match id {
         "open" => crate::show_main(app, None),
         "pill_restore" => crate::pill::restore(app),
+        MEETING_ID => crate::meeting::tray_toggle(app),
         "quit" => crate::quit(app),
         "status" | AI_LINE_ID | RDP_NONE_ID => {}
         _ => {
@@ -792,6 +855,9 @@ fn apply_labels(menu: &TrayMenu, v: &mut View, patch: Patch<TrayLabels>) -> Resu
         }
     }
     for label in &plan.changed {
+        if matches!(label, Label::Meeting | Label::MeetingRunning) {
+            continue; // подпись пункта встречи — set_meeting_item (зависит от сеанса)
+        }
         if let Err(e) = menu.set_label(*label, &label.menu_text(&plan.texts)) {
             result = result.and(Err(e.to_string()));
         }
@@ -899,6 +965,16 @@ fn apply_rdp(
     Ok(())
 }
 
+/// Подпись пункта «Перевод встречи» — по сеансу и подписям; меняется, только если другая.
+fn set_meeting_item(menu: &TrayMenu, v: &mut View) -> Result<(), String> {
+    let text = meeting_label(v.meeting_running).menu_text(&v.texts);
+    if v.meeting_shown != text {
+        menu.meeting.set_text(&text).map_err(|e| e.to_string())?;
+        v.meeting_shown = text;
+    }
+    Ok(())
+}
+
 /// Иконка, подсказка и строка статуса; меняется только то, что изменилось.
 fn set_icon_and_text(app: &AppHandle, menu: &TrayMenu, v: &mut View, icon: IconKind, status: &str) {
     let (line, tip) = status_texts(&v.texts, status);
@@ -927,7 +1003,17 @@ fn set_icon_and_text(app: &AppHandle, menu: &TrayMenu, v: &mut View, icon: IconK
 /// Строка расхода ИИ, подменю рассылки и подписи меняются, только если их поля пришли
 /// (см. [`Patch`]).
 pub fn update(app: &AppHandle, args: TrayUpdate) -> Result<(), String> {
-    let TrayUpdate { state, paused, insert_mode, style, styles, ai_line, rdp, labels } = args;
+    let TrayUpdate {
+        state,
+        paused,
+        insert_mode,
+        style,
+        styles,
+        ai_line,
+        rdp,
+        labels,
+        meeting_running,
+    } = args;
     let menu = app.try_state::<TrayMenu>().ok_or("Трей ещё не создан")?;
     let mut v = menu.view();
     let insert_mode = insert_mode.unwrap_or_else(|| v.insert_mode.clone());
@@ -962,13 +1048,18 @@ pub fn update(app: &AppHandle, args: TrayUpdate) -> Result<(), String> {
     v.paused = paused;
     v.insert_mode = insert_mode;
     v.style = style;
+    if let Some(on) = meeting_running {
+        v.meeting_running = on;
+    }
+    let meeting = set_meeting_item(&menu, &mut v)
+        .map_err(|e| format!("Пункт «Перевод встречи» в трее не обновился: {e}"));
     sync_checks(&menu, &v);
-    let (icon, text) = describe(&state, paused, &v.texts);
+    let (icon, text) = status_with_meeting(&state, paused, v.meeting_running, &v.texts);
     set_icon_and_text(app, &menu, &mut v, icon, &text);
-    for e in [&labels, &ai, &rdp].into_iter().filter_map(|r| r.as_ref().err()) {
+    for e in [&labels, &ai, &rdp, &meeting].into_iter().filter_map(|r| r.as_ref().err()) {
         crate::log_warn!("{e}");
     }
-    labels.and(ai).and(rdp)
+    labels.and(ai).and(rdp).and(meeting)
 }
 
 /// Состояние ядра со стороны оболочки: запуск, перезапуск, не запускается, мешает другой Рупор.
@@ -1153,6 +1244,7 @@ mod tests {
                 "status_restarting",
                 "status_failed",
                 "status_already_running",
+                "status_meeting",
                 "pause",
                 "insert_mode",
                 "mode_auto",
@@ -1163,10 +1255,33 @@ mod tests {
                 "rdp_empty",
                 "last_insert",
                 "pill_restore",
+                "meeting",
+                "meeting_running",
                 "open",
                 "quit",
             ]
         );
+    }
+
+    /// Перевод встречи идёт: `meeting_running` в `update_tray` (нет ключа — как было), пункт
+    /// «… (идёт)», подсказка без диктовки — «перевод встречи идёт», при диктовке и паузе — их
+    /// статус.
+    #[test]
+    fn meeting_running_label_and_tooltip() {
+        let u = parse(json!({"state": "idle", "paused": false, "meeting_running": true}));
+        assert_eq!(u.meeting_running, Some(true));
+        assert_eq!(parse(json!({"state": "idle", "paused": false})).meeting_running, None);
+        for t in [ru(), en()] {
+            assert_eq!(meeting_label(true).menu_text(&t), menu_label(&t.meeting_running, 60));
+            assert_eq!(meeting_label(false).menu_text(&t), menu_label(&t.meeting, 60));
+            assert_eq!(status_with_meeting("idle", false, true, &t).1, t.status_meeting);
+            assert_eq!(status_with_meeting("idle", false, false, &t).1, t.status_idle);
+            assert_eq!(status_with_meeting("recording", false, true, &t).1, t.status_recording);
+            assert_eq!(status_with_meeting("idle", true, true, &t).1, t.status_paused);
+        }
+        let (_, tip) = status_texts(&ru(), &ru().status_meeting);
+        assert_eq!(tip, format!("Рупор {APP_VERSION} — перевод встречи идёт"));
+        assert_eq!(ru().meeting_running, "Перевод встречи (идёт)");
     }
 
     /// Подписи из `labels`: пустые и пробельные — встроенные, управляющие символы убираются.
@@ -1187,7 +1302,7 @@ mod tests {
         assert_eq!(t.app, "R&D Rupor");
         assert_eq!(
             status_texts(&t, "Ready"),
-            ("R&&D Rupor: Ready".into(), "R&D Rupor — Ready".into())
+            ("R&&D Rupor: Ready".into(), format!("R&D Rupor {APP_VERSION} — Ready"))
         );
     }
 
@@ -1281,7 +1396,7 @@ mod tests {
         let t = TrayTexts { app: "Rupor".into(), ..en() };
         let (_, tip) = status_texts(&t, &"x".repeat(300));
         assert_eq!(tip.encode_utf16().count(), TOOLTIP_MAX);
-        assert!(tip.starts_with("Rupor — xxx") && tip.ends_with('…'));
+        assert!(tip.starts_with(&format!("Rupor {APP_VERSION} — xxx")) && tip.ends_with('…'));
         let tip = tooltip_text(&"😀".repeat(100));
         assert!(tip.encode_utf16().count() <= TOOLTIP_MAX);
         assert_eq!(tip.chars().filter(|c| *c == '😀').count(), 63);
@@ -1292,9 +1407,15 @@ mod tests {
     fn status_line_by_lang() {
         let (icon, s) = describe("idle", false, &ru());
         assert_eq!(icon, IconKind::Idle);
-        assert_eq!(status_texts(&ru(), &s), ("Рупор: готов".into(), "Рупор — готов".into()));
+        assert_eq!(
+            status_texts(&ru(), &s),
+            ("Рупор: готов".into(), format!("Рупор {APP_VERSION} — готов"))
+        );
         let (_, s) = describe("idle", false, &en());
-        assert_eq!(status_texts(&en(), &s), ("Rupor: Ready".into(), "Rupor — Ready".into()));
+        assert_eq!(
+            status_texts(&en(), &s),
+            ("Rupor: Ready".into(), format!("Rupor {APP_VERSION} — Ready"))
+        );
         let (icon, s) = describe_core(CoreStatus::AlreadyRunning, &en());
         assert_eq!((icon, s.as_str()), (IconKind::Error, "Another Rupor is already running"));
         let (icon, s) = describe_core(CoreStatus::Starting, &ru());
@@ -1307,6 +1428,11 @@ mod tests {
         assert_eq!(changed_labels(&ru(), &en()), Label::ALL.to_vec());
         let t = TrayTexts { rdp_empty: "—".into(), mode_type: "Keys".into(), ..en() };
         assert_eq!(changed_labels(&en(), &t), vec![Label::ModeType, Label::RdpEmpty]);
+        // «Перевод встречи» — постоянный пункт меню со своей подписью
+        assert_eq!(Label::Meeting.text(&ru()), "Перевод встречи");
+        assert_eq!(Label::Meeting.menu_text(&en()), "Meeting translation");
+        let t = TrayTexts { meeting: "Live translation".into(), ..en() };
+        assert_eq!(changed_labels(&en(), &t), vec![Label::Meeting]);
         // каждому режиму вставки — своя подпись
         let e = en();
         let modes: Vec<(&str, &str)> = MODES.iter().map(|(id, l)| (*id, l.text(&e))).collect();

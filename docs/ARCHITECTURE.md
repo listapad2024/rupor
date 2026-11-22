@@ -7,10 +7,10 @@
 
 ```
 rupor.exe (Tauri 2, Rust)  ── spawn ──►  ядро (Python)
-  ├─ окно main  (index.html)  ─┐           ├─ хук клавиатуры, микрофон, faster-whisper
-  ├─ окно pill  (pill.html)   ─┤ WS        ├─ вставка текста, RDP-рассылка
-  └─ трей                      └─────────► ├─ SQLite, ИИ (OpenRouter/Anthropic/Ollama/claude -p)
-                                            └─ WebSocket-сервер 127.0.0.1:<port>
+  ├─ окно main     (index.html)    ─┐        ├─ хук клавиатуры, микрофон, faster-whisper
+  ├─ окно pill     (pill.html)     ─┤ WS     ├─ вставка текста, RDP-рассылка
+  ├─ окно meeting  (meeting.html)  ─┤        ├─ SQLite, ИИ (OpenRouter/Anthropic/Ollama/claude -p)
+  └─ трей                           └──────► └─ WebSocket-сервер 127.0.0.1:<port>
 ```
 
 - Rust выбирает свободный порт (bind `127.0.0.1:0` → взять порт → закрыть) и случайный токен
@@ -26,6 +26,11 @@ rupor.exe (Tauri 2, Rust)  ── spawn ──►  ядро (Python)
   в том числе правый Ctrl, не должны запускать тестовое ядро) и `--no-mutex` (не проверять единственный
   экземпляр). Режим `--sidecar` без `--ui-pid` не следит за родителем.
 - Ядро следит за `--ui-pid`: если процесс UI умер — ядро завершается.
+- Перевод встречи: ядро само запускает дочерний процесс-помощник захвата звука — тот же
+  `rupor-core.exe --loopback <цель> --parent <pid ядра>` (в разработке `python -m rupor
+  --loopback …`), `CREATE_NO_WINDOW`, stdin/stdout/stderr — каналы. Помощник выходит сам,
+  когда ядро закрыло stdin или умерло (EOF), когда завершился `--parent` или программа-цель
+  (см. «Захват звука встречи»).
 - Rust следит за ядром: если процесс ядра завершился не по команде «Выход» — перезапуск с
   паузой 1 с / 3 с / 10 с (сброс счётчика после 60 с стабильной работы), событие `core-restarted`
   во все окна. Порт и токен при перезапуске новые — окна снова зовут `backend_info`.
@@ -63,9 +68,11 @@ URL: `ws://127.0.0.1:<port>/?token=<token>`. Без верного токена 
 
 Команды одного соединения выполняются **по порядку** (например, `mic_monitor` false→true,
 быстрые `set_settings` от ползунка). Долгие (`ai_test`, `ai_key_check`, `ai_balance`,
-`test_record_stop`, `cuda_check`, `model_recommend`, `model_dir_set` — последняя создаёт папку
-и пишет в неё пробный файл, на недоступном сетевом пути это десятки секунд) тоже ждут
-предыдущие команды, но следующие команды их не ждут.
+`test_record_stop`, `cuda_check`, `model_recommend`, `model_dir_set` — она создаёт папку и
+пишет в неё пробный файл, на недоступном сетевом пути это десятки секунд, `meeting_sources`,
+`meeting_start` и `meeting_suggest_answer` — перебор аудиосессий и запуск процесса захвата)
+тоже ждут предыдущие
+команды, но следующие команды их не ждут.
 Команды, которые читают и меняют настройки (`rdp_toggle`, `app_rule_*`, `title_rule_*`), делают
 это атомарно под замком настроек.
 
@@ -109,6 +116,13 @@ URL: `ws://127.0.0.1:<port>/?token=<token>`. Без верного токена 
 | `export_data` | — | `{version: 1, dictionary: [{term, variants}], snippets: [{trigger, text}]}` |
 | `import_data` | `{data: <как export_data>, replace: bool}` | `{dictionary: int, snippets: int}` (сколько добавлено/обновлено) |
 | `stats_get` | — | `Stats` |
+| `fillers_stats` | `{days?: 7\|30\|90\|0 = 30}` | `FillerStats` — слова-паразиты (`fillers.py`) за период и предыдущий такой же (тренд); `0` — всё время. Считаются по **сырому** тексту ASR каждой диктовки (до словаря и ИИ-очистки), в таблицах `filler_daily`/`filler_words` (создаются модулем, вне цепочки миграций; срок хранения и очистка истории их не трогают). Первый вызов сам пересчитывает историю (`fillers_rebuild`) |
+| `fillers_config` | — | `{enabled, phrases: [str], defaults: [str]}` — список (`kv.fillers_list`, нет — `data/fillers_ru.txt` + `fillers_en.txt`) |
+| `fillers_config_set` | `{phrases?: [str], enabled?: bool}` | то же — список целиком, фразы нормализуются (регистр, «ё», тянуть звуки «э-э-э» → «эээ»), до 200 фраз по ≤6 слов |
+| `fillers_defaults` | — | то же — вернуть список по умолчанию |
+| `fillers_rebuild` | — | `{days, dictations}` — пересчитать по истории текущим списком: заменяются только дни, по которым есть история; одинаковый сырой текст в один день — один раз (повторное распознавание); проверка микрофона (`target=test`) не считается |
+| `fillers_reset` | — | `null` — обнулить статистику паразитов (список и история остаются) |
+| `fillers_ai_suggest` | — | `{items: [{phrase, count, example}], sampled}` — ИИ (модель очистки, расход `kind=cleanup`) ищет личные обороты в ≤80 свежих сырых диктовках истории; фразы из списка и те, которых в текстах нет, отбрасываются, `count` считается локально |
 | `draft_get` | — | `{text}` |
 | `draft_set` | `{text}` | `null` |
 | `styles_list` | — | `[{id, name, description}]` (5 встроенных, см. ИИ); `name` и `description` — на языке интерфейса |
@@ -140,6 +154,17 @@ URL: `ws://127.0.0.1:<port>/?token=<token>`. Без верного токена 
 | `vocab_exclude` | `{word, excluded: bool}` | `null` — исключить слово из подсказок или вернуть (без учёта регистра, «ё» и формы слова: «Тимуру» исключает и «Тимура», вернуть можно любой формой) |
 | `open_logs` | — | `null` (открыть папку логов в проводнике) |
 | `relaunch_admin` | — | не используется UI — перезапуск делает Rust-команда |
+| `meeting_sources` | — | `[AudioSource]` — источники звука встречи (см. «Захват звука встречи»): процессы со звуком по корню дерева, встречи первыми, последней — `system` («Весь звук компьютера»). Без process loopback (Windows старее сборки 20348) процессы — с `available: false`: начать с ними можно, но слушаться будет весь звук (`meeting_start`); окну перевода — прятать или гасить их |
+| `meeting_start` | `{source_id?: string}` | `MeetingStatus` — начать перевод встречи (см. «Перевод встречи»). `source_id` нет или `"auto"` — играющий (`active`) источник программы, которая сейчас держит микрофон (см. «Встреча замечается сама»: браузер или программа встреч не из `meeting_ignore_apps`, без порога в 10 с), — раньше любой, которая просто играет звук; иначе первый источник с `meeting: true`, иначе играющий браузер, иначе не играющий источник программы с микрофоном (забытая вкладка или голосовой помощник не перебьют играющий браузер), иначе браузер последнего активного окна, иначе ошибка «Нет источника звука встречи: …»; неизвестный id — «Источник звука «…» не найден — обновите список». Встреча уже идёт с этим источником — просто статус; с другим — перезапуск на новом (события прежней больше не идут, номера строк новой — с 1). Без process loopback (Windows старее сборки 20348) `proc:` и `"auto"` (и источник предложения) — весь звук компьютера (`system`) вместо ошибки, `notice` info «Звук одной программы можно захватить только в Windows 11 или Windows Server 2022 — слушаю весь звук компьютера…» один раз за запуск ядра; `MeetingStatus.loopback_available: false`. Модель не загружена — грузится как при запуске ядра (задание `load`), фразы ждут её (`state: "waiting_gpu"`); модель не загрузилась (ошибка) — «Модель распознавания не готова: …». Процесс захвата не запустился — «Не удалось захватить звук «…»: …». На CPU — `notice` warn «…будут отставать от речи» (модель ещё не загружена — по настройке `device`; загрузилась или откатилась на CPU позже — сеанс сам переходит в режим CPU и говорит это же); перевод включён, а ключа ИИ нет — только расшифровка и `notice` warn с `action: "open_settings_ai"` |
+| `meeting_stop` | — | `MeetingStatus` (`running: false`) — захват прочь; недоговорённая фраза и очередь дораспознаются (до 8 с), переводы доделываются, файл закрывается (строки и события `meeting_line` могут прийти и после ответа). Встречи нет — просто статус |
+| `meeting_autostop_cancel` | — | `MeetingStatus` — «Не останавливать»: снять отсчёт автоостановки идущей встречи (`hint: "ending"`); автоостановка снова — не раньше, чем программа встречи снова возьмёт микрофон или вернётся речь (у тишины «всего звука» — звук). Встречи нет — просто статус |
+| `meeting_status` | — | `MeetingStatus` идущей или последней встречи |
+| `meeting_lines` | `{after_id?: int, limit?: int=200}` | `[MeetingLine]` идущей или последней встречи (в памяти — до 5000 последних строк): `after_id` задан — следующие за ним по порядку, не больше `limit`; иначе — последние `limit`. `limit` вне 1–500 — «limit: допустимо от 1 до 500» |
+| `meeting_copy` | `{what?: "transcript"\|"notes"\|"all"}` | `{chars}` — в буфер обмена ядром (окно перевода без фокуса, `navigator.clipboard` там не работает): `transcript` (по умолчанию) — вся расшифровка в памяти (время, перевод и под ним оригинал; без перевода — текст), `notes` — последние удачные заметки (Markdown, «# <название записи>»), `all` — заметки, «## Полная расшифровка» и расшифровка. Пусто — «Расшифровка пуста — копировать нечего» / «Заметок ещё нет — копировать нечего»; другой `what` — «Что копировать: transcript, notes или all» |
+| `meeting_notes` | — | `MeetingNotes` — заметки к идущей или последней встрече сейчас (см. «Заметки к встрече»): ответ сразу (`status: "running"`; уже пишутся — они же, второго вызова нет), готовые и ошибка — событием `meeting_notes`. Встречи не было — «Встречи ещё не было — заметки делать не из чего»; строк нет — «Расшифровка пуста — заметки делать не из чего». Долгая команда (`LONG_COMMANDS`) |
+| `meeting_notes_get` | — | `MeetingNotes \| null` — заметки идущей или последней встречи (`markdown` — пока пишутся, начало ответа модели; потом — последние удачные); `null` — заметок не было |
+| `meeting_open_folder` | — | `null` — проводник: файл расшифровки идущей или последней встречи выделенным (`explorer /select`; запись переименована по названию — уже новый файл), иначе папка расшифровок (`meeting_dir`, создаётся) |
+| `meeting_suggest_answer` | `{id: string, answer: "start"\|"later"\|"never"}` | ответ на `meeting_suggest` (см. «Встреча замечается сама»); на предложение отвечают один раз. `start` («Начать расшифровку») → `MeetingStatus`: `meeting_start {source_id: source.id}` предложения (те же ошибки); `later` («Не сейчас») → `null`, этот разговор больше не предлагается (он и так предлагается один раз), а у браузера без заголовка встречи (`title: ""`) — и следующие такие 30 мин (встречи с узнанным заголовком предлагаются); `never` («Не предлагать для {app}») → `null`, exe программы дописывается в `meeting_ignore_apps` (событие `settings`). Неизвестный или устаревший id (10 мин, помнятся последние 10 предложений) — «Предложение уже неактуально…» (`later` — молча `null`); другой `answer` — «Ответ на предложение встречи: start, later или never» |
 
 ### Типы
 
@@ -158,6 +183,7 @@ type State = {
   hotkeys: { ptt: string; broadcast: string; command: string; cancel: string };
   ui_language: "ru" | "en";           // разрешённый язык интерфейса (settings.language,
                                       // "system" → язык Windows), см. «Локализация»
+  meeting: MeetingStatus;             // перевод встречи: hello восстанавливает окно перевода
 };
 type HistoryItem = {
   id: number; ts: number /* unix сек */; app: string; title: string;
@@ -197,7 +223,11 @@ type AiUsageStats = {
   total: UsageSpan;
   avg_cost_per_call: number;    // средняя стоимость успешного вызова с известной ценой
   daily: ({ date: string /* YYYY-MM-DD */ } & Usage)[];   // ровно 30 дней, дни без вызовов — нули
-  by_kind: { kind: "cleanup" | "command" | "test"; calls: number; cost_usd: number }[];  // все три, за всё время
+  by_kind: { kind: "cleanup" | "command" | "test" | "translate" | "title" | "notes";
+             calls: number; cost_usd: number }[];
+             // все шесть, за всё время (title — название записи встречи, notes — заметки к
+             // ней); в cost_usd и неудачные вызовы, за которые заплачено (ответ обрезан или не
+             // подошёл), а в avg_cost_per_call — только удачные
   by_model: { model: string; calls: number; cost_usd: number;
               unknown_cost_calls: number }[];  // за всё время, дорогие первыми
 };
@@ -225,6 +255,100 @@ type ModelRecommend = {
     note: string;               // пояснение на языке интерфейса
   }[];
 };
+// AudioSource — см. «Захват звука встречи» (loopback.AudioSource)
+type AudioSource = {
+  id: string;                    // "proc:<корневой pid>" | "system"
+  kind: "process" | "system"; pid: number | null; exe: string;
+  name: string; title: string; meeting: boolean; active: boolean;
+  available: boolean;            // можно захватить: "system" — всегда, процесс — только с
+                                 // process loopback (Windows 11 / Server 2022; иначе
+                                 // meeting_start слушает весь звук компьютера)
+};
+type MeetingStatus = {
+  running: boolean;
+  source: AudioSource | null;    // идущей или последней встречи; null — встречи ещё не было
+  started_at: string | null;     // ISO 8601 с мс и местным смещением: "2026-10-19T14:05:12.345+03:00"
+                                 // (он же ключ сеанса в окне перевода)
+  lines: number;                 // строк за встречу (в памяти — до 5000 последних, в файле — все)
+  level: number;                 // 0..1 — громкость звука (−60…0 dBFS; быстро вверх, медленно
+                                 // вниз — «звук есть»); 0, если встреча не идёт
+  state: "idle" | "listening" | "waiting_gpu" | "no_audio" | "error";
+                                 // waiting_gpu — фраза ждёт модель дольше 1 с (диктовка,
+                                 // загрузка модели); no_audio — 20 с цифровой тишины;
+                                 // error — встреча остановлена ошибкой (захват, распознавание)
+  error: string | null;          // текст ошибки на языке интерфейса (state "error")
+  translate: boolean;            // переводится: meeting_translate и ключ ИИ есть и не отклонён
+  target_lang: string;           // meeting_target_lang
+  file: string | null;           // файл расшифровки (появляется с первой строкой):
+                                 // «YYYY-MM-DD HH-MM — <title>.md»; запись получила другое
+                                 // название — файл переименован, здесь уже новый путь
+  title: string | null;          // название записи: по содержанию (ИИ, meeting_ai_title) или
+                                 // без ИИ — заголовок окна встречи без хвоста браузера
+                                 // («Google Meet»), «Встреча — <первые слова>», имя программы;
+                                 // null — встречи ещё не было (см. «Название записи»)
+  hint: "ended" | "ending" | null; // подсказка окну перевода (только пока сеанс идёт): "ended" —
+                                 // микрофон программы встречи свободен ≥ 30 с и её звук не
+                                 // играет — «встреча, похоже, закончилась» с кнопкой «Стоп»
+                                 // (см. «Встреча замечается сама»); "ending" — автоостановка
+                                 // (meeting_autostop): сеанс остановится сам через ending_in_s
+  ending_in_s: number | null;    // секунд до автоостановки (hint "ending"), иначе null
+  latency: {                     // средние задержки последних 20 строк, мс (null — ещё нет):
+    asr_ms: number | null;       //   конец речи фразы → её текст до конца на экране
+    first_token_ms: number | null; // → первый токен перевода куска с концом фразы
+    done_ms: number | null;      //   → этот перевод готов (уточнение всей фразой не считается)
+  };
+  loopback_available: boolean;   // звук одной программы захватывается (сборка Windows ≥ 20348);
+                                 // false — источники proc: недоступны, встреча слушает весь
+                                 // звук компьютера (AudioSource.available)
+  notes: MeetingNotesInfo | null; // заметки к встрече без текста (события meeting частые);
+                                 // null — их не было (см. «Заметки к встрече»)
+};
+// MeetingNotes — событие meeting_notes, meeting_notes_get, meeting_notes
+type MeetingNotes = {
+  status: "running" | "done" | "error";
+  markdown: string | null;       // running — начало ответа модели по ходу (или null); done и
+                                 // error — последние удачные заметки: «# <название записи>» и
+                                 // разделы «## …» (название сменилось после них — и здесь новое);
+                                 // null — удачных не было
+  generated_at: string | null;   // когда готовы последние удачные (ISO 8601 со смещением)
+  model: string | null;          // их модель
+  cost_usd: number | null;       // их цена — все вызовы (у длинной встречи — части и сведение)
+  error: string | null;          // status "error": почему не удались (на языке интерфейса)
+  auto: boolean;                 // сами после «Стоп» (true) или по команде meeting_notes
+};
+type MeetingNotesInfo = Omit<MeetingNotes, "markdown">;   // MeetingStatus.notes
+// MeetingSuggest — событие meeting_suggest (см. «Встреча замечается сама»)
+type MeetingSuggest = {
+  id: string;                    // для meeting_suggest_answer
+  source: AudioSource;           // откуда слушать: meeting_start {source_id: source.id}
+  app: string;                   // программа: описание exe («Brave Browser», «Zoom Workplace»)
+  title: string;                 // встреча: «Google Meet», «Zoom», совпавший шаблон
+                                 // meeting_title_patterns («Контур.Толк»); "" — не узнать
+  detected_at: string;           // ISO 8601 с мс и местным смещением
+};
+type MeetingLine = {             // строка = фраза; meeting_line — её обновления (по id)
+  id: number;                    // 1, 2, … в пределах встречи
+  t: number;                     // секунды от начала встречи до начала фразы
+  ts: string;                    // местное время начала фразы, "HH:MM:SS"
+  lang: string;                  // язык строки (код Whisper: en, de, ru…); пока фраза звучит,
+                                 // может смениться (язык ещё не определён уверенно)
+  text: string;                  // принятый текст (растёт, пока фраза звучит; в конце фразы —
+                                 // текст последнего прохода, может поправить принятое)
+  partial: string;               // неуверенный хвост после text (может измениться), "" — нет;
+                                 // показывать приглушённо/курсивом
+  translation: string | null;    // перевод; растёт по ходу (куски, потоком); null — без
+                                 // перевода (original, error) или ещё нет
+  status: "pending" | "streaming" | "done" | "original" | "error";
+                                 // pending — перевод будет, его ещё нет; streaming — перевод
+                                 // идёт (фраза звучит или перевод ещё не догнал её); done —
+                                 // переведена целиком; original — язык перевода или перевод
+                                 // выключен (ИИ не звали); error — перевод не удался
+  final: boolean;                // фраза кончилась (дальше меняются только перевод и status)
+  refined: boolean;              // перевод заменён переводом всей фразы разом (meeting_refine)
+  error?: string;                // только у status "error": почему без перевода
+};
+// final: true с пустыми text и partial — фраза оказалась мусором (щелчок, фраза субтитров):
+// строку убрать; в meeting_lines и в файл такие не попадают.
 type Stats = {
   words_today: number; words_week: number; words_total: number;
   wpm: number;              // средняя скорость диктовки: слова / минуты речи (за всё время)
@@ -246,10 +370,14 @@ type Stats = {
 | `broadcast` | `{on: bool}` |
 | `result` | `{text, raw, language, audio_s, asr_ms, latency_ms, ai: bool, style}` |
 | `history` | `HistoryItem` — добавлена запись |
-| `notice` | `{text /* на языке интерфейса */, level: "info"\|"warn"\|"error", action: null \| "relaunch_admin" \| "open_settings_ai" \| "open_settings_insert" \| "dict_undo" \| "dict_add", toast: bool, data: LearnNotice \| null}` — `data` есть всегда: `null` у всех уведомлений, кроме обучения словаря (см. «Обучение словаря на правках»); `open_settings_insert` — открыть настройки вставки/рассылки («Не выбраны RDP-сессии для рассылки») |
-| `ai_usage` | `{kind: "cleanup"\|"command"\|"test", cost_usd, tokens_in, tokens_out, today_cost_usd}` — после каждого вызова ИИ (и неудачного: стоимость 0); неизвестное — 0 |
+| `notice` | `{text /* на языке интерфейса */, level: "info"\|"warn"\|"error", action: null \| "relaunch_admin" \| "open_settings_ai" \| "open_settings_insert" \| "dict_undo" \| "dict_add" \| "meeting_start", toast: bool, data: LearnNotice \| null}` — `data` есть всегда: `null` у всех уведомлений, кроме обучения словаря (см. «Обучение словаря на правках»); `open_settings_insert` — открыть настройки вставки/рассылки («Не выбраны RDP-сессии для рассылки»); `meeting_start` — кнопка «Включить» (`meeting_start {}` и показать окно перевода, см. «Перевод встречи»); ядро такие уведомления больше не рассылает — встречу предлагает событие `meeting_suggest` |
+| `ai_usage` | `{kind: "cleanup"\|"command"\|"test"\|"translate"\|"title"\|"notes", cost_usd, tokens_in, tokens_out, today_cost_usd}` — после каждого вызова ИИ (и неудачного: стоимость 0, а если ответ пришёл и оплачен, но не подошёл — обрезан, не название, не заметки, — его стоимость); неизвестное — 0 |
 | `progress` | `{what: "model"\|"cuda", pct: 0..100, text, done: bool, error: string\|null}` — загрузка (`setup_download`) или перенос модели в другую папку (`model_dir_set` с `move`, тоже `what: "model"`, текст «Переношу модель …: N из M МБ»). Размеры в текстах — МБ и ГБ по 10⁶ и 10⁹ байт, как `size_mb` в `model_recommend` и на Hugging Face: у модели в списке мастера и в прогрессе — одно число |
 | `settings` | объект настроек (после `set_settings`) |
+| `meeting` | `MeetingStatus` — при каждой смене: старт, стоп, состояние (`waiting_gpu`, `no_audio`, `error`), новая строка, перевод вкл/выкл, язык перевода, название записи (без ИИ — по первой строке; по содержанию — уже после переименования файла, в том числе после «Стоп»); ради `level` — не чаще 4 раз/с и только при заметном изменении |
+| `meeting_notes` | `MeetingNotes` — заметки к встрече начали писаться (`running`, `markdown: null`), пишутся (`running`, `markdown` — начало ответа модели, не чаще 2 раз/с), готовы (`done`), не удались (`error`); и когда название записи сменилось после готовых заметок (их «# …» — новое) |
+| `meeting_line` | `MeetingLine` — новая строка и каждое её обновление по `id` (новая гипотеза распознавания, принятые слова, конец фразы, очередные токены перевода, уточнение, ошибка): окно заменяет строку целиком; одной строки — не чаще 10 раз/с (первые токены каждого куска перевода и новые гипотезы — сразу) |
+| `meeting_suggest` | `MeetingSuggest` — замечена встреча (программа держит микрофон ≥ 10 с и играет звук), сеанс не идёт; один раз на разговор (см. «Встреча замечается сама»). Окно предложения прячется само через 45 с; ответ — `meeting_suggest_answer` |
 
 ## Настройки (`%APPDATA%\Rupor\settings.json`)
 
@@ -263,8 +391,11 @@ type Stats = {
   "default_style": "normal",
   "history_enabled": true,
   "history_retention_days": 0,      // 0 — хранить всегда
-  "recordings_keep": 30,             // последние записи голоса на диске (0 — не сохранять)
-  "recordings_max_mb": 300,         // …и не больше стольких МБ на все
+  "recordings_keep": 30,             // последние записи голоса на диске (0 — не сохранять; до 10000)
+  "recordings_max_mb": 300,         // …и не больше стольких МБ на все (20–20000)
+  "speaker_shadow": false,          // теневой счёт «свой / чужой» по голосу: считать и писать в журнал (speaker.py)
+  "speaker_own_score": 5.5,         // счёт AS-norm, от которого метка журнала — «свой» (−50…50)
+  "speaker_alien_score": 3.0,       // …и ниже которого — «чужой»; между — «не уверен»
   "pill_enabled": true,
   "pill_position": null,            // [x, y] физические пиксели или null — снизу по центру
   "theme": "system",                // system | dark | light
@@ -299,10 +430,54 @@ type Stats = {
   "duck_level": 15,                 // duck: до скольких процентов исходной громкости (0–100)
   "language": "system",             // язык интерфейса и сообщений: system | ru | en
   "dictation_language": "auto",     // язык распознавания: auto | ru | en (см. «Локализация»)
-  "model_dir": ""                   // папка моделей Whisper (формат кэша HuggingFace, как
+  "model_dir": "",                  // папка моделей Whisper (формат кэша HuggingFace, как
                                     // download_root у faster-whisper); "" — кэш HuggingFace по
                                     // умолчанию. Полный путь (диск или UNC), %VAR% и ~
                                     // раскрываются: "D:\\Модели\\whisper-models"
+  // перевод встречи (см. «Перевод встречи»)
+  "meeting_target_lang": "ru",      // на какой язык переводить: ru en de fr es it pt pl uk zh ja ko tr
+  "meeting_source_lang": "auto",    // язык речи: auto (определяет Whisper) или код из того же списка
+  "meeting_translate": true,        // false — только расшифровка, перевод ИИ не вызывается
+  "meeting_refine": true,           // конец фразы — перевести её целиком ещё раз и заменить
+                                    // перевод кусками (точнее; второй вызов ИИ на фразу)
+  "meeting_show_original": true,    // окно перевода: исходная строка под переводом
+  "meeting_font_size": 16,          // размер текста окна перевода, 12–28
+  "meeting_autosuggest": true,      // замечать встречу (микрофон + звук) и предлагать перевод;
+                                    // false — не следить вовсе (ни предложений, ни подсказки
+                                    // «встреча закончилась»)
+  "meeting_autostop": true,         // встреча кончилась — остановить перевод самому через 10 с
+                                    // (см. «Автоостановка»); false — только подсказка
+  "meeting_detect_desktop_apps": true, // предлагать и для настольных программ встреч (Zoom,
+                                    // Teams, Telegram, Discord…), не только для браузеров
+  "meeting_ignore_apps": ["obs64.exe", "natspeak.exe", "ffmpeg.exe", "python.exe", "pythonw.exe"],
+                                    // не предлагать для этих exe: имя файла (путь отбрасывается),
+                                    // нижний регистр, без расширения — «.exe»; ≤ 100 штук по
+                                    // ≤ 100 символов; «Не предлагать для …» дописывает сюда
+  "meeting_title_patterns": ["Google Meet", "Meet –", "Meet -", "Zoom", "Microsoft Teams",
+                             "Teams", "Телемост", "Контур.Толк", "Jitsi Meet"],
+                                    // подстроки заголовков окон (без регистра и «ё»): непустые,
+                                    // ≤ 60 символов, ≤ 30 штук, повторы убираются
+  "meeting_save": true,             // сохранять расшифровку каждой встречи (Markdown)
+  "meeting_ai_title": true,         // называть запись по содержанию: ИИ (ai_provider) по
+                                    // расшифровке; false — название без ИИ
+  "meeting_notes": true,            // заметки к встрече сами после «Стоп» (встреча от 5 строк
+                                    // или 2 мин речи); по команде meeting_notes — и при false
+  "meeting_notes_model": "",        // модель заметок у ai_provider (≤ 200 символов); "" —
+                                    // сильная по умолчанию: OpenRouter — anthropic/claude-sonnet-5.5,
+                                    // Anthropic — claude-sonnet-5-5, Ollama — ollama_model
+  "meeting_dir": "",                // папка расшифровок; "" — %APPDATA%\\Rupor\\meetings;
+                                    // проверка — как у model_dir (полный путь, %VAR% и ~)
+  "meeting_protect": true,          // окно перевода не видно при показе экрана (contentProtected)
+  "meeting_rect": null,             // [x, y, ширина, высота] окна перевода, физические пиксели
+                                    // (|v| < 10⁶, ширина и высота ≥ 200; пишут Rust/UI); null —
+                                    // у правого края, во всю высоту рабочей области, видимая
+                                    // ширина 420 логич. px
+  "meeting_mini_pos": null,         // [x, y] полоски свёрнутого окна перевода (левый верхний
+                                    // угол видимой части, физ. px, |v| < 10⁶; пишет окно после
+                                    // переноса); null — справа внизу рабочей области
+  "translate_model": "",            // модель перевода вместо модели провайдера ("" — ai_model /
+                                    // anthropic_model / ollama_model)
+  "translate_timeout_s": 6          // ответ перевода ждать не дольше (1–30 с)
 }
 ```
 
@@ -551,10 +726,41 @@ def build_system_prompt(style: str, dictionary_terms: list[str], lang: str = "ru
 def styles_public(lang: str | None = None) -> list[dict]          # для styles_list, на языке интерфейса
 def command_prompt(lang: str | None = None) -> str                # по умолчанию — i18n.current()
 @dataclass class AIResult: text: str; ms: float; cost_usd: float | None; provider: str; model: str
-class AIError(Exception)
+class AIError(Exception)   # .kind, .status, .result — ответ, который пришёл и оплачен, но не
+                           # подошёл (обрезан по лимиту, отказ Anthropic, не название, пустой
+                           # или «ответ вместо перевода», не заметки): расход пишется с его
+                           # ценой и токенами, ok=0; ошибки сети и ключа — result None
 def cleanup(text: str, style: str, s: Settings, dictionary_terms: list[str], *,
             api_key: str | None = None, language: str | None = None) -> AIResult   # таймаут s.ai_timeout_s
 def command(instruction: str, selected: str, s: Settings) -> AIResult                       # командный режим, таймаут 30 с
+def translate(text: str, src_lang: str, dst_lang: str, s: Settings,
+              context_lines: Sequence[str] = (), *, terms: Sequence[str] = (),
+              api_key: str | None = None) -> AIResult          # фраза встречи целиком (уточнение), см. «Перевод встречи»
+def translate_stream(text: str, src_lang: str, dst_lang: str, s: Settings,
+                     context_lines: Sequence[str] = (), *, done_src: str = "", done_tr: str = "",
+                     terms: Sequence[str] = (), on_delta: Callable[[str], None] | None = None,
+                     api_key: str | None = None) -> AIResult   # кусок фразы потоком — продолжение done_tr
+def prewarm(s, connections: int = 1) -> None                   # открыть заранее соединение перевода (фон)
+def join_translation(done: str, more: str, lang: str = "") -> str
+def provider_model(s, command: bool = False, *, kind: str | None = None) -> tuple[str, str]
+    # (провайдер, модель) вызова вида kind (cleanup/test/command/translate/title/notes) — расход
+    # упавшего вызова; translate и title — модель translate_model, если она задана; notes — notes_model
+def meeting_title(transcript: str, lang: str, s: Settings, *,
+                  api_key: str | None = None) -> AIResult   # название записи встречи (3–8 слов на lang)
+def clean_title(out: str) -> str                           # ответ → название; "" — не название
+def cap_title(text: str, limit: int = 80) -> str           # не длиннее limit, по границе слова
+def title_excerpt(transcript: str) -> str                  # ≤ 8000 симв.: начало 5000 + «…» + конец 3000
+def notes_model(s) -> tuple[str, str]   # (ai_provider, meeting_notes_model или сильная по умолчанию:
+                                        #  anthropic/claude-sonnet-5.5, claude-sonnet-5-5, ollama_model)
+def meeting_notes(transcript: str, lang: str, s: Settings, *, meta: Mapping[str, Any] | None = None,
+                  title: str = "", api_key: str | None = None,
+                  on_delta: Callable[[str], None] | None = None,
+                  track: Callable[[Callable[[], AIResult]], AIResult] | None = None) -> AIResult
+    # заметки к встрече (см. «Заметки к встрече»): Markdown на lang, «# название» и разделы;
+    # transcript — строки «HH:MM:SS текст»; длинная — частями и сведением; on_delta — итоговый
+    # вызов потоком; track — обёртка каждого вызова (учёт расхода); стоимость — сумма вызовов
+def clean_notes(out: str, title: str = "", *, part: bool = False) -> str   # ответ → заметки; "" — не заметки
+def notes_chunks(lines: Sequence[str]) -> list[list[str]]  # части длинной расшифровки (≤ 8)
 def check_openrouter_key(key: str) -> dict                                                  # ответ ai_key_check
 ```
 Язык промптов — см. «Локализация». Тексты `AIError` и ответа `check_openrouter_key` — через
@@ -878,6 +1084,18 @@ def cuda_dll_dirs() -> list[Path]
   конца записи, и окно), сессия системных звуков (IsSystemSoundsSession, pid 0), сессии уже
   без звука или тише цели, не играющие сессии (не AudioSessionStateActive — приглушатся,
   когда заиграют). RDP: звук удалённой машины играет mstsc — обычная сессия, приглушается.
+- **Исключённые деревья процессов** (`set_excluded(pids)`, перевод встречи): захват звука
+  идёт ПОСЛЕ громкости сессии, поэтому браузер со встречей на время встречи не приглушается.
+  `pids` — корни деревьев; сессия исключена, если её pid — корень или его потомок любой
+  глубины (у браузеров звук играет дочерний процесс): цепочка предков —
+  `winutil.parent_pid` (NtQueryInformationProcess, микросекунды; снимок Toolhelp32 был бы
+  ~25 мс на каждый переопрос), решение по pid помнится 30 с (`EXCLUDE_TTL_S`), глубина до
+  16. Исключение посреди записи (встреча началась во время диктовки) сразу возвращает уже
+  приглушённые нами сессии этого дерева (по тем же правилам «только своё»); снятие
+  исключения (`frozenset()`) — со следующего переопроса они приглушаются как обычно.
+  `set_excluded(frozenset(), everything=True)` — встреча слушает весь звук компьютера: не
+  приглушается ничего (любая приглушённая программа пропала бы из захвата или стала бы тише
+  посреди фразы), уже приглушённое возвращается сразу.
 - **Когда** (движок): приглушение — когда запись подтверждена (`_confirm`, после звука начала;
   удержание, «без рук», щелчок по пилюле, кнопка мыши) и проверочная запись мастера
   (`test_record_start`). Возврат — в `_end_session` (стоп, отмена, выброс, лимит, пауза, смена
@@ -931,10 +1149,15 @@ def cuda_dll_dirs() -> list[Path]
 ```python
 class Ducker:                     # duck.py
     def __init__(self, own_pids: Iterable[int] = (), path: Path | None = None,
-                 backend_factory: Callable[[], Backend] | None = None) -> None
+                 backend_factory: Callable[[], Backend] | None = None,
+                 parent_of: Callable[[int], int | None] | None = None) -> None
+                                  # parent_of — pid родителя (тесты; иначе winutil.parent_pid)
     def start(self) -> None       # поток rupor-duck; сначала — возврат из duck.json
     def duck(self, mode: str, level: int) -> None    # не блокирует
     def restore(self) -> None                        # не блокирует
+    def set_excluded(self, pids: Iterable[int], everything: bool = False) -> None
+                                                     # не блокирует; корни деревьев,
+                                                     # everything — не приглушать ничего
     def flush(self, timeout: float = 5.0) -> bool    # дождаться очереди (конец сеанса, тесты)
     def close(self, timeout: float = 2.0) -> bool    # вернуть звук и остановить поток
 def selftest(timeout: float = 10.0) -> tuple[bool, str]
@@ -944,17 +1167,751 @@ def selftest(timeout: float = 10.0) -> tuple[bool, str]
 volume(), muted(), set_volume(v), set_muted(m)`) — `CoreAudioBackend` или фейк в тестах;
 тесты движка по умолчанию получают `NullBackend` (`tests/conftest.py`).
 
+### Захват звука встречи (`loopback.py`, помощник `--loopback`)
+
+Для перевода встречи нужен звук только браузера со встречей (голоса собеседников; своего
+микрофона в нём нет). Windows 11 / Server 2022 (сборка ≥ 20348) умеет **process loopback** —
+захват того, что играет дерево процессов; на старых — только весь звук устройства вывода.
+
+- **Источники** — `list_sources(patterns, own_pids) -> list[AudioSource]` (WS
+  `meeting_sources`): процессы с аудиосессией (в любом состоянии, кроме завершённой) на всех
+  активных устройствах вывода (`duck.default_backend().sessions()` — только перечисление,
+  громкость не читается и не меняется), сгруппированные по **корню**: от pid сессии вверх по
+  родителям, пока у родителя то же имя exe и тот же полный путь (у Chromium/Electron звук
+  играет служба звука — дочерний процесс главного; запускатель `.venv\Scripts\python.exe` —
+  другой путь, не корень). Свои процессы и их потомки (WebView2 окна Рупора) не показываются.
+  Плюс последней — `system` («Весь звук компьютера», `loopback.system_name`). Порядок: встреча,
+  играет, имя. Дёшево: ~40–80 мс (снимок Toolhelp32 ~25 мс, сессии, `EnumWindows`); Core
+  Audio — в своём потоке `rupor-sources` (COM MTA), не ответил за 3 с или ошибка — только
+  `system`.
+
+```python
+@dataclass
+class AudioSource:                # loopback.py; WS — dataclasses.asdict / as_dict()
+    id: str                       # "proc:<корневой pid>" | "system"
+    kind: Literal["process", "system"]
+    pid: int | None               # корень дерева (None — весь звук)
+    exe: str                      # имя exe корня: "brave.exe"
+    name: str                     # FileDescription exe (version.dll: «Brave Browser»), иначе имя без .exe
+    title: str                    # заголовок окна дерева: первый похожий на встречу, иначе верхний
+    meeting: bool                 # title совпал с meeting_title_patterns (подстрока, без регистра)
+    active: bool                  # сессия дерева сейчас играет (AudioSessionStateActive)
+    target: str                   # свойство: "pid:<pid>" | "system" — цель помощника
+def list_sources(patterns: Sequence[str], own_pids: Collection[int] = frozenset(),
+                 timeout: float = 3.0) -> list[AudioSource]
+def group_sources(sessions, own_pids, patterns, *, table=None, path_of=None, describe=None,
+                  titles_of=None) -> list[AudioSource]          # чистая логика (тесты)
+def matches_meeting(title: str, patterns: Iterable[str]) -> bool
+def root_pid(pid: int, table: Mapping[int, tuple[int, str]], path_of=None) -> int
+def target_for_id(source_id: str) -> str          # "proc:5" → "pid:5", "system" → "system"
+def available() -> bool                           # process loopback есть (сборка ≥ 20348)
+def selftest(timeout: float = 30.0) -> tuple[bool, str]   # для --uia-selftest
+def describe_exit(code: int, reason: str = "") -> str     # текст пользователю (i18n)
+```
+
+- **Почему отдельный процесс.** Буфер виртуального устройства — всегда 10 мс
+  (`hnsBufferDuration` не действует), задержку читателя больше ~30 мс он не переживает, и
+  потеря молчаливая (ни DATA_DISCONTINUITY, ни позиции устройства — видно только по QPC). Поток
+  захвата в ядре делил бы GIL с распознаванием и ИИ: измерено — до 22 % звука терялось. В
+  помощнике цикл захвата один на весь процесс, запись в канал — в своём потоке (цикл канал не
+  ждёт; ядро не читает 10 с — старые блоки выбрасываются); при занятом GIL ядра потерь нет
+  (проверено: 3 с вызовов по ~100 мс с GIL — ноль провалов).
+- **Помощник** — `rupor-core.exe --loopback <цель> [--parent <pid>]` (dev:
+  `python -m rupor --loopback …`, `PYTHONPATH` на `core/` — тот же код): разбирается в
+  `__main__.main()` сразу после аргументов — без настроек, лога ядра (у помощника журнал в
+  stderr) и мьютекса единственного экземпляра. Цель: `pid:<корень>` (дерево процесса,
+  INCLUDE_TARGET_PROCESS_TREE — сам процесс и ПРЯМЫЕ потомки; поэтому всегда корень),
+  `exclude:<pid>` (всё, кроме дерева), `system` (loopback устройства вывода по умолчанию,
+  eConsole; работает и на Windows 10; сменилось устройство — переоткрывается).
+  - **stdout** — только звук: float32 little-endian, моно, 16 кГц, блоками по 320 отсчётов
+    (20 мс). Время непрерывно: пакет, пришедший позже, чем по QPC должен был (пропуск > 20 мс),
+    предваряется нулями; без пакетов (у `system` в тишине их нет) нули дописываются до
+    «сейчас − 50 мс» кусками от 100 мс; больше 10 с нулей разом не пишется (сон компьютера —
+    время перескакивает). У process loopback нули идут и сами: цель молчит, закрылась или её
+    нет — Windows ошибок не даёт.
+  - **stderr** — журнал «loopback УРОВЕНЬ: …» (ядро переписывает строки в свой лог с
+    префиксом `loopback:`, не больше 200 за запуск); последняя строка при ошибке — причина
+    кратко по-английски («activation failed: 0x80070005 E_ACCESSDENIED»).
+  - **Коды выхода**: 0 — stdin закрыт (EOF: ядро закрыло его или умерло), завершился
+    `--parent`, ядро закрыло stdout; 1 — захват сломался и не переоткрылся (10 попыток за
+    ~5 с; служба звука перезапускалась); 2 — захват не начался (неверная цель, Windows
+    старее 20348 для `pid:`/`exclude:`, отказ активации); 3 — программа-цель завершилась
+    (или её нет уже при старте). Помощник держит дескриптор цели (SYNCHRONIZE) и родителя и
+    ждёт их вместе с событием захвата (WaitForMultipleObjects, ≤ 50 мс).
+  - **Активация** (`_activate_process`): `ActivateAudioInterfaceAsync("VAD\\Process_Loopback",
+    IID_IAudioClient, PROPVARIANT{vt=VT_BLOB, blob={12, AUDIOCLIENT_ACTIVATION_PARAMS{
+    PROCESS_LOOPBACK, {pid, INCLUDE|EXCLUDE}}}}, handler, &op)` — обработчик
+    `comtypes.COMObject` с интерфейсами IActivateAudioInterfaceCompletionHandler **и
+    IAgileObject** (без него — E_ILLEGAL_METHOD_CALL: вызов приходит в рабочем потоке
+    Windows), параметр `ActivateCompleted` — сырой указатель (иначе comtypes отпустил бы его без
+    AddRef) → `op.GetActivateResult()` → IAudioClient → `Initialize(SHARED, LOOPBACK |
+    EVENTCALLBACK | AUTOCONVERTPCM | SRC_DEFAULT_QUALITY, 20 мс, 0, WAVEFORMATEX{float, 1,
+    16000}, NULL)` (формат принимается как есть; GetMixFormat у виртуального устройства —
+    E_NOTIMPL, не зовётся; не вышло с событием — опрос раз в 10 мс) → `SetEventHandle` →
+    `GetService(IAudioCaptureClient)` → `Start`. Пакет: `GetNextPacketSize` / `GetBuffer` /
+    копия / `ReleaseBuffer`; флаг SILENT — нули.
+- **В ядре** — `LoopbackStream`:
+
+```python
+class LoopbackStream:             # loopback.py
+    def __init__(self, on_audio: Callable[[np.ndarray], None],
+                 on_exit: Callable[[int, str], None] | None = None, *,
+                 command: Callable[[str], Sequence[str]] | None = None,  # тесты: свой «помощник»
+                 chunk_bytes: int = 3200) -> None
+    def start(self, target: str) -> None   # неверная цель — ValueError; идёт — перезапуск
+    def stop(self, timeout: float = 1.0) -> int | None   # закрыть stdin, ждать, иначе kill
+    alive: bool                            # свойство: помощник жив
+    target: str | None; pid: int | None    # свойства
+```
+  Popen: `CREATE_NO_WINDOW`, stdin/stdout/stderr — PIPE (дескрипторы не наследуются другими
+  помощниками — EOF доходит), `--parent os.getpid()`. Поток `rupor-loopback` читает stdout
+  кусками по 3200 байт (50 мс; блокирующее чтение отпускает GIL) → `on_audio(np.float32[])`
+  (ошибка обработчика — в лог один раз, чтение идёт дальше); поток `rupor-loopback-log` —
+  stderr. `on_exit(code, reason)` — только когда помощник завершился сам (не по `stop`), в
+  потоке чтения, после того как прочитан весь stderr; `reason` — последняя строка stderr не
+  из журнала помощника (её пишет `fail()`, или хвост трассировки), а строка журнала
+  («loopback INFO: …», по-русски для лога) причину сбрасывает: помощника сняли (диспетчер
+  задач, антивирус, падение в Core Audio) — `reason` пустой, сеанс скажет «код N» на языке
+  интерфейса; `describe_exit` даёт текст для
+  пользователя (3 — «Программа, звук которой расшифровывался, закрылась»).
+- **Громкость**: захват идёт после громкости сессии программы (микшер, приглушение
+  Рупора, «приглушение при связи» Windows) и до общей громкости устройства — поэтому
+  `Ducker.set_excluded({корень})` на время встречи; выключенный в микшере браузер —
+  тишина в захвате.
+- **Самопроверка** (`--uia-selftest`, `packaging/verify_core.py`): «захват звука: ok
+  (программы: да, весь звук: да, помощник: да)» — обработчик на `comtypes.COMObject` в
+  сборке, process loopback своего процесса (пакеты идут), loopback устройства вывода,
+  помощник `--loopback` отдаёт звук по каналу и на закрытый stdin выходит с кодом 0. Ничего не
+  играет и громкость не трогает. Windows старее 20348 — «захват звука: недоступен (…)» (не
+  ошибка сборки); нет устройства вывода — «весь звук: нет устройства вывода».
+- **Вспомогательное в `winutil.py`**: `process_table()` (pid → (родитель, exe), Toolhelp32),
+  `parent_map()`, `parent_pid(pid)` (NtQueryInformationProcess), `file_description(path)`
+  (version.dll, кэш), `window_titles(pids)` (видимые окна верхнего уровня без владельца, по
+  pid, в z-порядке; тесты подменяют на `{}` — `tests/conftest.py`).
+- **Тесты** (`tests/test_loopback.py`): разбор цели, шаблоны, корень и группировка на
+  фейковой таблице процессов, склейка времени, `LoopbackStream` с фейковым помощником
+  (`python -c` пишет известные float32), настоящий помощник на целях без звука (неверная
+  цель — 2, процесса нет — 3, родителя нет — 0). Настоящий захват — один тест, только с
+  `RUPOR_AUDIO_TESTS=1`: свой процесс играет тон 1 кГц с амплитудой 0,003, помощник
+  захватывает его по `pid:` (rms ≈ 0,0021, пик 1000 Гц), затем тон закрывается — код 3.
+
+### Перевод встречи (`meeting.py`, `asr.ModelGate`, `ai.translate_stream`, движок)
+
+Звук браузера со встречей (голоса собеседников; свой микрофон в нём не слышен) → фразы →
+потоковое распознавание той же загруженной моделью → перевод кусками по ходу речи на
+`meeting_target_lang` → окно перевода сбоку и файл. Главное — задержка: слова на экране
+примерно через секунду после того, как прозвучали, перевод — через 2.5–3 с. Диктовка всегда
+первая: встреча берёт модель только на низком приоритете и не трогает ничего, что видит
+пилюля.
+
+- **Сеанс** — `MeetingSession` (владелец — движок: `Engine._meeting`; последний остаётся и
+  после «Стоп» — для `meeting_status`/`meeting_lines`/`meeting_copy`). Потоки: чтение звука
+  процесса захвата (`LoopbackStream`, `on_audio`), `rupor-meeting-asr` (проходы
+  распознавания), `rupor-meeting-tr1`/`tr2` (переводы). Состояние строк — под одним замком,
+  события строк уходят по одному (обновления строки не обгоняют друг друга).
+  Ни заданий в `_jobs`, ни `_busy`/`_ai_busy`, ни события `result`; `_compute_state` не
+  меняется — пилюля не показывает «распознаю» из-за встречи. Исключение одно: `meeting_start`
+  при незагруженной модели ставит обычное задание `load`.
+- **Фразы** — `StreamVad`: Silero VAD потоково — сессия ONNX faster-whisper
+  (`get_vad_model().session`, входы `input[N, 576]`, `h`, `c`; каждой строке — 64 последних
+  отсчёта прошлого кадра + кадр 512 отсчётов (32 мс), h/c переносятся между вызовами;
+  вероятности совпадают с пакетным `SileroVADModel.__call__`). Внутренности не те (другая
+  версия faster-whisper) или сбой — запасной `TailFallback`: публичный
+  `get_speech_timestamps` по хвосту буфера (2 с прежнего звука + новые кадры). Фраза
+  начинается при вероятности ≥ 0.5, кончается после 400 мс < 0.35 (между — гистерезис), с
+  собой 200 мс звука до начала и 200 мс тишины после; речи меньше 250 мс — щелчок, не фраза
+  (её строка, если уже показана, уходит: `final` с пустым текстом); длиннее 12 с (на CPU —
+  6 с) — режется по кадру с наименьшей вероятностью последних 2 с, без потерь звука, остаток —
+  новая фраза. Время фраз — от начала потока (помощник заполняет пропуски нулями). У каждой
+  фразы свой номер (`seq`); звучащую видно целиком (`StreamVad.snapshot()` — номер, начало,
+  звук с начала). Готовая фраза ставится в очередь под тем же замком, под которым берётся
+  снимок, — новая фраза не обгонит прежнюю.
+- **Потоковое распознавание** (LocalAgreement-2, как в whisper_streaming), поток
+  `rupor-meeting-asr`: сначала — готовые фразы по порядку (последний проход), потом —
+  промежуточный проход звучащей фразы, когда он положен:
+  - **Промежуточный проход** — пока VAD слышит речь, раз в `MEETING_STEP_S = 0.8 с` (и не
+    чаще 2.5 × время прохода: на медленной карте реже; на CPU проходов нет — только последний),
+    если у фразы ≥ 0.8 с звука и пришло ≥ 0.25 с нового: звук фразы с её начала (окна не
+    режутся — фраза и так ≤ 12 с, а проход стоит почти одинаково при любой длине окна),
+    `beam_size=1`, `temperature=0.0` (без повторов; неуверенный сегмент — угадывание,
+    гипотезы нет), подсказка — термины и хвост принятого текста встречи (до 200 символов).
+    Модель занята (диктовка) — проход не ждёт дольше 0.25 с: следующий возьмёт больше звука,
+    проходов в очереди не копится.
+  - **Принятие** — слова сравниваются как текст (`norm_word`: без регистра, «ё», знаков;
+    `split_words` — у zh/ja/th… по символу): `skip_done` находит в новой гипотезе конец уже
+    принятых слов (обычно — то же начало; модель поправила или потеряла слово — по наименьшему
+    числу правок), `agree` — общее начало остатка с хвостом прошлой гипотезы: оно принимается
+    (`text`), остальное — новый хвост (`partial`). Отметки времени слов (`word_timestamps`) не
+    нужны: замер — +0.2…0.6 с к проходу в 0.23 с. Фразы субтитров («Thank you for watching»)
+    и мусор (`garbage_reason` с языком фразы) не принимаются никогда; пока язык фразы не
+    выбран — только хвост.
+  - **Язык фразы** — `meeting_source_lang`, если задан. Иначе Whisper определяет его на
+    промежуточных проходах (+0.2 с к проходу — второй проход энкодера) и язык выбирается
+    только уверенный (≥ 0.9): по первым 1–2 с речи определение ненадёжно (замер, английский с
+    русским акцентом: 0.8 с — ru 0.26–0.67, 1.6 с — ru до 0.86). Три прохода без уверенности —
+    последний определённый, «слабо». Две прошлые строки на одном языке (язык встречи) — первый
+    проход фразы всё равно определяет язык (+0.2 с один раз за фразу), а дальше, если он не
+    уверен, проходы идут с языком встречи (без определения), слабо. Так другой язык посреди
+    встречи узнаётся сразу (замер интеграции: русская речь и английская без акцента по 0.8 с —
+    0.98–1.00, английская с русским акцентом — не выше 0.89), а уверенный язык не проверяется
+    ещё раз в последнем проходе (−0.2 с в конце фразы). Страховка: проход с заданным языком
+    написал текст не той письменностью (`script_mismatch`: кириллицы больше латиницы у языка на
+    латинице или наоборот — Whisper с en на русской речи) — язык фразы определяется заново,
+    принятое и начатый перевод сбрасываются. Слабый язык последний проход проверяет:
+    определяет язык по всей фразе (уверенность < 0.5 — слабый выбор, иначе язык прошлой
+    строки); язык оказался другим — перевод строки начинается заново, в том числе кусок, который
+    ещё переводится: его ответ строке не показывается (`_reset_tr`: вызов держит прежний
+    `LineTr`).
+  - **Последний проход** — конец фразы (VAD) или нарезка длинной: вся фраза, `beam_size=5`,
+    повторы с температурой до 0.4 (beam 5 почти не дороже beam 1: +0.01 с). Его текст заменяет принятый целиком (`final: true`, хвоста нет); мусор —
+    остаётся принятое, ничего не принято — строка уходит. Строки ещё не было (короткая фраза,
+    очередь) — она появляется сразу готовой. Проход упал (сбой на GPU) — фраза пропадает, её
+    звучащая строка закрывается принятым (пустая — уходит): иначе у следующих фраз не было бы
+    промежуточных проходов, а файл не дописывался бы дальше неё.
+- **Очередь** — ждут больше 3 фраз (модель была занята диктовкой) — склеиваются в куски до
+  28 с (на CPU — 12 с; между фразами 0.3 с тишины): один проход энкодера на кусок (кроме
+  фразы, у которой уже есть строка). Звука в очереди не больше 10 минут — старое
+  выбрасывается (в журнал).
+- **Распознавание** — `Recognizer.transcribe_background(audio, *, language, prompt, yield_to,
+  timeout, beam_size=1, temperature=(0.0, 0.2, 0.4)) -> ChunkResult | None` под
+  `ModelGate.background`:
+  - `ModelGate` вместо `threading.Lock` в `Recognizer._lock`: `with gate:` — высокий приоритет
+    (диктовка, загрузка, выгрузка, определение языка — как раньше); `gate.background(yield_to,
+    timeout)` — низкий: ждёт, пока модель занята, пока её ждёт высокий приоритет или пока
+    `yield_to()` истинно (перепроверка каждые 50 мс). CTranslate2 сам обслуживает потоки по
+    очереди без приоритета (измерено: кусок встречи рядом почти удваивал задержку диктовки) —
+    поэтому приоритет в Python. Вытеснения посреди куска нет: диктовка ждёт не больше одного
+    куска (на GPU ≈ 0.2–0.5 с).
+  - `yield_to` = `Engine._meeting_yield`: идёт запись (`_session` — с нажатия, чтобы кусок
+    встречи успел распознаться, пока пользователь говорит), проверочная запись или диктовка
+    ждёт распознавания (`_asr_pending`: +1 на STOP — в том же замке, где кончается запись,
+    иначе в промежутке до задания `transcribe` встреча успела бы взять модель; без
+    распознавания (короткая запись, молчащий микрофон) — −1 сразу; и в `test_record_stop`;
+    −1 сразу после `rec.transcribe`). Только чтение атрибутов — зовётся под замком гейта.
+  - None — модель не загружена (выгружена, перезагружается, меняется) или гейт не взят за
+    1 с (промежуточный проход — 0.25 с): фраза возвращается в начало очереди; ждёт дольше
+    1 с — `state: "waiting_gpu"`.
+    Модель здесь не грузится и на CPU не переходит: сбой (CUDA) — исключение, 3 подряд —
+    встреча останавливается с ошибкой (`notice` error), диктовка не задета.
+  - Режим CPU (без промежуточных проходов, фразы до 6 с, склейка до 12 с) — по устройству
+    загруженной модели: сеанс сверяет `rec.device` перед каждым проходом (`_sync_device`;
+    модель загрузилась после старта встречи, откатилась с GPU, сменилось устройство) и
+    переключается сам, на CPU — `notice` warn «…будут отставать от речи».
+  - Параметры: `beam_size` и `temperature` — от вызывающего (промежуточный проход — 1 и 0.0,
+    последний — 5 и `(0.0, 0.2, 0.4)`), `vad_filter=False` (фраза уже вырезана),
+    `condition_on_previous_text=False`, `without_timestamps=True`; `chunk_length` не
+    передаётся никогда (он меняет общий FeatureExtractor модели — и для диктовки). Подсказка и
+    язык диктовки не используются: язык — заданный встречей или определяет Whisper; подсказка
+    встречи — до 20 терминов (настройки + словарь) и хвост принятого текста встречи (до 200
+    символов; после мусора — без него), для языков не на кириллице — без кириллицы
+    (`adapt_prompt`). Мусор (`garbage_reason(text, language)`: чужие письменности — кроме
+    языков на них, zh/ja/ko/ar/he/hi/th…, фразы субтитров, повтор) и угадывание (сегмент на
+    последней температуре с `avg_logprob < −1.5`) — `ChunkResult` с пустым текстом, второго
+    прохода нет.
+  - Замер (RTX 3060 Ti, large-v3-turbo fp16, карта занята и другими программами): проход
+    beam 1 — 0.21–0.27 с при окне 1.5–15 с (энкодер всегда считает 30 с); язык не задан —
+    +0.21 с; `word_timestamps` — +0.2…0.6 с; beam 5 — +0.01 с. Первый проход после паузы
+    дольше (≈ 0.4 с: карта сбавляет частоты в простое — так же и у диктовки после паузы).
+- **Строка** — одна на фразу, появляется с первой гипотезой и обновляется по `id`
+  (`meeting_line`). Язык строки = `meeting_target_lang`, перевод выключен или ключа нет —
+  `status: "original"` без ИИ (текст всё равно идёт по словам); иначе `pending` →
+  `streaming` → `done`. В памяти — до 5000 последних строк.
+- **Перевод кусками** (потоки `rupor-meeting-tr1`/`tr2`): принятые, но ещё не переведённые
+  слова строки уходят в перевод, когда: фраза кончилась; последнее слово кончается границей
+  предложения (. ? ! …) или — от 3 слов — части (, ; : —); гипотеза принята целиком (пауза в
+  речи); их 6; или они ждут 1.2 с. Кусок берёт все такие слова на момент отправки (пока
+  прежний кусок строки в полёте, новые копятся). Вызов — «продолжи перевод»:
+  `ai.translate_stream(кусок, src, dst, s, context_lines, done_src=переведённое начало фразы,
+  done_tr=его показанный перевод)`; ответ — только продолжение, потоком: строка обновляется
+  по мере токенов (первые токены куска — сразу, дальше не чаще 10 раз/с), перевод строки =
+  показанный + продолжение (`join_translation`). В полёте — не больше двух вызовов на
+  встречу, куски одной строки — строго по очереди, куски — раньше уточнений. Идёт ИИ-очистка
+  диктовки — подождать до 1 с. Каждый вызов — одна строка `ai_usage` (`kind: "translate"`)
+  через `engine._ai_call("translate", <exe источника>, …)`; `_ai_busy` не трогается.
+  Соединение с провайдером — заранее (`ai.prewarm`: при старте встречи, когда снова есть
+  ключ, и в начале каждой фразы).
+- **Уточнение** (`meeting_refine`, по умолчанию да) — фраза кончилась и переведена кусками:
+  если кусков было два и больше у строки длиннее 6 слов или последний проход поправил уже
+  переведённый текст — перевести всю фразу разом (`ai.translate`, без потока) и заменить
+  перевод строки (`refined: true`; окно — на месте, без прыжка). Не удалось — остаётся
+  перевод кусками. Строка пишется в файл после уточнения.
+- **Задержки** — на строку: конец речи фразы → её текст до конца на экране (первый проход,
+  дошедший до конца речи, или последний), → первый токен и конец перевода куска с концом
+  фразы; в журнал (`Встреча: строка N …`) и средние последних 20 строк —
+  `MeetingStatus.latency`. Замер на настоящей модели и OpenRouter (SAPI WAV 38 с, 6 фраз,
+  английский с русским акцентом, Claude Haiku 4.5, системный прокси): слово на экране
+  (хвост) — медиана 0.74 с после того, как прозвучало (p90 1.8 с), принято — 1.56 с,
+  первый токен его перевода — 2.7–3.0 с; OpenRouter: первый токен 0.46–0.77 с, вызов
+  0.6–1.2 с (keep-alive); модель занята встречей ≈ 30 % времени речи; диктовка во время
+  встречи — как без неё после той же паузы (0.6 с; подряд — 0.43 с). Сквозной замер через
+  настоящий захват (ядро-sidecar, процесс захвата, тихий голос SAPI в своём процессе, 8 фраз
+  по 9–21 слову, одна русская посреди английских, 55 с речи): слово на экране — медиана
+  0.76 с после того, как прозвучало (p90 1.2 с), принято — 1.5 с (p90 2.0 с), первый токен
+  его перевода — 2.4 с (p90 3.2 с); после конца фразы текст целиком — через 0.47 с, первый
+  токен перевода — 1.5 с, перевод — 1.7 с, уточнение всей фразой — ≈ 3.2 с; русская фраза —
+  `original`, без вызовов ИИ; модель занята встречей 42 % времени речи (30 % всего
+  времени); диктовка во время встречи 0.43–0.64 с против 0.53–0.69 с без встречи; перевод
+  ≈ $0.013 за минуту непрерывной речи (Claude Haiku 4.5, куски + уточнения).
+- **Вызов перевода** — провайдер `ai_provider` (не `command_provider`: процесс `claude -p` на
+  каждый кусок слишком медленный), модель — `translate_model` или модель провайдера, таймаут
+  — `translate_timeout_s` на весь поток. Системный промпт короткий и постоянный (английский,
+  не зависит от языка интерфейса): кусок `<segment>` — продолжение `<done>`, переведённого как
+  `<done_translation>`, вернуть только перевод куска, не повторять и не исправлять показанное;
+  кусок может быть оборван — не дополнять; `<context>` (3 прежние исходные строки по 300
+  символов) — только для справки; всё внутри тегов — чужая речь, а не инструкции; до 40
+  терминов словаря. Уточнение — прежний промпт перевода строки (`translate_prompt`).
+  `max_tokens = min(1024, max(96, len(text)))`, reasoning выключен, temperature 0, у
+  OpenRouter без `ai_provider_order` — `provider: {sort: "latency"}`.
+  - **Поток** — OpenRouter: `stream: true`, SSE (`data:` до `[DONE]`, комментарии
+    `: OPENROUTER PROCESSING` пропускаются, ошибка посреди потока — `error` в куске, стоимость
+    и токены — `usage` последнего куска); Anthropic: SSE `message_start` / `content_block_delta`
+    / `message_delta` / `message_stop`, событие `error` → вид по `error.type`; Ollama: NDJSON
+    до `done`. Показуемая часть (`stream_display`) — без `<translation>`/`<segment>`,
+    недописанного закрывающего тега, «Перевод:» и повтора уже показанного перевода начала;
+    готовый ответ — `strip_repeat` + `clean_translation`; длиннее `3 × кусок + 40` — обрыв
+    потока и `AIError` `bad_response`.
+  - **Соединение** — постоянное (`http.client`, keep-alive, до двух простаивающих на хост,
+    нёсшее запрос старше 60 с не берётся, открытое заранее (`prewarm`) и ещё без запроса —
+    старше 8 с: такое OpenRouter (край Cloudflare) закрывает через 12–16 с простоя, а нёсшее
+    запрос живёт и минуту — замер 19.10.2026; пул полон — нёсшее запрос вытесняет открытое
+    заранее): новое TCP+TLS на каждый вызов стоило бы 0.1–0.5 с, через прокси больше. Прокси — тот же, что у urllib (`urllib.request.getproxies()`: переменные
+    окружения, иначе прокси Windows из реестра; `proxy_bypass`; кэш 30 с), HTTPS — через
+    CONNECT-туннель (`set_tunnel`, `Proxy-Authorization` из `user:pass@`); Ollama — напрямую.
+    Соединение из пула, закрытое сервером, пока простаивало (обрыв до первого байта ответа),
+    — один повтор на НОВОМ соединении (второе из пула могло умереть так же). Точка подмены в
+    тестах — `ai._stream_open` (как `_urlopen`), в `tests/conftest.py` `ai._new_conn` сеть не
+    открывает.
+  Ответ чистится (`clean_translation`: `<segment>`/`<translation>`, «Перевод:»,
+  «Translation:», «Here is the translation:», кавычки вокруг всего); пусто или длиннее
+  `3 × исходный + 40` — `AIError` `bad_response` («ИИ ответил на реплику вместо перевода»).
+  `looks_like_reply` не используется: «I can't hear you» → «Я не могу вас слышать» —
+  настоящий перевод. Ошибки:
+  - `no_key`, `auth`, `payment`, `forbidden` — до конца встречи только расшифровка, одно
+    `notice` warn «Перевод выключен до конца встречи: …» с `action: "open_settings_ai"`;
+    строка — `error`, следующие — `original`. Ключ задан или удалён (`key_changed`), сменился
+    `ai_provider` — наличие ключа проверяется заново, есть — перевод снова идёт.
+  - `rate_limit`, `server` — один повтор сразу, если кусок ждёт меньше 2 с; прочие
+    (`timeout`, `network`, `bad_response`, `truncated`, …) — кусок ещё раз не раньше чем
+    через 1 с, вторая неудача строки — строка `error` с текстом ошибки (показанное начало
+    перевода остаётся), без всплывающих уведомлений; 3 ошибки подряд — пауза 20 с (строки,
+    кончившиеся в это время непереведёнными, — `error` «Перевод на паузе после нескольких
+    ошибок подряд: …», без вызова; переведённая целиком — `done`, без уточнения). Уточнение не удалось — остаётся перевод кусками (ошибкой не считается).
+  - Ключа нет уже при `meeting_start` — сразу только расшифровка и одно `notice`.
+- **Файл** (`meeting_save`) — `<meeting_dir>\YYYY-MM-DD HH-MM — <название>.md` (название —
+  см. ниже; в имени — без запрещённых символов, пробелов и точек в конце, до 80 знаков по
+  границе слова, имя устройства Windows — CON, NUL, COM1, LPT1… и с расширением — с «_»;
+  занято — « (2)», « (3)»…: имя занимается сразу созданием файла), создаётся с первой
+  готовой строкой: заголовок `# <название>`, `- Дата: YYYY-MM-DD HH:MM` (после «Стоп» —
+  `…, длительность N мин`), `- Источник: <имя> — <заголовок окна>` (одной строкой),
+  `- Языки: речь — …, перевод — …` (на языке интерфейса), заметки к встрече (когда есть, см.
+  «Заметки к встрече»), строка `## Полная расшифровка` (на языке интерфейса при начале
+  встречи — по ней переписывание находит начало расшифровки), затем строки по порядку
+  номеров: `**HH:MM:SS** перевод` + `> оригинал` (без перевода — `**HH:MM:SS** текст`) и
+  пустая строка. Пишется строка, когда фраза кончилась и её перевод (с уточнением) готов;
+  каждая строка сразу `flush` + `fsync` — сбой ядра записанного не теряет; строка, которая
+  ещё переводится, задерживает только следующие. Выход ядра и `stop(drain=False)` —
+  недоделанные строки пишутся как есть (принятый текст с хвостом, перевод — сколько успел);
+  строка, которая опоздала к закрытию файла (последний проход фразы ещё шёл), дописывается в
+  закрытый файл (открыть на дозапись — записать — `fsync` — закрыть; файла ещё не было —
+  создаётся). Не записалось — одно `notice` warn, встреча идёт без файла.
+- **Название записи** (`MeetingStatus.title`, имя файла и `# заголовок`). Без ИИ
+  (`meeting.fallback_title`): заголовок окна источника (`clean_window_title`: без хвоста
+  браузера « - Google Chrome», « – Brave», « — Яндекс Браузер», « - Microsoft Edge» с профилем
+  и «and 3 more pages», « - Opera», « - Vivaldi»…, без счётчика «(3)»; служба встреч — её
+  имя, если кроме него только код или общие слова: «Meet – abc-defg-hij» → «Google Meet»,
+  «Zoom Meeting» → «Zoom», «Chat | Microsoft Teams» → «Microsoft Teams», «Видеовстреча —
+  Телемост» → «Телемост»; иначе — что осталось: «Планёрка | Microsoft Teams» → «Планёрка»;
+  «Новая вкладка», путь к файлу, одно имя браузера — не название; заголовок, равный имени
+  программы, — «Telegram» у Telegram — уступает первым словам), иначе с первой готовой
+  строкой «Встреча — <первые 6 слов>» (перевод строки, без него — оригинал; у языков без
+  пробелов — 12 символов), иначе понятное имя программы (описание exe или имя из таблиц
+  браузеров и программ встреч), иначе «Встреча» — не длиннее 80 символов (по границе слова,
+  `ai.cap_title`: заголовок окна бывает длинным). Имя exe («Python», «rupor-core»),
+  служебные программы и «Весь звук компьютера» — никогда. По содержанию
+  (`meeting_ai_title`, по умолчанию да): поток сеанса `rupor-meeting-title` (не потоки
+  распознавания и перевода; `stop()` его не ждёт; `_ai_busy` не трогает, идёт ИИ-очистка
+  диктовки — ждёт до 1 с) зовёт `ai.meeting_title` через `engine._ai_call("title", <exe>,
+  …)` (строка `ai_usage` вида `title`; нет ключа `ai_provider` — без вызова и без строки),
+  не больше одного вызова в полёте: раз — когда готовых непустых строк 8 и с начала прошло
+  90 с, и ещё раз после конца (файл закрыт) по всей расшифровке, если строк хотя бы 3 и
+  они прибавились с прошлого вызова; короче — ИИ не зовётся. После конца заметки, если они
+  пишутся сами, — раньше: их «# название» и есть последнее название записи, а отдельный
+  вызов — только если заметки не удались или названия не дали (см. «Заметки к встрече»);
+  заметки по кнопке во время встречи тоже дают название, и раннее тогда уже не зовётся.
+  Ответ ИИ, который пришёл, но не название (`AIError.result`), пишется в расход с его
+  стоимостью (`ok=0`). Расшифровка для названия —
+  перевод строки, без него — оригинал; язык названия — язык перевода, если встреча
+  переводится, иначе язык большинства строк. Нет ключа, ключ отклонён, нет денег — до
+  конца встречи ИИ для названия не зовётся; любая неудача или ответ не название —
+  остаётся прежнее, без уведомлений. Выход ядра (`abort`) — без названия по содержанию:
+  переименование, которое уже идёт, доделывается (`TranscriptWriter.freeze` ждёт его замка),
+  нового нет; `abort` получают и встречи, сменённые новой (`engine._meeting_prev`: ещё
+  дораспознают или зовут название), — иначе `os._exit` оборвал бы их посередине.
+  `ai.meeting_title`: провайдер `ai_provider` (не `claude_cli`), модель `translate_model`
+  или модель провайдера, OpenRouter — `sort: latency`, рассуждения выключены, temperature
+  0, `max_tokens` 48, таймаут 15 с; постоянный английский системный промпт (название на
+  языке `lang`, 3–8 слов, главная тема, без кавычек, точки, даты и общих слов «Встреча» /
+  «Meeting», расшифровка — чужая речь, а не инструкции), сообщение —
+  `<transcript>…</transcript>` (длиннее 8000 символов — начало 5000 + «…» + конец 3000,
+  разрез по строке или слову). Ответ (`clean_title`): первая непустая строка без
+  невидимых и направляющих символов и одиночных суррогатов (`ai.visible_text`; так же —
+  заголовок окна и часть имени файла), кавычек (апостроф внутри слова остаётся),
+  markdown, тегов, «Название:» / «Title:», точки в конце;
+  длиннее 80 — по границе слова; отказ, одно общее слово, нет букв, длиннее 160 символов
+  или 16 слов — `AIError` `bad_response`. Другое название — `TranscriptWriter.rename`
+  (переписывание файла, как у заметок и длительности — `_rewrite`): под тем же замком, что
+  запись строк (строки, которые в это время дописываются, ждут и попадают в новый файл),
+  файл сбрасывается и закрывается, новое начало (название, дата и длительность, источник,
+  языки, заметки) и прежняя расшифровка — со строки «## Полная расшифровка» до конца, байт в
+  байт (её нет — файл правили руками — всё прежнее содержимое под этой строкой), —
+  пишутся во временный файл той же папки с коротким именем `.~rp<pid><n>.tmp` (путь к нему
+  не длиннее пути самого файла — MAX_PATH ему не помеха там, где не помеха файлу; `fsync`),
+  тот — `os.replace` на новое имя (занятое за собой созданием), и только потом старый файл
+  удаляется (имя то же или другое только регистром — временный файл на место старого, без
+  «(2)»); встреча идёт — новый открывается на дозапись. Сбой на любом шаге, старый файл не удалить (открыт
+  в другой программе) — новый и временный прочь, остаётся старый файл со всеми строками;
+  после конца встречи переименование пробуется ещё раз (и когда последнее название то же).
+  Файла ещё нет — он создаётся уже с новым названием; после конца встречи переименование
+  тоже работает. Файл пишется с `errors="replace"`: символ, которого в UTF-8 нет (одиночный
+  суррогат из заголовка окна), — «?», а не ошибка на каждой строке; заголовок не записался —
+  занятое имя удаляется (пустых «(2)» не копится). Новое название — событие `meeting`
+  после переименования.
+- **Заметки к встрече** (`meeting_notes`, по умолчанию да) — «полная расшифровка плюс
+  заметки»: модель посильнее пишет Markdown на языке перевода (`meeting_target_lang`):
+  `# <название, 3–8 слов>`, «Кратко» (3–5 предложений: зачем встречались и чем кончилось),
+  «Решения», «Задачи» (`- [ ] Кто — что — срок`, только сказанное; кто или срок не
+  прозвучали — «—»), «Открытые вопросы», «Ключевые моменты» (`HH:MM:SS — …` — время строки
+  расшифровки); пустой раздел — без него. Поток сеанса `rupor-meeting-notes`, не больше
+  одного вызова в полёте (`stop()` и выход ядра его не ждут; идёт ИИ-очистка диктовки —
+  ждёт до 1 с). Сами — после конца встречи (`_finalize`, файл закрыт), если готовых
+  непустых строк хотя бы 5 или речи в них хотя бы 2 мин и расшифровка изменилась с прошлых
+  заметок; по команде `meeting_notes` — во время встречи и после неё (уже пишутся — ничего
+  нового; встреча кончилась, а заметки по кнопке ещё пишутся, — сразу после них ещё раз,
+  сами, по всей расшифровке). Вход — только готовые строки (как у названия: фраза, которая
+  ещё распознаётся, — нет; выброшенные — нет) «HH:MM:SS перевод», где перевод — только
+  законченный (уточнён целиком или все куски переведены и вызовов в полёте нет), иначе
+  оригинал; и `<meeting>`: дата, длительность («… min so far» посреди встречи), `Status: in
+  progress | ended`, источник, языки речи, язык заметок. Посреди встречи (`NotesRequest.in_progress`)
+  в промпте ещё правило: расшифровка — только начало встречи, объявленное, но не обсуждённое
+  — не «Открытые вопросы». Событие `meeting_notes`: снимок и отправка — под одним замком
+  (`_notes_emit_lock`), потоки заметок и названия не обгоняют друг друга; что бы ни упало в
+  потоке заметок (и сам разбор неудачи), `_notes_busy` снимается. Готовы: «# название» заметок — название записи (`meeting_ai_title`; модель его
+  дала, а не подставлено прежнее название — см. «Название записи»; после конца встречи —
+  последнее, отдельный вызов `ai.meeting_title` не нужен), разделы — в файл между заголовком
+  и «## Полная расшифровка» (`TranscriptWriter.set_notes`; новые заметки заменяют прежние;
+  «# …» и строка «## Полная расшифровка» в них — прочь), `MeetingNotes.status: "done"`,
+  событие `meeting_notes`. Не удались (нет ключа, ключ отклонён, нет денег, сеть, ответ не
+  заметки): файл не трогается, прежние удачные заметки остаются, `status: "error"` с
+  текстом; одно `notice` warn за встречу «Заметки к встрече не получились: …. Расшифровка
+  сохранена» — для ключа и денег всегда (с `action: "open_settings_ai"`), для прочего —
+  если заметки шли сами (по кнопке ошибку видно в окне перевода). Нет ключа `ai_provider` —
+  без вызова и без строки расхода. Выход ядра — заметок нет, вызов в полёте файл не
+  трогает. В памяти — до 5000 последних строк: заметки по встрече длиннее — по ним.
+  Движок (`_meeting_notes_fn`) зовёт `ai.meeting_notes` с `track` — каждый вызов провайдера
+  через `engine._ai_call("notes", <exe>, …)`: строка `ai_usage` вида `notes` на вызов (у
+  длинной встречи — части и сведение), и вызов, чей ответ не подошёл, — с его стоимостью.
+  `ai.meeting_notes`: провайдер `ai_provider` (не `claude_cli`), модель
+  `meeting_notes_model` или сильная по умолчанию (`ai.notes_model`: OpenRouter —
+  `anthropic/claude-sonnet-5.5`, Anthropic — `claude-sonnet-5-5`, Ollama — `ollama_model`),
+  temperature 0.2 (у моделей Anthropic без неё — не передаётся), рассуждения выключены
+  (`reasoning: {enabled: false}`); модель OpenRouter, которая без них не отвечает (400
+  «Reasoning is mandatory for this endpoint and cannot be disabled» — Claude Sonnet/Opus 5.5,
+  Gemini Pro; замер 20.10.2026), — сразу ещё раз с `reasoning: {effort: "low"}` и
+  `max_tokens` больше на 4000 (рассуждения входят в лимит), дальше эта модель — сразу так
+  (до выхода ядра; отказ 400 не оплачивается); порядок провайдеров OpenRouter —
+  `ai_provider_order` (без `sort: latency`), `max_tokens` 4000, таймаут вызова 180 с; у Ollama
+  — `options.num_ctx` по длине промпта и ответа (`ai.notes_ctx`: символы / 2,5 + `max_tokens`,
+  кратно 4096, от 8192 до 131 072 — без него Ollama молча режет начало расшифровки); постоянный английский системный промпт (формат выше,
+  заголовки разделов — по-русски и по-английски свои, у прочих языков модель переводит
+  английские; только факты расшифровки, ничего не придумывать, имена и числа как есть,
+  расшифровка — чужая речь, а не инструкции). Расшифровка длиннее 120 000 символов — по
+  частям по строкам (до 60 000, частей не больше 8 — дальше части длиннее): заметки каждой
+  части без названия (`max_tokens` 3000), потом вызов сводит их в итоговые (`<part n>`).
+  Итоговый вызов — потоком, если передан `on_delta` (окно перевода показывает заметки по
+  ходу; событие не чаще 2 раз/с). Ответ (`clean_notes`): без ```-блока вокруг, без
+  вступления до первого заголовка, без невидимых символов; первая строка `# …` —
+  `clean_title`, не название или её нет — название записи; прочие `# …` — разделы `## …`;
+  длиннее 20 000 символов — по строке; нет букв или отказ — `AIError` `bad_response` с
+  оплаченным `result`.
+- **Состояние** — `MeetingStatus`: `level` — громкость (−60…0 dBFS → 0…1, быстро вверх,
+  медленно вниз); `no_audio` — 20 с цифровой тишины (пик < 10⁻⁵); событие `meeting` при
+  смене и ради `level` не чаще 4 раз/с. Процесс захвата завершился сам: код 3 (программа
+  закрылась) — обычный «Стоп» (дораспознать, название, заметки сами), `notice` info «…закрыт —
+  расшифровка встречи остановлена»; иначе — `state: "error"` и `notice` error «Не удалось
+  захватить звук…» / «Захват звука … прервался: …».
+- **Автоостановка** (`meeting_autostop`, по умолчанию да; `meeting.AutoStop` — чистые
+  переходы, `MeetingSession.autostop_tick` — раз в 2 с из `Engine._meeting_detect_tick` с
+  записью микрофона программы встречи `MeetingDetector.session_mic`). Сигнал: (a) программа
+  встречи отпустила микрофон (`LastUsedTimeStop ≠ 0` её записи, микрофон в сеансе был занят)
+  ≥ 15 с **и** речи (VAD) в захвате нет ≥ 30 с; (c) источник без записи микрофона («весь звук
+  компьютера», программа без записи) — цифровая тишина ≥ 180 с. Заглушённый микрофон в Meet
+  устройство держит (`Stop == 0`) — (a) не срабатывает, (c) у такой программы не действует.
+  Сигнал есть — `hint: "ending"`, `ending_in_s` (10 с отсчёта, событие `meeting`); речь
+  вернулась, микрофон снова занят, звук пошёл (у тишины) — отсчёт снят сам; «Не останавливать»
+  (`meeting_autostop_cancel`) — снят до нового микрофона или речи. Отсчёт кончился —
+  обычный `stop(drain=True)` и `notice` info с тостом «Встреча закончилась — расшифровка
+  сохранена, заметки готовятся» (без заметок — «…расшифровка сохранена», без файла — «…перевод
+  остановлен»). (b) Источник закрылся (код 3) — «Стоп» сразу, без отсчёта.
+- **Движок** — `meeting_start` выбирает источник (см. команду), запускает сеанс и на время
+  встречи исключает её дерево процессов из приглушения (`Ducker.set_excluded({pid})`; «весь
+  звук» — не приглушается ничего, `everything=True`), снимает исключение, когда встреча
+  кончилась. Пока
+  встреча идёт, модель не выгружается (`_idle_unload_due`); выход ядра (`shutdown`) сначала
+  останавливает встречу (захват прочь, готовое — в файл); перезагрузка или смена модели —
+  фразы ждут, пока новая готова. Смена `meeting_*`/`translate_*` во время встречи — событие
+  `meeting`.
+- **Предложение начать** — событие `meeting_suggest` (см. «Встреча замечается сама»). Прежняя
+  подсказка по одному заголовку окна (`notice` с `action: "meeting_start"`) ядром больше не
+  рассылается; заголовки окон теперь только дают встрече название.
+
+```python
+class ModelGate:                    # asr.py — Recognizer._lock
+    def __enter__(self) -> ModelGate; def __exit__(self, *exc) -> None   # высокий приоритет
+    def background(self, yield_to: Callable[[], bool] | None = None,
+                   timeout: float | None = None) -> ContextManager[bool]  # низкий; False — не взят
+@dataclass
+class ChunkResult:                  # asr.py
+    text: str                       # "" — мусор или угадывание (кусок выброшен)
+    language: str; language_prob: float   # язык Whisper (заданный — prob 1.0)
+    audio_s: float; elapsed_ms: int
+class StreamVad:                    # meeting.py
+    def __init__(self, prob_fn=None, *, max_s=12.0, …, on_discard=None) -> None
+    def feed(self, audio: np.ndarray) -> list[Utterance]   # Utterance(audio, start_s, end_s,
+    def flush(self) -> list[Utterance]                     #   seq, speech_end_s)
+    def snapshot(self) -> tuple[int, float, np.ndarray] | None   # звучащая: (seq, начало, звук)
+    seq: int; speech_s: float; in_speech: bool
+def norm_word(w) -> str; def split_words(text, lang="") -> list[str]
+def skip_done(done, hyp) -> int; def agree(prev, new) -> int    # LocalAgreement-2
+@dataclass
+class TrRequest:                    # meeting.py — вызов перевода (движок: _meeting_translator)
+    text: str; src: str; dst: str; context: list[str]
+    done_src: str = ""; done_tr: str = ""   # уже переведённое начало фразы и его перевод
+    refine: bool = False                    # вся фраза разом (ai.translate), иначе поток
+    on_delta: Callable[[str], None] | None = None
+class MeetingSession:               # meeting.py
+    def __init__(self, source: dict, *, settings, rec, emit, notice,
+                 translate: Callable[[TrRequest], AIResult] | None, yield_to=None,
+                 ai_busy=None, stream_factory=None, prob_fn=None, translate_ok=True,
+                 cpu=False, terms=(), on_end=None, warm=None, interim=True,
+                 loopback_available=True,
+                 title_fn: Callable[[str, str], AIResult] | None = None,  # название (ИИ)
+                 clock: Callable[[], float] | None = None,   # часы раннего названия
+                 notes_fn: Callable[[NotesRequest], AIResult] | None = None) -> None   # заметки
+                                                    # cpu — догадка до загрузки модели:
+                                                    # дальше по rec.device (_sync_device)
+    def start(self) -> None         # не запустился захват — ValueError
+    def stop(self, drain: bool = True) -> None; def abort(self) -> None; def detach(self) -> None
+    def status(self) -> dict        # MeetingStatus
+    def latency(self) -> dict       # MeetingStatus.latency
+    def lines(self, after_id: int | None = None, limit: int = 200) -> list[dict]
+    def transcript_text(self) -> str
+    def request_notes(self) -> dict  # MeetingNotes; строк нет — ValueError
+    def autostop_tick(self, *, mic_tracked, mic_free_s, mic_in_use, now=None) -> str
+                                    # "" | "ending" | "resumed" | "stop" (см. «Автоостановка»)
+    def autostop_cancel(self) -> None   # «Не останавливать»
+    def notes(self) -> dict | None; def notes_text(self) -> str
+    running: bool; file: Path | None; title: str | None
+    busy: bool                      # ещё дораспознаёт, зовёт название или пишет заметки
+@dataclass
+class NotesRequest:                 # meeting.py — вызов заметок (движок: _meeting_notes_fn)
+    transcript: str; lang: str; meta: dict[str, str]; title: str
+    on_delta: Callable[[str], None] | None = None; title_ai: bool = False
+    in_progress: bool = False       # встреча ещё идёт (meta Status: in progress)
+class TranscriptWriter:            # meeting.py — файл расшифровки
+    def write(self, line: MeetingLine) -> None   # после close — дописать и снова закрыть
+    def close(self) -> None
+    def rename(self, title: str) -> bool    # другое название: новый файл, старый — потом
+    def set_notes(self, notes: str) -> bool # заметки между заголовком и «## Полная расшифровка»
+    def set_minutes(self, minutes: int) -> bool   # длительность в строке даты
+    def freeze(self) -> None        # выход ядра: дождаться идущего переписывания, новых нет
+def fallback_title(source, patterns=(), first_text="", lang="") -> str   # название без ИИ
+def clean_window_title(title: str, patterns=()) -> str; def safe_file_part(name, limit=80) -> str
+```
+Тесты — `tests/test_meeting.py` (StreamVad на кодированной «вероятности» и на настоящей речи
+из `samples/asr`, если есть; сеанс с фейковыми захватом, распознаванием и переводом: старые
+сценарии — без промежуточных проходов (`interim=False`); LocalAgreement-2 по проходам,
+фразы субтитров, мусор и выброшенные фразы, выбор языка, перевод кусками с продолжением и
+уточнением, не больше двух вызовов в полёте, тот же язык без ИИ, весь путь со звуком и VAD;
+команды по WebSocket, приоритет диктовки, приглушение), `tests/test_asr_gate.py` (гейт и
+`transcribe_background` на заглушке модели: промежуточный проход, языки своих письменностей),
+`tests/test_meeting_title.py` (название записи: промпт и тело `ai.meeting_title`, очистка
+ответа, имя файла и имена устройств Windows, название без ИИ, переименование, пока строки
+дописываются, «(2)», сбои переименования, когда сеанс зовёт ИИ — подставные часы, один
+вызов в полёте, ошибки и выключенная настройка, строка расхода `title`),
+`tests/test_meeting_notes.py` (заметки: модель по провайдеру, тело запроса и промпт,
+очистка ответа, длинная встреча частями и сведением, поток; файл — заметки, замена,
+длительность, переписывание, пока строки дописываются, файл, правленный руками, короткое
+имя временного файла, строка после закрытия; когда сеанс их пишет — пороги, одни в полёте,
+название из заметок вместо отдельного вызова и он при неудаче, одно уведомление, выход ядра;
+WS `meeting_notes`, `meeting_notes_get`, `meeting_copy {what}`; строки расхода `notes` и
+оплаченный негодный ответ названия),
+`tests/test_ai.py` (`translate`, `translate_stream` у трёх провайдеров на подменённом
+`_stream_open`, ошибки потока, системный прокси и туннель, повторное использование
+соединения, `prewarm`).
+
+### Встреча замечается сама (`meeting_detect.py`, `engine._meeting_detect_*`)
+
+Сигнал «идёт встреча» — программа держит микрофон и играет звук. Заголовка вкладки для этого
+мало: браузер показывает только активную вкладку, а встречу по заголовку узнать можно не всегда.
+
+- **Кто держит микрофон** — журнал доступа Windows (CapabilityAccessManager), только чтение
+  (`winreg`, `read_mic_usage`): `HKCU\Software\Microsoft\Windows\CurrentVersion\
+  CapabilityAccessManager\ConsentStore\microphone\NonPackaged\<путь exe, «\» → «#»>` и
+  `…\microphone\<PackageFamilyName>` (приложения Store: новый Teams, WhatsApp); значения
+  `LastUsedTimeStart`/`LastUsedTimeStop` (REG_QWORD, FILETIME): `Stop == 0` при `Start != 0` —
+  занят сейчас, с `Start`. Подключи NonPackaged (по одному на каждый exe, что когда-либо брал
+  микрофон) открываются только у подходящих имён exe: ≈ 1,4 мс на опрос (весь журнал, 116
+  записей, — 3 мс; машина разработчика).
+- **Запись → запущенная программа** (`map_use`): обычная — процессы с тем же именем и полным
+  путём exe (Toolhelp32, `winutil.process_table` ≈ 30 мс, `process_path`), приложение Store —
+  процессы с этим PackageFamilyName (`GetPackageFamilyName`, кэш по pid + exe: все процессы
+  перебираются один раз, ≈ 4 мс). Корни — `loopback.root_pid` (вверх, пока тот же exe), дерево —
+  корни и все потомки; главный — корень с известным exe (браузер, программа встреч). Записям не
+  верим, если процессов с этим путём нет (`gone`: например, старый путь программы после
+  переустановки) или все они запущены позже `Start` + 2 с (`stale`: программа упала с открытым
+  микрофоном; `GetProcessTimes`). На машине разработчика так висели Copilot и старый путь
+  Яндекс Браузера; установленный `rupor-core.exe` держит микрофон всегда. Путь процесса
+  сверяется с записью в виде ключа (`\` → `#`): обратно ключ в путь не перевести — `#`
+  бывает и в самом пути (папка пользователя `Dev#1`).
+- **Помощники** (`MIC_HELPERS`): микрофон держит вспомогательный процесс со своим exe —
+  программа ищется среди его предков, иначе — в той же папке установки, и предлагается она
+  (её дерево процессов: звук может играть и она, и помощник). MAX: звонок (WebRTC) — в
+  `max-service\max-service.exe` (журнал машины разработчика: запись только у него, у
+  `max.exe` — нет), предлагается как «MAX» (`max-service.exe` в таблице; `max.exe` — нет:
+  микрофон он не берёт, а это имя носят и чужие программы, Cycling '74 Max); Zoom: `CptHost.exe`
+  (демонстрация экрана со звуком, потомок `Zoom.exe`) — это Zoom; `msedgewebview2.exe` —
+  программа из таблиц среди предков (WebView2 нового Teams или WhatsApp, если запись не по
+  пакету), иначе не встреча. Telegram и Zoom на машине разработчика пишут запись на свой exe
+  (`Telegram.exe`, `Zoom.exe`); новый Teams — пакет `MSTeams_8wekyb3d8bbwe` (звук — его
+  WebView2), на машине не проверялся.
+- **Правило** — микрофон занят непрерывно ≥ 10 с (по `Start`: Рупор, запущенный посреди звонка,
+  замечает его сразу) И в дереве программы есть ИГРАЮЩАЯ аудиосессия (AudioSessionStateActive;
+  во время звонка поток вывода открыт и в тишине) → встреча. Сессии — прямо из Core Audio
+  (`audio_sessions`, ≈ 11 мс, поток `rupor-sources`); полный список источников
+  (`meeting_sources`, ≈ 40 мс) — только чтобы взять источник для предложения: корень дерева,
+  затем играющий. Звука нет — снова через 2 с, после минуты без звука — раз в 10 с (голосовой
+  ввод в браузере не стоит дорого). Микрофон занят дольше 3 ч (`MIC_MAX_AGE_S`: забытая
+  вкладка, голосовой помощник; на машине разработчика Яндекс Браузер держал его 69 ч) — не
+  разговор: не предлагается и не перепроверяется.
+- **Браузер без заголовка встречи** (не служба и не шаблон): звук всех вкладок играет одно
+  дерево процессов, а микрофон берут и голосовые сообщения, и диктовка в вкладке — поэтому
+  микрофон должен быть занят ≥ 60 с; первый звук после ≥ 15 мин тишины с занятым микрофоном
+  (`QUIET_MAX_S`: заиграла другая вкладка) — не встреча; «Не сейчас» на такое предложение —
+  такие предложения этого браузера 30 мин не приходят (`snooze`). Встречи с узнанным
+  заголовком и настольные программы — как обычно.
+- **Кто подходит** (`eligible`): браузеры (chrome, msedge, brave, browser — Яндекс, opera,
+  vivaldi, firefox, comet, arc…) — всегда; настольные программы встреч (Zoom.exe, ms-teams.exe,
+  Teams.exe, Telegram.exe, Discord.exe, Skype, Slack, WhatsApp, Viber, Webex, Телемост…) — при
+  `meeting_detect_desktop_apps`. Никогда: свои exe (`rupor-core.exe`, `rupor.exe` — любой путь),
+  свои процессы (`own_pids`), `meeting_ignore_apps` (OBS, Dragon, ffmpeg, python…).
+- **Один раз на разговор**: ключ — (подключ журнала, `Start`); «Не сейчас» больше ничего не
+  делает (кроме браузера без заголовка встречи — выше). Сеанс встречи кончился (`Engine._meeting_ended` → `session_over`) — разговоры, которые
+  идут сейчас, не предлагаются (встречу только что остановили вручную). Новый разговор
+  (микрофон отпущен и взят снова — новый `Start`) — новое предложение.
+- **Название** (`meeting_title`): заголовки окон дерева (`winutil.window_titles`, главный процесс
+  первым) и похожие на встречу заголовки, замеченные при смене активного окна (до 5 на процесс,
+  30 мин; `title_hint` из `Engine._on_foreground`) → служба по словам («Google Meet», «Zoom»,
+  «Microsoft Teams», «Jitsi Meet», «Webex»…) или совпавший словом шаблон `meeting_title_patterns`
+  («Телемост», «Контур.Толк»); иначе `title: ""`. `app` — описание exe (`FileDescription`),
+  иначе имя из таблицы, иначе имя exe.
+- **Опрос** — поток `rupor-meeting-detect` (только в настоящем ядре, `track_focus`; тесты зовут
+  `_meeting_detect_tick`), раз в 2 с; пока встреча не идёт — предложения (`meeting_autosuggest:
+  false` — ничего не читается), пока идёт — только запись микрофона её программы (подсказка
+  «закончилась» — при `meeting_autosuggest`, автоостановка — при `meeting_autostop`). Снимок процессов и аудиосессии — только когда есть ещё не разобранный
+  кандидат ≥ 10 с: обычный опрос на машине разработчика — 1,1–1,2 мс, первый (разбор двух
+  зависших записей) — 34 мс.
+- **Источник «auto»** (`meeting_start {}`, `auto_sources`): играющие источники программ,
+  которые держат микрофон прямо сейчас (подходящие, без порога в 10 с), — раньше окна со
+  встречей и играющего браузера: браузер с YouTube больше не перебивает браузер со звонком
+  (во время звонка поток вывода открыт и в тишине). Не играющий источник программы с
+  микрофоном (забытая вкладка, голосовой помощник) — только после играющего браузера
+  (`auto_sources(..., active_only=False)`). Звук играет вспомогательный процесс
+  (WebView2 нового Teams) — сеанс назван программой с микрофоном (`decorate`).
+- **«Встреча, похоже, закончилась»** — пока сеанс идёт, раз в 5 с читается только запись
+  микрофона его программы (из предложения или выбора «auto», иначе — по пути exe и пакету корня
+  источника): микрофон в этом сеансе был занят, теперь свободен ≥ 30 с, а источник не играет
+  (`meeting_sources`, раз в 5 с) → `MeetingStatus.hint = "ended"` (`MeetingSession.set_hint`,
+  событие `meeting`); микрофон снова занят или звук пошёл — `null`. Сеанс не останавливается
+  сам; источник «весь звук» и сеанс без микрофона (YouTube) — без подсказки.
+
+```python
+class MeetingDetector:              # meeting_detect.py; все обращения к системе подменяемы
+    def __init__(self, *, sources, own_pids=(), sessions=None, reader=None, table=None,
+                 path_of=None, created=None, package_of=None, titles_of=None, describe=None,
+                 clock=time.monotonic, now_filetime=filetime_now) -> None
+    def poll(self, s) -> Suggestion | None            # раз в 2 с, пока встреча не идёт
+    def session_tick(self, s, source, started_at) -> str | None   # "ended" | None
+    def session_mic(self, started_at) -> SessionMic   # tracked, free_s, in_use — автоостановке
+    def auto_sources(self, s, sources, active_only=True) -> list[dict]  # программ с микрофоном
+    def snooze(self, sugg) -> None    # «Не сейчас» браузеру без заголовка встречи — 30 мин
+    def decorate(self, src) -> dict; def title_hint(self, pid, title, patterns) -> None
+    def take(self, sid) -> Suggestion | None; def session_over(self) -> None
+\dataclass(frozen=True)
+class MicUse:                       # запись журнала микрофона
+    key: str; packaged: bool; start: int; stop: int   # FILETIME; stop 0 — занят, −1 — нет значения
+def read_mic_usage(want: Callable[[str], bool] | None = None) -> list[MicUse]
+```
+Тесты — `tests/test_meeting_detect.py`: фейковый `winreg` (обе ветки журнала, отбор по имени
+exe), фейковая таблица процессов (браузер, новый Teams из Store с WebView2, Zoom, свои exe,
+зависшие записи), правило и одно предложение на разговор, ignore-список, названия, «auto»,
+подсказка «закончилась», по WebSocket — `meeting_suggest` и `meeting_suggest_answer`.
+`tests/conftest.py` подменяет `read_mic_usage` → `[]`: остальные тесты настоящий журнал не
+читают.
+
+### Счёт «свой / чужой» по голосу — теневой режим (`speaker.py`)
+
+Настройка `speaker_shadow` (по умолчанию выключена: это биометрия). Рупор по счёту ничего не
+решает и не блокирует: считает и пишет в журнал, чтобы по нему подобрать пороги.
+
+- **Путь фразы** (`voice_embedding`): звук 16 кГц → только речь (silero VAD из faster-whisper,
+  `speech_only`), первые 15 с; речи меньше 1 с — не считаем → `fbank` (80 полос, как
+  kaldi-native-fbank в sherpa-onnx: povey 25/10 мс, 20–7600 Гц, `snip_edges=False`, без dither,
+  звук в [-1, 1]) минус среднее по времени → модель CAM++ (ONNX, `onnxruntime` на процессоре,
+  `Embedder`) → вектор 192 длины 1. Расчёт признаков свой, sherpa-onnx в зависимостях нет:
+  на одном и том же звуке косинус с её эмбеддингом — 1,000000.
+- **Счёт** (`Profile.score`): вектор минус среднее опорной выборки, длина снова 1 → косинус с
+  профилем (`cos`) → AS-norm по 300 ближайшим из опорной выборки:
+  `s' = ½·((s − μp)/σp + (s − μx)/σx)`. Профиль (`build_profile`) — сумма нормированных
+  центроидов источников (голосовые, записи Рупора) с равным весом.
+- **В движке**: `_job_loop` после `_process` (текст уже вставлен) отдаёт звук фразы в
+  `Shadow.submit` — очередь на 8 фраз и поток `rupor-speaker`; переполнение и сбой подсчёта —
+  в лог, диктовку не трогают. Модель и профиль читаются при первой фразе и перечитываются,
+  когда файлы сменились; нет файлов — одно предупреждение в лог.
+- **Файлы** — `%APPDATA%\Rupor\speaker` (в репозитории и в сборке их нет): `model.onnx`
+  (CAM++ `3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced`), `profile.npz` (`center`,
+  `voice`, `cohort`, `meta`), `journal.jsonl` — строка на диктовку, не ротируется:
+  `{ts, time, rec_id, audio_s, speech_s, cos, score, label, ms, profile, emb}`; `label` —
+  `own` (счёт ≥ `speaker_own_score`) / `alien` (< `speaker_alien_score`) / `unsure` / `short`
+  (речи меньше 1,5 с); `emb` — сам вектор, чтобы пересчитать пороги без звука; при речи меньше
+  1 с `cos`, `score` и `emb` — `null`.
+- **Сборка профиля** — отдельный запуск ядра:
+  `rupor-core.exe --speaker-enroll --speaker-cohort ПАПКА [--speaker-voices ПАПКА]
+  [--speaker-model ФАЙЛ] [--speaker-exclude ФАЙЛ.json]` (`speaker.enroll`): голосовые из папки
+  плюс сохранённые записи голоса со статусом `ok`, опорная выборка — чужие голоса (до 1500
+  файлов). Ход — в `speaker\enroll.log` (лог ядра второй процесс не пишет). WAV 16 кГц моно
+  16 бит (записи самого Рупора) читается напрямую; остальные форматы — через PyAV, которого в
+  установщике нет (как и для `--file`): профиль из голосовых в ogg собирается из окружения
+  разработки — `python -m rupor --speaker-enroll …`.
+- Тесты — `tests/test_speaker.py`, `tests/test_speaker_engine.py` (эмбеддинг подменяется).
+
 ### Расход ИИ и баланс (`engine._ai_call`, `storage.ai_usage`)
 
 - Каждый вызов ИИ — очистка (`cleanup`, и «ждать», и «сначала сырой»), командный режим
-  (`command`), кнопка проверки (`test`, WS `ai_test`) — пишется строкой `ai_usage`:
+  (`command`), кнопка проверки (`test`, WS `ai_test`), перевод строки встречи (`translate`;
+  процесс — exe источника звука; тот же язык — без сети и не пишется), название записи
+  встречи (`title`; процесс — тот же exe; нет ключа — вызова и строки нет), заметки к ней
+  (`notes`; каждый вызов провайдера — у длинной встречи части и сведение — своей строкой) —
+  пишется строкой `ai_usage`:
   провайдер, модель, фактический провайдер OpenRouter (`upstream`), токены, `cost_usd`
   (`usage.cost` OpenRouter; Anthropic — по цене семейства модели `ai.anthropic_price`,
   датированный id «claude-haiku-4-5-20251001» — как «claude-haiku-4-5»; модель не из таблицы
   и `claude -p` — NULL, «цена неизвестна»: в `avg_cost_per_call` не входит, считается в
   `unknown_cost_calls`; Ollama — 0),
   время, `ok`, `error_kind` (`AIError.kind` или имя исключения), процесс окна. Ошибка —
-  `ok=0`, стоимость 0, модель — из настроек (`ai.provider_model`). «Как есть» (без сети) не
+  `ok=0`, стоимость 0, модель — из настроек (`ai.provider_model`); ответ пришёл и оплачен,
+  но не подошёл (обрезан по лимиту, отказ, не название, пустой перевод, не заметки —
+  `AIError.result`) — `ok=0` с его моделью, токенами и стоимостью (в расходе за день и по
+  виду — да, в `avg_cost_per_call` — нет: она по удачным). «Как есть» (без сети) не
   пишется. После записи — событие `ai_usage` с суммой за сегодня.
 - `ai_balance`: баланс ключа, который первым в очереди (см. «Список ключей ИИ»):
   OpenRouter — `ai.check_openrouter_key` (`/key` + `/credits`), Anthropic — оценка по введённому
@@ -1017,26 +1974,113 @@ ptt + command_modifier (удержание) → говорим инструкц�
     `skipTaskbar`, `resizable: false`, `shadow: false`, `focus: false`, `visible: true`.
     После создания Rust ставит `WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW` — пилюля **никогда не
     забирает фокус** (иначе текст напечатается в неё). Пилюля **не пропадает**, пока Рупор
-    работает (`pill.rs`): «поверх всех» подтверждается при каждой смене активного окна
+    работает: «поверх всех» подтверждается при каждой смене активного окна
     (`SetWinEventHook(EVENT_SYSTEM_FOREGROUND)`) и в начале записи (`pill_raise` из пилюли) —
     иначе её закрывает окно, которое тоже «поверх всех» и активировано позже (полноэкранный
     RDP); после `WM_DISPLAYCHANGE`/`WM_DPICHANGED`/`SPI_SETWORKAREA` пилюля вне всех мониторов
     возвращается вниз по центру основного (размер и отступ — в масштабе этого монитора);
-    сбой процесса WebView2 (`ProcessFailed`, `pill::recovery`) окна `pill` или `main`: упала
-    страница (вид 1/3) — перезагрузить окно; зависла страница пилюли (вид 2) — перезагрузить
-    после 3 сообщений за минуту (зависание главного окна ждём); GPU и прочие процессы (вид 6 и
+    сбой процесса WebView2 (`ProcessFailed`, `overlay::recovery`) окна `pill`, `meeting` или
+    `main`: упала страница (вид 1/3) — перезагрузить окно; зависла страница пилюли или окна
+    перевода (вид 2) — перезагрузить после 3 сообщений за минуту, счёт у каждого окна свой
+    (зависание главного окна ждём); GPU и прочие процессы (вид 6 и
     др.) WebView2 поднимает сам — только журнал; автоматических перезагрузок окна — не больше 3
     за 5 минут; умер браузерный процесс (вид 0) — перезапустить оболочку (`--wait-pid`, не раньше
-    2 мин после старта; раньше — вручную пунктом трея). Ошибка отрисовки страницы пилюли —
+    2 мин после старта; раньше — вручную пунктом трея). Общее для окон «поверх всех без фокуса»
+    (сабкласс по HWND с видом окна в `dwRefData`, один хук смены активного окна, WebView2) —
+    `overlay.rs`, только пилюлино (место, «Вернуть пилюлю») — `pill.rs`. Ошибка отрисовки
+    страницы пилюли —
     React-граница `Guard` (`pill/main.tsx`): причина в ui.log (`pill_log`, не чаще раза в минуту),
     пилюля перерисовывается через 1 с; больше 5 раз за минуту — перезагрузка страницы (не
     больше 2 за 10 минут, счёт в `sessionStorage`), дальше перерисовка с нарастающей паузой до
     минуты. Ошибки вне отрисовки (обработчики, промисы) — тоже в ui.log, не чаще раза в 10 с.
-- Команды (`invoke`):
+  - `meeting` (перевод встречи, `meeting.rs`): `meeting.html`, `create: false` — окно создаётся
+    при первом открытии (команда `meeting_window_show`, пункт трея «Перевод встречи», кнопка
+    «Включить» в подсказке о встрече) или первом предложении встречи (`meeting_suggest_show`),
+    третий WebView2 до этого не запускается. 420×720 (min
+    300×260), `decorations: false`, `resizable: true` (размер — за края: Tauri сам добавляет
+    невидимые края окну без рамки), `transparent: false` (упавший WebView2 в прозрачном окне
+    невидим) + `shadow: true`, `alwaysOnTop`, `skipTaskbar`, `focus: false`, `focusable: false`,
+    `maximizable/minimizable: false`, `visible: false`, `contentProtected` — из
+    `meeting_protect` (страница меняет его на лету, `setContentProtected`). Окно строится вне
+    главного потока (`WebviewWindowBuilder::from_config` в `spawn_blocking`: на Windows создание
+    окна в синхронной команде или обработчике меню может зависнуть), сабкласс «без фокуса»
+    (`overlay::install`), место и первый показ (`SW_SHOWNOACTIVATE`) — в главном потоке.
+    **Фокус не забирает никогда**, как пилюля: диктовка во время встречи печатает в окно
+    пользователя; клики и колесо мыши работают, клавиатуры нет (поэтому копирование — командой
+    ядра `meeting_copy`). Места считаются по **видимой** части окна: у окна без рамки с тенью
+    tao оставляет вокруг страницы невидимую рамку для изменения размера (`WM_NCCALCSIZE`:
+    `SM_CXSIZEFRAME` + `SM_CXPADDEDBORDER` слева, справа и снизу — 8/9/11 px при 100/125/150 %,
+    из них видна полоска в 1 px), поэтому видимый прямоугольник переводится в прямоугольник
+    окна невидимыми краями (`meeting::Insets`: прямоугольник окна минус рамка DWM
+    `DWMWA_EXTENDED_FRAME_BOUNDS` — она известна и у скрытого окна; не узнать — расчётом по
+    DPI окна), и видимый край встаёт вровень с краем рабочей области. Место: `meeting_rect` из
+    settings.json (прямоугольник окна, физические px), если центр видимой части на
+    каком-нибудь мониторе, — видимой частью в пределах его рабочей области
+    (`meeting::fit_rect`: окно, придвинутое к краю вплотную, так и остаётся); иначе (или
+    `null`) — у правого края рабочей области монитора активного окна (встреча идёт в браузере —
+    панель рядом), на всю высоту, видимая ширина 420 логических px в масштабе монитора
+    (`meeting::dock_right`); переезд на монитор с другим масштабом — место ставится второй раз
+    (с краями в новом масштабе) после `WM_DPICHANGED` от tao. Расстановка окна (`SetWindowPos`
+    с `SWP_NOZORDER`) порядок окон не меняет. Перетаскивание за шапку (`startDragging` после сдвига мыши на 4
+    px) или размер за край: `WM_ENTERSIZEMOVE` → `WM_EXITSIZEMOVE`, прямоугольник изменился —
+    событие `meeting-window-rect` `[x, y, w, h]` окну `meeting`, страница сохраняет
+    `meeting_rect` (`set_settings`, через 300 мс); щелчок по шапке без переноса окно не
+    «отстыковывает». После `WM_DISPLAYCHANGE`/`WM_DPICHANGED`/`SPI_SETWORKAREA`
+    (`meeting::rescue`): `meeting_rect: null` — снова к правому краю своего монитора (ширина — в
+    его масштабе), сохранённое — в пределы рабочей области монитора под центром, вне всех
+    мониторов — к правому краю основного. Наверх поднимается **под** пилюлей
+    (`overlay::raise_all`: сначала `meeting`, потом `pill`) — при каждом показе панели или
+    карточки, после переноса окна пользователем (`WM_EXITSIZEMOVE`) и при смене активного
+    окна: карточка или панель не закрывают пилюлю и её уведомления. Закрытие (`CloseRequested`,
+    в том числе JS `close()`) — скрыть; сеанс перевода при этом идёт дальше. Клики до страницы
+    доходят без активации, как у пилюли (проверено по коду 20.10.2026): сабкласс отвечает на
+    `WM_MOUSEACTIVATE` `MA_NOACTIVATE` (клик не «съедается», в отличие от
+    `MA_NOACTIVATEANDEAT`), а окно Chromium внутри WebView2 при `WS_EX_NOACTIVATE` у корневого
+    окна само отвечает так же; кнопки шапки — вне перетаскивания (`onHeadDown` пропускает
+    `button`), команды окна — обычные команды приложения (без `AppManifest` разрешены всем
+    окнам). Ошибка отрисовки
+    страницы — такая же граница `Guard` (`meeting/main.tsx`, `meeting_window_log`, счёт
+    перезагрузок — `rupor.meeting.reloads`).
+    **Три вида окна** (`meeting::Mode`): `full` — панель; `mini` — полоска свёрнутого перевода;
+    `suggest` — карточка «Обнаружена новая встреча». «Свернуть» в шапке —
+    `meeting_window_minimize`: окно — полоской 340×64 логических px (видимая часть) поверх всех,
+    без фокуса, без размера за края, справа внизу рабочей области монитора активного окна с
+    отступом 12 px (`meeting::mini_rect`) или на `meeting_mini_pos` (на каком-нибудь мониторе,
+    в пределах его рабочей области, `meeting::mini_at`); страница сначала узнаёт вид
+    (`meeting-window-mode`), потом окно меняет размер. Перенос полоски — `WM_EXITSIZEMOVE` в
+    этом виде шлёт `meeting-window-mini-pos` `[x, y]` (видимый левый верхний угол, если
+    сдвинулась), страница сохраняет `meeting_mini_pos`; `rescue` — в рабочую область монитора
+    под ней, вне мониторов — справа внизу основного. Развернуть (двойной щелчок по полоске,
+    кнопка, пункт трея) — `meeting_window_restore` / `meeting_window_show`: снова панель на
+    своём месте (`meeting_rect` или у правого края). Скрытая полоска (кнопка «×») — перевод идёт
+    «в трее»; трей показывает панель. Ядро заметило встречу (событие `meeting_suggest`, см. «Встреча замечается
+    сама») — главное окно (его WS-клиент живёт всегда, а у Rust клиента ядра нет) зовёт
+    `meeting_suggest_show {suggestion}`. Окно перевода скрыто или ещё не создано — оно
+    становится карточкой 372×176 логических px (видимая часть) в правом верхнем углу рабочей
+    области монитора активного окна с отступом 12 px от видимого края
+    (`meeting::suggest_rect`), без размера за края
+    (`set_resizable(false)`) и без наименьшего размера панели (`set_min_size(None)`), и
+    показывается без фокуса и над всеми (под пилюлей); только что созданное окно — когда
+    страница спросила вид (`meeting_window_mode`, не дольше 2,5 с), чтобы не мелькнула пустая
+    карточка. Панель уже на экране — она не меняется, предложение страница показывает полоской
+    под шапкой. Без ответа предложение через 45 с снимается (карточка скрывается; у таймера —
+    номер предложения: таймер прежнего новое не снимает). «Начать расшифровку» —
+    `meeting_window_show`: окно снова панель (размер за края, наименьший размер из
+    tauri.conf.json, место — `meeting_rect` или у правого края) — и ответ ядру; «Не сейчас» /
+    «Не предлагать» — `meeting_suggest_done {id}` (карточка скрывается, полоска пропадает).
+    Карточка место панели не меняет: `WM_EXITSIZEMOVE` в этом виде `meeting-window-rect` не
+    шлёт, `rescue` возвращает её в угол; скрыть карточку (`meeting_window_hide`) — снять
+    предложение; пункт трея и `meeting_window_toggle` при карточке на экране показывают панель.
+    Состояние вида — `meeting::ModeState` (переходы — чистые функции, тесты в `meeting.rs`);
+    его замок не держится, пока фоновый поток ждёт главный (`rescue` в главном потоке тоже его
+    берёт).
   - `backend_info` → `{port, token}` (ждёт готовности ядра до 30 с, иначе ошибка);
-  - `update_tray` `{state, paused, insert_mode?, style?, styles?: {id, name}[], ai_line?: string | null, rdp?: {key, title, included}[] | null, labels?: TrayLabels | null}`
+  - `update_tray` `{state, paused, insert_mode?, style?, styles?: {id, name}[], ai_line?: string | null, rdp?: {key, title, included}[] | null, labels?: TrayLabels | null, meeting_running?: bool}`
     → обновить меню/иконку/подсказку трея. `labels` — подписи трея на языке интерфейса (см.
-    «Локализация»). Ключи — snake_case, как в контракте: Rust
+    «Локализация»). `meeting_running` — идёт перевод встречи (главное окно — по
+    `State.meeting.running` и событию `meeting`; нет ключа — как было): пункт «Перевод встречи
+    (идёт)» (`labels.meeting_running`), подсказка значка без диктовки (готов, не пауза) —
+    «Рупор 0.5.0 — перевод встречи идёт» (`labels.status_meeting`). Ключи — snake_case, как в контракте: Rust
     разбирает тело `invoke` целиком (`tauri::ipc::Request` → `tray::TrayUpdate`), а не
     аргументами команды, поэтому отличает «ключа нет» от `null`; тело не объект — ошибка.
     `styles` — подменю «Стиль» (нет или `[]` — прежний список, по умолчанию 5 встроенных).
@@ -1056,10 +2100,37 @@ ptt + command_modifier (удержание) → говорим инструкц�
   - `set_pill_passthrough` `{on: bool}` — не обязателен;
   - `pill_raise` — пилюлю наверх слоя «поверх всех» без активации (скрытую не трогает);
   - `pill_log` `{level: "error" | "warn" | "info", message}` — ошибка страницы пилюли в ui.log
-    («Пилюля: …», одна строка, до 500 символов).
+    («Пилюля: …», одна строка, до 500 символов);
+  - `meeting_window_show` — показать окно перевода встречи (при первом открытии — создать):
+    без активации, поверх всех, под пилюлей; async (окно строится не в главном потоке).
+    Ошибка — строка на языке оболочки («Не удалось открыть окно перевода встречи: …»);
+  - `meeting_window_hide` — скрыть (сеанс перевода идёт дальше); окна нет — ничего;
+  - `meeting_window_minimize` — свернуть в полоску (см. окно `meeting`); окна нет — ничего;
+    async;
+  - `meeting_window_restore` — полоску или скрытое окно — панелью на её месте (как
+    `meeting_window_show`); async;
+  - `meeting_window_toggle` → `bool` — видно ли окно теперь (видно — скрыть, иначе показать);
+  - `meeting_window_reset` — снова к правому краю рабочей области на всю высоту (окна нет —
+    ничего); `meeting_rect: null` в настройках сохраняет вызывающий (окно перевода или «Настройки
+    → Встречи»);
+  - `meeting_window_log` `{level, message}` — как `pill_log`, префикс «Окно перевода: …»;
+  - `meeting_window_mode` → `{mode: "full" | "suggest" | "mini", suggestion: MeetingSuggest | null,
+    hide_in_ms: number | null}` — что показывает окно перевода (страница спрашивает при
+    загрузке; `suggestion` — предложение, пока на него не ответили и оно не истекло,
+    `hide_in_ms` — через сколько оно пропадёт само);
+  - `meeting_suggest_show` `{suggestion: MeetingSuggest}` — показать предложение встречи
+    (карточкой или полоской в видимой панели, см. окно `meeting`); async — может создать окно;
+    без строкового `suggestion.id` — ошибка (для разработчика). Зовёт главное окно по событию
+    ядра `meeting_suggest` (если встреча не идёт);
+  - `meeting_suggest_done` `{id}` — на предложение ответили или его закрыли: карточка
+    скрывается, полоска в панели пропадает (ответ на прежнее предложение новое не трогает).
 - События Rust → окна: `tray-action` `{id}` (id: `pause`, `mode:auto|type|clipboard`,
   `style:<id>`, `last_insert`, `rdp:<key>` — флажок сессии в подменю рассылки, key как
-  пришёл; UI зовёт `rdp_toggle` и обновляет трей), `core-restarted` `{}`, `navigate` `{route}`.
+  пришёл; UI зовёт `rdp_toggle` и обновляет трей), `core-restarted` `{}`, `navigate` `{route}`,
+  `meeting-window-rect` `[x, y, w, h]` — только окну `meeting` (пользователь передвинул окно
+  перевода или поменял его размер), `meeting-window-mini-pos` `[x, y]` — только окну `meeting`
+  (пользователь передвинул полоску), `meeting-window-mode` `{mode, suggestion, hide_in_ms}` —
+  только окну `meeting` (сменился вид или предложение; как ответ `meeting_window_mode`).
 - Трей: иконка по состоянию (idle серый, recording красный, processing/ai янтарный,
   paused тёмный, loading синий, error — значок ошибки), подсказка «Рупор — <статус>»
   («Rupor — <status>» по-английски; все подписи — из `labels`, см. «Локализация»); меню:
@@ -1070,8 +2141,10 @@ ptt + command_modifier (удержание) → говорим инструкц�
   - Вставить последнее; Вернуть пилюлю (`pill_restore`: Rust ставит пилюлю вниз по центру
     основного монитора, шлёт `tray-action pill_restore` — UI сохраняет `pill_position: null`,
     — показывает, поднимает наверх и перезагружает страницу; пилюля выключена в настройках —
-    открывает настройки; браузерный процесс WebView2 умер — перезапускает оболочку); —;
-    Открыть Рупор; Выход.
+    открывает настройки; браузерный процесс WebView2 умер — перезапускает оболочку); Перевод
+    встречи / Перевод встречи (идёт) (`meeting`: видна панель перевода — скрыть, иначе —
+    скрытое окно, полоску или карточку предложения показать панелью, окна нет — создать; выполняет сама оболочка, `tray-action`
+    не шлётся); —; Открыть Рупор; Выход.
 
   Пункты в скобках появляются по `update_tray` (см. выше). Клик по флажку Windows
   переключает сразу — Rust возвращает прежнее состояние и шлёт `tray-action`; новое
@@ -1091,7 +2164,8 @@ ptt + command_modifier (удержание) → говорим инструкц�
 
 Vite + React 18 + TypeScript strict + Tailwind + Framer Motion + lucide-react.
 Шрифт — `@fontsource-variable/inter` (латиница и кириллица, без сети). Многостраничная сборка:
-`index.html` (main) и `pill.html` (пилюля). Dev-сервер `http://localhost:1420`, сборка в `ui/dist`.
+`index.html` (main), `pill.html` (пилюля) и `meeting.html` (окно перевода встречи). Dev-сервер
+`http://localhost:1420`, сборка в `ui/dist`.
 
 - `src/lib/ws.ts` — клиент: `backend_info` (вне Tauri, т. е. нет `window.__TAURI_INTERNALS__`, —
   из параметров адреса `?port=…&token=…`, чтобы UI можно было проверять в обычном браузере) → подключение, переподключение с паузой, очередь
@@ -1139,8 +2213,22 @@ Vite + React 18 + TypeScript strict + Tailwind + Framer Motion + lucide-react.
   - `#/history/draft` — вкладка «Черновик»;
   - `#/dictionary/vocab` — вкладка «Частые слова» (личный словарь частот: `vocab_list`,
     `vocab_exclude`); ссылка на неё есть и в «Настройки → Диктовка»;
-  - `#/settings/<раздел>` — `general | dictation | insert | ai | history | about`;
+  - `#/settings/<раздел>` — `general | dictation | insert | ai | meeting | history | about`;
     `#/settings/ai` — сюда ведёт `notice.action = "open_settings_ai"` (там же блок «Расход»);
+    `#/settings/meeting` — «Встречи»: перевод (переводить ли, уточнять перевод фразы —
+    `meeting_refine`, язык перевода и собеседников, модель и таймаут перевода), окно (оригинал,
+    размер текста, скрытие от демонстрации экрана, «Прижать к правому краю» при сохранённом
+    `meeting_rect`), подсказка о встрече (вкл/выкл — `meeting_autosuggest`, «И в приложениях
+    для встреч» — `meeting_detect_desktop_apps`, «Останавливать автоматически, когда встреча
+    закончилась» — `meeting_autostop`, «Не предлагать для» — `meeting_ignore_apps`
+    списком exe, шаблоны заголовков — для названия встречи), запись (сохранять, называть по
+    содержанию, папка — поле, «Обзор…», «По умолчанию») и заметки к встрече («Заметки после
+    встречи» — `meeting_notes`; «Модель заметок» — готовые модели провайдера
+    (`lib/notesModels.ts`: Claude Sonnet 5.5 — по умолчанию, Opus 5.5 — лучшая, Haiku 5.5 —
+    дешёвая; у OpenRouter ещё DeepSeek V4 Pro и Gemini 3.1 Pro) с ценой часа встречи (≈ 20 тыс.
+    токенов входа и 2,5 тыс. выхода по цене модели) и «Своя модель» — поле id; модель по
+    умолчанию — пустая настройка; у Ollama — локальная модель или своя); сверху — «Показать
+    окно перевода» и «Открыть папку записей» (`meeting_open_folder`);
   - `#/settings/insert/sessions` — раздел «Вставка», прокрутка к блоку «Сессии для рассылки»
     с подсветкой (`useHashAnchor`); сюда ведёт `notice.action = "open_settings_insert"`
     («Не выбраны RDP-сессии для рассылки»): тост в main — `navigate`, кнопка в пилюле —
@@ -1150,6 +2238,128 @@ Vite + React 18 + TypeScript strict + Tailwind + Framer Motion + lucide-react.
   ошибка (`notice` level=error/warn) — красная подсветка с текстом 4 с, для
   `action=relaunch_admin` — кнопка «Перезапустить от администратора». Перетаскивание
   (`data-tauri-drag-region`), позиция сохраняется в `pill_position`. `pill_enabled=false` → скрыть.
+- Перевод встречи:
+  - вход — кнопка «Перевод встречи» на Главной (идёт сеанс — «Идёт перевод · N строк»),
+    «Показать окно перевода» в «Настройки → Встречи», пункт трея, карточка «Обнаружена новая
+    встреча» (событие ядра `meeting_suggest` → `App.tsx` `Bridge` зовёт `meeting_suggest_show`,
+    если встреча не идёт; карточку показывает окно перевода, см. ниже), кнопка «Включить» у
+    прежней подсказки `notice.action = "meeting_start"` (ядро её больше не шлёт; тост в main и
+    кнопка в пилюле → `meeting_start {}` и `meeting_window_show`, `lib/meeting.ts`
+    `startMeeting`). Главная и настройки следят за сеансом через `useMeetingStatus` —
+    `State.meeting` + события `meeting` без перерисовки на каждый `level`;
+  - окно `meeting.html` (`src/meeting/`): шапка (перетаскивание) — название записи
+    (`MeetingStatus.title`: обрезается многоточием, подсказка — название целиком и путь к
+    файлу; встречи не было — «Перевод встречи»), состояние (слушаю / жду
+    видеокарту / нет звука / ошибка / нет связи) с точкой и крошечным индикатором уровня
+    (`MeetingStatus.level`), источник звука (`meeting_sources`: «Автоматически», встречи,
+    играющие, весь звук; список обновляется при показе окна и раз в 5 с, пока сеанса нет;
+    смена источника во время сеанса — `meeting_start` с новым; звук одной программы захватить
+    нельзя — `MeetingStatus.loopback_available: false` или `available: false` у всех программ,
+    Windows старее сборки 20348 — «Автоматически» нет, программы видны неактивными с
+    подсказкой «Нужна Windows 11», по умолчанию — «Весь звук компьютера», пустая лента
+    предупреждает, что в расшифровку попадёт весь звук; ядро без этих полей — как раньше;
+    `lib/meeting.ts` `loopbackOff`/`pickSource`), «Начать»/«Стоп», шестерёнка
+    (переводить, язык перевода, язык собеседников, оригинал, размер текста 12–28, «Прижать к
+    правому краю», «Все настройки встреч» → `show_main {route: "settings/meeting"}`), справа —
+    «Свернуть» (−, `meeting_window_minimize`) и «Закрыть» (×): сеанса нет — окно скрывается
+    (`meeting_window_hide`), идёт — под шапкой вопрос «Перевод идёт.» [Свернуть] (основная) /
+    [Остановить и закрыть] (`meeting_stop`, затем скрыть; заметки ядро допишет само).
+    Под шапкой — подсказка: «Встреча закончилась — останавливаю через N с» (`hint: "ending"`,
+    отсчёт — от `ending_in_s`, между событиями страница считает сама) с кнопкой «Не
+    останавливать» (`meeting_autostop_cancel`); «встреча, похоже, закончилась» (`hint:
+    "ended"`) с кнопкой «Стоп»; ждём видеокарту дольше 1,5 с, нет звука 20 с, ошибка сеанса,
+    результат кнопок. **Полоска** (`mode: "mini"`, `MiniBar`): точка и уровень звука, сверху —
+    состояние и источник, снизу — последняя строка (перевод, без него — оригинал) одной
+    строкой: длинная обрезается слева, видны новые слова; кнопки «Развернуть», «Стоп» (пока
+    идёт), «Скрыть в трей»; двойной щелчок — развернуть; перетаскивается за себя. Отсчёт
+    автоостановки — «Встреча закончилась / Стоп через N с» и «Не останавливать». Сеанс
+    кончился — «Перевод остановлен» и отметка «Заметки готовы», через 20 с полоска
+    скрывается сама (пока заметки пишутся — ждёт; пришли — ещё 20 с). Лента — живые строки (одна фраза = одна строка,
+    обновляется по id, пока говорят): перевод крупно (`meeting_font_size`), оригинал мельче и
+    тише (`meeting_show_original`), время и язык строки — мелко. Подтверждённый текст
+    (`text`) — обычным, неподтверждённый хвост (`partial`) — тише и курсивом; дописанные слова
+    проявляются (`Grow` + `lib/meeting.ts` `splitGrowth`: заменённые — финальное распознавание,
+    уточнённый перевод — проявляются с первого изменившегося слова, без сдвига строки). Перевод
+    растёт по словам; пока он приходит (`status: "streaming"`) — тонкая черта после последнего
+    слова. Перевода ещё нет (`pending`) — на его месте три точки высотой в строку перевода
+    (первые слова встают туда же, лента не прыгает), оригинал виден сразу; без оригинала — сам
+    текст, приглушённо, пока не придёт перевод. Фраза ещё звучит (`final: false`) — зелёная
+    точка у времени; перевод уточнён по всей фразе (`refined`) — значок ✓✓; «не переведено» —
+    ошибка (причина во всплывающей подсказке). Строки — `meeting_lines` пачками по 500
+    (`after_id`) при подключении, переподключении и новом сеансе (`started_at` сменился —
+    лента с нуля) + события `meeting_line` (слияние по id; снимок из ответа не откатывает
+    строку, которая успела продвинуться дальше: `lineProgress` — уточнена, кончилась, статус,
+    длина текста, длина перевода), в памяти до 5000; рисуются последние 300, ранние — по
+    кнопке «Показать ранние строки» (ещё 300; строка, что была вверху ленты, остаётся на своём
+    месте — поправка прокрутки сразу по щелчку, по самой строке: `data-line-id`, двойной
+    поправки с якорем браузера нет). Выброшенная ядром строка (`final` без `text` и `partial` — шум, фраза субтитров;
+    `isDroppedLine`) остаётся в списке, чтобы старый снимок её не вернул, но не рисуется и не
+    считается. Прокрутка: внизу лента сама едет за словами и строками — догоняет низ по кадрам
+    (`requestAnimationFrame`, ~1/5 оставшегося за кадр, далеко — сразу; при
+    `prefers-reduced-motion` — сразу), без рывка на каждое слово; отпускает низ только
+    пользователь (колесо вверх, полоса прокрутки, касание), тогда лента стоит, а снизу «Новые
+    строки»; колесо вверх у короткой ленты, которой некуда прокручиваться (переполнение не
+    больше 40 px, `wheelUnpins`), низ не отпускает; обновлённые выше строки не сдвигают читаемое (якорь прокрутки,
+    `overflow-anchor`). Подвал: число строк, средняя задержка сеанса (`MeetingStatus.latency`:
+    «0,8 с → 1,6 с» — текст и первые слова перевода после конца фразы, во всплывающей
+    подсказке — и перевод целиком), «Только расшифровка» (сеанс без перевода), «Копировать»
+    (`meeting_copy {what: "transcript"}`; в заметках — «Копировать заметки», `what: "notes"`),
+    «Открыть запись» (`meeting_open_folder`). Тема, акцент и язык — как в
+    main (`applyTheme`, `syncLocale`), заголовок окна — `meeting.windowTitle`;
+  - переключатель «Расшифровка | Заметки» под шапкой (вид помнит `localStorage` окна; лента
+    при заметках не рисуется, но остаётся — прокрутка та же). Заметки (`meeting/Notes.tsx`,
+    разбор Markdown — `lib/notesMd.ts`, в React-элементы, без HTML из ответа): заметок нет —
+    что будет (во время встречи — «после неё модель посильнее напишет заметки… Можно и
+    сейчас»; сами не пишутся — «выключено в настройках»; после встречи без заметок —
+    «встреча была короткой или заметки выключены») и «Сделать заметки сейчас»
+    (`meeting_notes`); пишутся — «Модель пишет заметки…» и начало ответа по ходу (событие
+    `meeting_notes`); готовы — «Готовы в ЧЧ:ММ · модель · цена», число задач, «Обновить»,
+    сами заметки: заголовки, списки, задачи `- [ ]`/`- [x]` — отметками, **жирный**, *курсив*,
+    `код`, время «ЧЧ:ММ:СС» — кнопка к строке в расшифровке (`lineAt`: та же или ближайшая
+    раньше; вид — расшифровка, ранние строки показываются, строка — в середину и подсвечена,
+    лента за новыми строками больше не едет); встреча ещё идёт — «заметки по уже сказанному»;
+    не удались — причина и «Повторить» (прежние остаются). Заметки готовы, а смотрят
+    расшифровку, — точка на «Заметки» и «Заметки готовы». Заметки окна — событием
+    `meeting_notes`, при подключении и новом сеансе — `meeting_notes_get`, и ещё раз, если
+    `MeetingStatus.notes` говорит о других (событие могло не дойти). Ответ `meeting_notes`
+    окно не применяет — только события (ответ может прийти позже события о готовых заметках);
+  - предложение встречи в том же окне: вид — от оболочки (`meeting_window_mode` при
+    загрузке и событие `meeting-window-mode`, `lib/tauri.ts`); в виде `suggest` страница рисует
+    только карточку `SuggestCard`: значок, «Обнаружена новая встреча», «{app} — {title}»,
+    «С переводом на {язык}» или «Только расшифровка, без перевода» (по `meeting_translate` и
+    `meeting_target_lang`), «Начать расшифровку», «Не сейчас», ссылка «Не предлагать для
+    {app}», полоска оставшегося до скрытия времени (`hide_in_ms`). В полном виде, пока сеанс не
+    идёт, — то же полоской под шапкой. «Начать расшифровку» — `lib/meeting.ts`
+    `startSuggested`: `meeting_window_show` (окно — сразу панелью) и `meeting_suggest_answer
+    {answer: "start"}` (ядро начинает перевод с источником предложения → `MeetingStatus`);
+    предложение ядро уже забыло (ошибка) или ответило не идущей встречей —
+    `meeting_start {source_id}` (звук программы захватить нельзя — `source_id: "system"`);
+    затем `meeting_suggest_done`. «Не сейчас» —
+    `meeting_suggest_answer later` + `meeting_suggest_done`; «Не предлагать для {app}» —
+    `never` (ошибка «устарело» — exe дописывается в `meeting_ignore_apps` через `set_settings`),
+    в панели — подтверждение «Для {app} больше не предлагаю…». В Tauri событие
+    `meeting_suggest` страница окна не обрабатывает (вид задаёт оболочка), вне Tauri (демо)
+    показывает предложение сама;
+  - демо: `meeting.html?mock=1` — сеанс уже идёт (Brave — Meet: Daily standup), английские
+    фразы с русским переводом (`?lang=en` — немецкие с английским) идут по ходу речи, как у
+    ядра: проход распознавания раз в 0,85 с (подтверждено то, в чём сошлись два прохода,
+    остальное — хвост курсивом), перевод кусками (от 5 подтверждённых слов или на знаке
+    препинания) по 2 слова раз в 100 мс, финальный проход исправляет слово (`heard` → `text` в
+    mock-data), пословный перевод (`draft`) у длинных фраз через полсекунды заменяется
+    уточнённым (`refined`), обновления строки — не чаще 10 в секунду; в подвале — средние
+    задержки; одна строка с ошибкой перевода, раз в ~15 фраз — «жду видеокарту»;
+    `&scene=meeting_ended` — через 2,5 с подсказка «встреча, похоже, закончилась»;
+    `&scene=meeting_ending` — через 2,5 с отсчёт автоостановки 10 с («Не останавливать» его
+    снимает), потом «Стоп» и уведомление; `&mini=1` — окно сразу полоской (рамкой в правом
+    нижнем углу вкладки; «Свернуть» в демо — то же);
+    `&suggest=1` — через ~1 с ядро «замечает встречу» (Brave — Google Meet): окно показывает
+    карточку (рамкой окна в правом верхнем углу вкладки), `&suggest=banner` — то же полоской в
+    панели; `&win10=1` — Windows 10: `loopback_available: false`, у программ `available:
+    false`, программы в выборе источника неактивны, по умолчанию весь звук компьютера, перевод с
+    программой демо-ядро, как и настоящее, ведёт по всему звуку;
+    `?mock=1&scene=notice_meeting` — прежняя подсказка о встрече в main и в пилюле; вне
+    Tauri «Показать окно перевода» открывает `meeting.html` вкладкой с теми же параметрами
+    адреса.
 - Тема: system/dark/light, акцент (CSS-переменная), эффект Mica (полупрозрачный фон).
   Анимации переходов 150–250 мс.
 
@@ -1299,21 +2509,23 @@ def selftest() -> tuple[bool, str]             # «локализация: ok (r
   строго, как `config._choice` в ядре). Дальше язык задаёт интерфейс —
   `update_tray.labels.lang` (`State.ui_language`), на лету.
 - На этом языке: подписи трея до первого `labels`, заголовки окон при запуске («Рупор» /
-  «Rupor», пилюля — «Рупор — пилюля» / «Rupor — indicator»), ошибки `backend_info`, `relaunch_admin`,
-  команд пилюли и окно «не удалось запустить» (WebView2). Журнал `ui.log` и ошибки разбора
-  аргументов `update_tray` — по-русски.
+  «Rupor», пилюля — «Рупор — пилюля» / «Rupor — indicator», окно перевода при создании —
+  «Рупор — перевод встречи» / «Rupor — meeting translation»), ошибки `backend_info`,
+  `relaunch_admin`, команд пилюли и окна перевода и окно «не удалось запустить» (WebView2).
+  Журнал `ui.log` и ошибки разбора аргументов `update_tray` — по-русски.
 - `update_tray.labels` (`tray::TrayLabels`): `{lang?, app?, status_loading?, status_idle?,
   status_recording?, status_hands_free?, status_processing?, status_ai?, status_paused?,
   status_error?, status_starting?, status_restarting?, status_failed?,
   status_already_running?, pause?, insert_mode?, mode_auto?, mode_type?, mode_clipboard?,
-  style?, rdp?, rdp_empty?, last_insert?, open?, quit?}`. **Ключа `labels` нет** — подписи
-  прежние; **`null`** — встроенные на текущем языке оболочки; **объект** — встроенные на языке
-  `lang`, поверх — присланные непустые строки (пустая строка или `null` у ключа — встроенная
-  подпись, незнакомые ключи пропускаются, не строка — ошибка разбора всего вызова). Строка
-  статуса — «{app}: {статус}», подсказка значка — «{app} — {статус}» (до 127 знаков UTF-16).
-  Меню не перестраивается: меняется текст только изменившихся пунктов. Встроенные названия
-  стилей переподписываются при смене языка, пока интерфейс не прислал свой `styles`.
-  Встроенные тексты и таблица ключей — `ui/src-tauri/README.md`, «Язык оболочки».
+  style?, rdp?, rdp_empty?, last_insert?, pill_restore?, meeting?, open?, quit?}`. **Ключа
+  `labels` нет** — подписи прежние; **`null`** — встроенные на текущем языке оболочки;
+  **объект** — встроенные на языке `lang`, поверх — присланные непустые строки (пустая строка
+  или `null` у ключа — встроенная подпись, незнакомые ключи пропускаются, не строка — ошибка
+  разбора всего вызова). Строка статуса — «{app}: {статус}», подсказка значка — «{app} —
+  {статус}» (до 127 знаков UTF-16). Меню не перестраивается: меняется текст только
+  изменившихся пунктов. Встроенные названия стилей переподписываются при смене языка, пока
+  интерфейс не прислал свой `styles`. Встроенные тексты и таблица ключей —
+  `ui/src-tauri/README.md`, «Язык оболочки».
 - Установщик NSIS: `bundle.windows.nsis.languages: ["English", "Russian"]`,
   `displayLanguageSelector: true` — выбор языка при установке; сообщения хуков
   (`windows/hooks.nsh`) — `LangString` на обоих языках (коды 1033 и 1049: хуки подключаются
@@ -1348,7 +2560,8 @@ def selftest() -> tuple[bool, str]             # «локализация: ok (r
   `nvidia/*` (они качаются при первом запуске в `%LOCALAPPDATA%\Rupor\cuda`) и без модели.
 - `build.cmd` → PyInstaller → копия в `ui/src-tauri/resources/core` → проверка
   `packaging/verify_core.py` (ядро в ресурсах свежее и `--uia-selftest` проходит: UIA,
-  частотные списки, «Core Audio: ok»; самопроверки без «Core Audio» — старое ядро; иначе
+  частотные списки, «Core Audio: ok», «захват звука: ok» — или «недоступен (…)» на Windows
+  старее 20348; самопроверки без «Core Audio» или без «захват звука» — старое ядро; иначе
   сборка останавливается — установщик со старым ядром и новым UI не собрать) →
   `npm run tauri build` → `ui/src-tauri/target/release/bundle/nsis/*-setup.exe` (установка
   для текущего пользователя, без прав администратора). Собирать установщик в обход
@@ -1362,7 +2575,10 @@ def selftest() -> tuple[bool, str]             # «локализация: ok (r
 | ИИ | `core/rupor/ai.py`, `core/rupor/credman.py`, `tests/test_ai.py`, `tests/test_credman.py`, `tools/ai_bench.py`, `tools/data/cleanup_cases.json`, `tools/data/cleanup_cases_en.json`, `tools/wer_bench.py`, `tools/data/asr_refs.json` |
 | Локализация | `core/rupor/i18n.py`, `core/rupor/locales/ru.json`, `core/rupor/locales/en.json`, `tests/test_i18n.py`, `tests/test_asr_lang.py`; оболочка — `ui/src-tauri/src/i18n.rs`; интерфейс — `ui/src/i18n/*`, `ui/scripts/check-i18n.mjs`, `ui/src/lib/mock-data.en.json` |
 | Загрузки и сборка | `core/rupor/fetch.py`, `packaging/**`, `build.cmd` |
-| Движок | `core/rupor/engine.py`, `hotkeys.py`, `config.py`, `server.py`, `api.py`, `__main__.py`, `asr.py`, `audio.py`, `tray.py`, `inject.py`, `winutil.py`, `broadcast.py`, `sounds.py`, `learn.py`, `uia.py`, `vocab.py`, `duck.py`, `core/rupor/data/*`, `tests/test_hotkeys.py`, `tests/test_routing.py`, `tests/test_api.py`, `tests/test_learn.py`, `tests/test_learn_engine.py`, `tests/test_learn_storage.py`, `tests/test_uia.py`, `tests/test_packaging_verify.py`, `tests/test_vocab.py`, `tests/test_storage_vocab_usage.py`, `tests/test_title_rules_rdp.py`, `tests/test_api_usage_rules_vocab.py`, `tests/test_duck.py`, `tests/test_duck_engine.py`, `tests/conftest.py`, `tools/ws_smoke.py` |
+| Движок | `core/rupor/engine.py`, `hotkeys.py`, `config.py`, `server.py`, `api.py`, `__main__.py`, `asr.py`, `audio.py`, `tray.py`, `inject.py`, `winutil.py`, `broadcast.py`, `sounds.py`, `speaker.py`, `learn.py`, `uia.py`, `vocab.py`, `duck.py`, `core/rupor/data/*`, `tests/test_hotkeys.py`, `tests/test_routing.py`, `tests/test_api.py`, `tests/test_learn.py`, `tests/test_learn_engine.py`, `tests/test_learn_storage.py`, `tests/test_uia.py`, `tests/test_packaging_verify.py`, `tests/test_vocab.py`, `tests/test_storage_vocab_usage.py`, `tests/test_title_rules_rdp.py`, `tests/test_api_usage_rules_vocab.py`, `tests/test_duck.py`, `tests/test_duck_engine.py`, `tests/conftest.py`, `tools/ws_smoke.py` |
+| Перевод встречи | `core/rupor/meeting.py` (VAD, сеанс, файл расшифровки, заметки), `core/rupor/asr.py` (`ModelGate`, `transcribe_background`), `core/rupor/ai.py` (`translate`, `meeting_title`, `meeting_notes`), `core/rupor/engine.py` (`meeting_*`), `tests/test_meeting.py`, `tests/test_meeting_title.py`, `tests/test_meeting_notes.py`, `tests/test_asr_gate.py`; окно — `ui/src-tauri/src/meeting.rs`, `ui/src-tauri/src/overlay.rs` (окна поверх всех без фокуса), `ui/src-tauri/capabilities/meeting.json`, `ui/meeting.html`, `ui/src/meeting/*` (заметки — `Notes.tsx`), `ui/src/lib/meeting.ts`, `ui/src/lib/notesMd.ts`, `ui/src/lib/notesModels.ts`; «Настройки → Встречи» — `ui/src/pages/Settings.tsx` |
+| Встреча замечается сама | `core/rupor/meeting_detect.py` (журнал микрофона, правило, предложение, подсказка «закончилась»), `core/rupor/engine.py` (`_meeting_detect_*`, `meeting_suggest_answer`, `_pick_meeting_source`), `tests/test_meeting_detect.py` |
+| Захват звука встречи | `core/rupor/loopback.py` (помощник `--loopback`, `LoopbackStream`, источники), `core/rupor/winutil.py` (дерево процессов, описание exe, заголовки окон), `core/rupor/duck.py` (`Ducker.set_excluded`), `tests/test_loopback.py` |
 | Оболочка (Rust) | `ui/src-tauri/**` |
 | Интерфейс | `ui/*` (кроме `src-tauri`), `ui/src/**` |
 

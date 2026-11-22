@@ -5,9 +5,15 @@
                                           — ядро для UI на Tauri: WebSocket-сервер, без трея;
   python -m rupor --file x.wav [--type]   — распознать файл (и напечатать через 3 с);
   python -m rupor --uia-selftest          — проверить сборку: UI Automation, частотные
-                                            списки, Core Audio, каталоги сообщений
-                                            (результат — в лог, код выхода 0/1; текст полей
-                                            и имена не пишутся).
+                                            списки, Core Audio, каталоги сообщений,
+                                            орфография, захват звука (результат — в лог, код
+                                            выхода 0/1; текст полей и имена не пишутся);
+  python -m rupor --loopback <цель> [--parent PID]
+                                          — служебный режим (его запускает само ядро для
+                                            перевода встречи, rupor.loopback): звук программы
+                                            (pid:<pid> | system | exclude:<pid>) — в stdout
+                                            (float32, 16 кГц, моно), журнал — в stderr; без
+                                            настроек, лога ядра и проверки экземпляра.
 
 Для тестов: --no-hook (не ставить хук клавиатуры) и --no-mutex (не проверять
 единственный экземпляр). --cpu — распознавание на CPU, -v — подробный лог.
@@ -54,13 +60,54 @@ def run_file(path: str, do_type: bool, s: config.Settings) -> int:
     return 0
 
 
+def run_speaker_enroll(args: argparse.Namespace) -> int:
+    """Собрать профиль голоса для счёта «свой / чужой» (speaker.enroll) и выйти.
+
+    Это отдельный процесс, часто рядом с работающим Рупором: журнал — свой файл
+    ``speaker/enroll.log`` (лог ядра с ротацией из второго процесса не пишем)."""
+    import json
+    from pathlib import Path
+
+    from . import speaker
+    from .recordings import Recordings
+
+    root = config.app_dir() / "speaker"
+    root.mkdir(parents=True, exist_ok=True)
+    handlers: list[logging.Handler] = [
+        logging.FileHandler(root / "enroll.log", "w", encoding="utf-8")]
+    if sys.stderr is not None:
+        handlers.append(logging.StreamHandler())
+    logging.basicConfig(level=logging.INFO, handlers=handlers,
+                        format="%(asctime)s %(levelname)s %(message)s")
+    if not args.speaker_cohort:
+        log.error("--speaker-enroll: нужна папка опорной выборки (--speaker-cohort)")
+        return 2
+    try:
+        exclude: list[str] = []
+        if args.speaker_exclude:
+            listed = json.loads(Path(args.speaker_exclude).read_text(encoding="utf-8"))
+            exclude = [str(x["file"] if isinstance(x, dict) else x) for x in listed]
+        recs = Recordings(config.app_dir() / "recordings")
+        wavs = [p for m in recs.items() if m.get("status") == "ok"
+                for p in [recs.path(str(m["id"]))] if p is not None]
+        speaker.enroll(root, Path(args.speaker_cohort),
+                       Path(args.speaker_voices) if args.speaker_voices else None, wavs,
+                       Path(args.speaker_model) if args.speaker_model else None, exclude,
+                       progress=log.info)
+    except Exception:
+        log.exception("Профиль голоса не собран")
+        return 1
+    return 0
+
+
 def run_uia_selftest() -> int:
     """Самопроверка сборки. Сборка оконная (stdout нет) — результат в лог: UI Automation
     (тип элемента с фокусом, есть ли у него текст и его длина — без текста), частотные
     списки словаря частот, Core Audio (число аудиосессий — без имён, ничего не меняя),
     каталоги сообщений locales/*.json (на месте и с одинаковыми ключами), проверка
-    орфографии Windows (похожие написания словаря)."""
-    from . import duck, spell, uia, vocab
+    орфографии Windows (похожие написания словаря), захват звука для перевода встреч
+    (comtypes.COMObject, process loopback своего процесса, помощник --loopback)."""
+    from . import duck, loopback, spell, uia, vocab
     ok, summary = uia.selftest()
     # Частотные списки словаря частот (data/*.txt) должны попасть в сборку
     v_ok, v_summary = vocab.selftest()
@@ -70,8 +117,11 @@ def run_uia_selftest() -> int:
     l_ok, l_summary = i18n.selftest()
     # Проверка орфографии Windows (spellcheck.h через comtypes) — для похожих написаний
     s_ok, s_summary = spell.selftest()
-    ok = ok and v_ok and a_ok and l_ok and s_ok
-    summary = f"{summary}, {v_summary}, {a_summary}, {l_summary}, {s_summary}"
+    # Захват звука для перевода встреч: обработчик активации на comtypes.COMObject и
+    # помощник --loopback (ничего не играет и громкость не трогает)
+    c_ok, c_summary = loopback.selftest()
+    ok = ok and v_ok and a_ok and l_ok and s_ok and c_ok
+    summary = f"{summary}, {v_summary}, {a_summary}, {l_summary}, {s_summary}, {c_summary}"
     (log.info if ok else log.error)("Самопроверка UIA: %s", summary)
     return 0 if ok else 1
 
@@ -161,12 +211,27 @@ def main() -> int:
     ap.add_argument("--no-hook", action="store_true", help=tr("cli.help_no_hook"))
     ap.add_argument("--no-mutex", action="store_true", help=tr("cli.help_no_mutex"))
     ap.add_argument("--uia-selftest", action="store_true", help=tr("cli.help_selftest"))
+    ap.add_argument("--loopback", metavar="TARGET", help=tr("cli.help_loopback"))
+    ap.add_argument("--parent", type=int, default=0, help=tr("cli.help_parent"))
+    ap.add_argument("--speaker-enroll", action="store_true", help=tr("cli.help_speaker_enroll"))
+    ap.add_argument("--speaker-voices", metavar="DIR", help=tr("cli.help_speaker_voices"))
+    ap.add_argument("--speaker-cohort", metavar="DIR", help=tr("cli.help_speaker_cohort"))
+    ap.add_argument("--speaker-model", metavar="FILE", help=tr("cli.help_speaker_model"))
+    ap.add_argument("--speaker-exclude", metavar="FILE", help=tr("cli.help_speaker_exclude"))
     ap.add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args()
+
+    if args.loopback is not None:
+        # Помощник захвата звука встречи: stdout — только звук, журнал — в stderr (лог ядра
+        # с ротацией из второго процесса не пишем); настройки и мьютекс не нужны
+        from . import loopback
+        loopback.helper_main(args.loopback, args.parent or None)
 
     for stream in (sys.stdout, sys.stderr):
         if stream is not None and hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8", errors="replace")
+    if args.speaker_enroll:
+        return run_speaker_enroll(args)
     logsetup.setup(args.verbose)
     if args.uia_selftest:
         return run_uia_selftest()

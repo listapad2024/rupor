@@ -5,9 +5,11 @@
 // (notice, ошибки, стили) — на текущем языке интерфейса, как у настоящего ядра.
 import dataRu from "./mock-data.json";
 import dataEn from "./mock-data.en.json";
+import { fillersMock } from "./mockFillers";
 import { navigatorLocale, type Locale } from "../i18n";
 import { fmtDecimal, titleRuleKey } from "./format";
 import { BackendError, EventHub, type ArgsTuple, type Backend } from "./hub";
+import { notesModelId } from "./notesModels";
 import type {
   AiBalance,
   AiKeyEntry,
@@ -18,6 +20,7 @@ import type {
   AiUsageTotals,
   AppRule,
   AudioDevice,
+  AudioSource,
   ClearPeriod,
   CommandArgs,
   CommandName,
@@ -36,6 +39,10 @@ import type {
   LearnJournalEntry,
   LearnMode,
   LearnSource,
+  MeetingLine,
+  MeetingNotes,
+  MeetingStatus,
+  MeetingSuggest,
   ModelOption,
   ModelRecommend,
   NoticeEvent,
@@ -53,6 +60,21 @@ export interface MockOptions {
   demo: boolean;
   firstRun: boolean;
   pill: boolean;
+  /**
+   * Окно перевода встречи (meeting.html?mock=1): с demo — сеанс уже идёт (Brave — Meet:
+   * Daily standup), английские фразы с русским переводом идут по ходу речи — слова
+   * появляются по мере распознавания (хвост курсивом), перевод растёт по словам, у части
+   * фраз финальное распознавание исправляет слово, а пословный перевод заменяется переводом
+   * всей фразы (refined).
+   */
+  meeting?: boolean;
+  /**
+   * ?suggest=1 — через ~1 с после подключения ядро «замечает встречу» (meeting_suggest:
+   * Brave — Google Meet). На meeting.html сеанс тогда не идёт, а окно показывает карточку
+   * «Обнаружена новая встреча»; ?suggest=banner — то же предложение полоской в панели (так
+   * его показывает уже открытое окно перевода).
+   */
+  suggest?: boolean;
   /** Модель не скачана при пройденном мастере (?no_model=1) — баннер state=error. */
   noModel?: boolean;
   /**
@@ -76,8 +98,21 @@ export interface MockOptions {
    * без отмеченных сессий, после неё — уведомление «Не выбраны RDP-сессии»).
    * ?scene=notice_admin|notice_insert|notice_ai — одно уведомление ядра с его
    * настоящим текстом (самые длинные: проверка, что пилюля и тосты их не обрезают).
+   * meeting.html?mock=1&scene=meeting_ended — через ~2,5 с встреча «закончилась»
+   * (MeetingStatus.hint = "ended": подсказка с кнопкой «Стоп» в окне перевода).
+   * meeting.html?mock=1&scene=meeting_ending — через ~2,5 с автоостановка (hint "ending",
+   * отсчёт ending_in_s 10 с, «Не останавливать» — meeting_autostop_cancel), потом «Стоп» и
+   * уведомление, как у ядра (с &mini=1 — то же в полоске).
+   * meeting.html?mock=1&scene=meeting_notes — встреча целиком прозвучала и остановлена: заметки
+   * пишутся сами (текст по ходу), потом готовы, их название — название записи.
    */
   scene?: string | null;
+  /**
+   * ?win10=1 — Windows 10: звук одной программы захватить нельзя (loopback_available=false,
+   * у программ available=false), перевод встречи с программой — как у ядра, весь звук
+   * компьютера (meeting.html?mock=1&win10=1, с &suggest=1 — карточка предложения).
+   */
+  win10?: boolean;
   /**
    * ?lang=en|ru — «язык Windows» демо-ядра: при language="system" интерфейс на нём, и
    * демо-данные (история, словарь, сниппеты) на нём же. null — по navigator.language.
@@ -128,12 +163,84 @@ interface RdpBase {
   process: string;
 }
 
+/** Фраза сценария встречи (mock-data*.json → meeting.lines). */
+interface MeetingPhrase {
+  lang: string;
+  /** Как фразу распознаёт финальный проход (beam 5). */
+  text: string;
+  /** Как её слышат промежуточные проходы (beam 1), если иначе; финальный исправляет на text. */
+  heard?: string;
+  /** Перевод всей фразы (уточнённый, если есть draft). */
+  translation: string | null;
+  /** Пословный перевод по ходу речи; конец фразы — его заменяет translation (refined). */
+  draft?: string;
+  /** Перевод «не успевает» — строка с ошибкой. */
+  error?: boolean;
+}
+
+/** Предложение встречи в демо-данных: процесс источника, приложение, название встречи. */
+interface MeetingSuggestData {
+  pid: number;
+  app: string;
+  title: string;
+}
+
+/** Источник звука в демо-данных (id и kind достраивает мок). */
+type MeetingSourceData = Omit<AudioSource, "id" | "kind">;
+
+/** Идущий сеанс перевода встречи демо-ядра. */
+interface MeetingRun {
+  lineTimer: ReturnType<typeof setTimeout> | null;
+  levelTimer: ReturnType<typeof setInterval>;
+  /** Таймеры обновлений живых строк (сняты при остановке). */
+  streamTimers: Set<ReturnType<typeof setTimeout>>;
+  /** Следующая фраза сценария. */
+  next: number;
+  startedMs: number;
+  /** Демо «идёт диктовка — распознавание ждёт видеокарту» до этого времени. */
+  gpuUntil: number;
+  levelPhase: number;
+  /** Задержки строк сеанса, мс от конца фразы (MeetingStatus.latency — средние). */
+  lat: { asr: number[]; first: number[]; done: number[] };
+  /** Готовых строк (для названия по содержанию) и было ли уже название от «ИИ». */
+  finals: number;
+  titled: boolean;
+}
+
+/** Заметки «пишутся»: таймеры показа по ходу и сеанс, к которому они. */
+interface NotesRun {
+  timers: ReturnType<typeof setTimeout>[];
+  startedAt: string | null;
+}
+
+// Темп демо-речи и распознавания по ходу фразы (как у ядра: проход раз в ~0,85 с, LocalAgreement-2)
+const WORD_MS = 360;
+const STEP_MS = 850;
+const DECODE_MS = 250;
+/** Пауза, после которой фраза считается законченной, и финальный проход (beam 5). */
+const VAD_END_MS = 380;
+const FINAL_DECODE_MS = 320;
+/** Кусок перевода — с этого числа подтверждённых слов (или конец фразы). */
+const CHUNK_WORDS = 5;
+/** Первые слова перевода через столько после запроса; дальше — по 2 слова раз в 100 мс. */
+const TTFT_MS = 480;
+/** Не чаще раза в столько мс на строку (как ядро: ≤ 10 обновлений в секунду). */
+const LINE_UPDATE_MS = 100;
+
 // Цена как у anthropic/claude-haiku-4.5 в OpenRouter: $1 / 1M входных, $5 / 1M выходных токенов.
 const PRICE: Record<string, [number, number]> = {
   "anthropic/claude-haiku-4.5": [1e-6, 5e-6],
   "anthropic/claude-sonnet-4.5": [3e-6, 15e-6],
   "google/gemini-2.5-flash": [0.3e-6, 2.5e-6],
+  // заметки к встрече — по умолчанию модель посильнее
+  "anthropic/claude-sonnet-5.5": [2e-6, 10e-6],
+  "anthropic/claude-opus-5.5": [4e-6, 20e-6],
 };
+/** Заметки «пишутся» столько (текст по ходу — кусками). */
+const NOTES_WRITE_MS = 3200;
+const NOTES_STEPS = 12;
+/** Заметки сами после «Стоп» — если готовых строк столько (как у ядра). */
+const NOTES_MIN_LINES = 5;
 // Расход до окна в 30 дней (попадает только во «всё время»)
 const USAGE_BEFORE: AiUsageTotals = { calls: 1412, tokens_in: 689_000, tokens_out: 91_300, cost_usd: 1.146 };
 const BALANCE_START = 12.34;
@@ -141,6 +248,10 @@ const BALANCE_USED = 5.67;
 const BALANCE_CACHE_MS = 5 * 60_000;
 // Журнал обучения, как у ядра: хранится не больше 300 записей, отдаётся по 50.
 const JOURNAL_MAX = 300;
+// Перевод встречи: строки в памяти, как у ядра, — до 5000.
+const MEETING_LINES_MAX = 5000;
+const MEETING_DIR = "C:\\Users\\Demo\\AppData\\Roaming\\Rupor\\meetings";
+const MEETING_LANG_CODES: string[] = ["ru", "en", "de", "fr", "es", "it", "pt", "pl", "uk", "zh", "ja", "ko", "tr"];
 
 type MockData = typeof dataRu;
 const DATA: Record<Locale, MockData> = { ru: dataRu, en: dataEn as MockData };
@@ -244,6 +355,7 @@ function pluralForm(forms: string | Partial<Record<Intl.LDMLPluralRule, string>>
 function coreNotices(t: MockData["texts"]): Record<string, Omit<NoticeEvent, "data">> {
   return {
     admin: { text: fill(t.noticeAdmin, { name: t.adminWindow }), level: "warn", action: "relaunch_admin", toast: true },
+    meeting: { text: fill(t.meetingSuggest, { name: "Brave" }), level: "info", action: "meeting_start", toast: true },
     ai: { text: fill(t.noticeAi, { tail: t.aiTailInserted }), level: "warn", action: null, toast: true },
     insert: { text: fill(t.insertFailed, { error: t.insertError }), level: "error", action: null, toast: true },
   };
@@ -291,6 +403,8 @@ const DEFAULT_SETTINGS: Settings = {
   context_enabled: true,
   duck_mode: "duck",
   duck_level: 15,
+  app_mute_enabled: true,
+  app_mute_apps: ["codex.exe", "chatgpt.exe"],
   sounds: true,
   autostart: true,
   default_style: "normal",
@@ -298,6 +412,9 @@ const DEFAULT_SETTINGS: Settings = {
   history_retention_days: 0,
   recordings_keep: 30,
   recordings_max_mb: 300,
+  speaker_shadow: false,
+  speaker_own_score: 5.5,
+  speaker_alien_score: 3,
   pill_enabled: true,
   pill_position: null,
   theme: "system",
@@ -321,7 +438,113 @@ const DEFAULT_SETTINGS: Settings = {
   ai_timeout_s: 5,
   command_provider: "keys",
   env_path: "",
+  meeting_target_lang: "ru",
+  meeting_source_lang: "auto",
+  meeting_translate: true,
+  meeting_show_original: true,
+  meeting_font_size: 16,
+  meeting_autosuggest: true,
+  meeting_autostop: true,
+  meeting_title_patterns: [...DATA.ru.meetingPatterns],
+  meeting_detect_desktop_apps: true,
+  meeting_ignore_apps: ["obs64.exe", "natspeak.exe", "ffmpeg.exe", "python.exe", "pythonw.exe"],
+  meeting_refine: true,
+  meeting_save: true,
+  meeting_ai_title: true,
+  meeting_notes: true,
+  meeting_notes_model: "",
+  meeting_dir: "",
+  meeting_protect: true,
+  meeting_rect: null,
+  meeting_mini_pos: null,
+  translate_model: "",
+  translate_timeout_s: 6,
 };
+
+function pad2(n: number): string {
+  return String(n).padStart(2, "0");
+}
+
+/** Местное время ISO с мс, без зоны: «2026-10-19T11:05:00.123» (как started_at ядра — ключ сеанса). */
+function localIso(ms: number): string {
+  const d = new Date(ms);
+  const msPart = String(d.getMilliseconds()).padStart(3, "0");
+  return `${dateKey(d)}T${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}.${msPart}`;
+}
+
+/** «ЧЧ:ММ:СС» — как MeetingLine.ts у ядра. */
+function clockOf(ms: number): string {
+  const d = new Date(ms);
+  return `${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
+}
+
+/** Часть имени файла, как safe_file_part ядра: без запрещённых символов и точек в конце, ≤ 80. */
+function safeFilePart(name: string): string {
+  let s = name.replace(/[<>:"/\\|?*\x00-\x1f]+/g, " ").split(/\s+/).filter(Boolean).join(" ");
+  if (s.length > 80) {
+    const cut = s.slice(0, 81);
+    const sp = cut.lastIndexOf(" ");
+    s = sp >= 40 ? cut.slice(0, sp) : s.slice(0, 80);
+  }
+  s = s.replace(/[ .]+$/, "");
+  return s || "meeting";
+}
+
+/**
+ * Название записи без ИИ (коротко, как meeting.fallback_title ядра): заголовок окна без хвоста
+ * браузера, код Google Meet — «Google Meet»; заголовка нет — имя программы, у всего звука
+ * компьютера — generic («Встреча»).
+ */
+function fallbackTitle(src: AudioSource, generic: string): string {
+  const t =
+    src.kind === "system"
+      ? ""
+      : src.title.replace(/\s*[-–—|]\s*(?:google chrome|brave|microsoft\s*edge|mozilla firefox|firefox|opera|vivaldi)\s*$/i, "").trim();
+  if (/^meet\s*[-–—]\s*[a-z]{3,4}-[a-z]{3,4}-[a-z]{3,4}$/i.test(t)) return "Google Meet";
+  if (t && t.toLowerCase() !== src.name.toLowerCase()) return t;
+  return src.kind === "system" ? generic : src.name || generic;
+}
+
+function idleMeeting(target: Settings["meeting_target_lang"], translate: boolean, loopback: boolean): MeetingStatus {
+  return {
+    running: false,
+    source: null,
+    started_at: null,
+    lines: 0,
+    level: 0,
+    state: "idle",
+    error: null,
+    translate,
+    target_lang: target,
+    file: null,
+    title: null,
+    latency: { asr_ms: null, first_token_ms: null, done_ms: null },
+    hint: null,
+    ending_in_s: null,
+    loopback_available: loopback,
+    notes: null,
+  };
+}
+
+/** MeetingStatus.notes: заметки без текста. */
+function notesInfo(n: MeetingNotes | null): MeetingStatus["notes"] {
+  if (!n) return null;
+  return { status: n.status, generated_at: n.generated_at, model: n.model, cost_usd: n.cost_usd, error: n.error, auto: n.auto };
+}
+
+/**
+ * Программа для meeting_ignore_apps, как у ядра (config._exe_names): имя файла без пути, в
+ * нижнем регистре, без расширения — с «.exe».
+ */
+function normalizeExe(x: string): string {
+  const name = (x.trim().replace(/\//g, "\\").split("\\").pop() ?? "").trim().toLowerCase();
+  return name && !name.includes(".") ? `${name}.exe` : name;
+}
+
+/** Среднее, мс; пусто — null. */
+function avgMs(xs: number[]): number | null {
+  return xs.length ? Math.round(xs.reduce((a, b) => a + b, 0) / xs.length) : null;
+}
 
 interface Scenario {
   kind: "dictation" | "notice" | "learn";
@@ -384,6 +607,17 @@ export class MockBackend implements Backend {
   private learnSeen = new Map<string, number>();
   /** Журнал обучения (dict_learn_journal): что изменила каждая выученная правка, старые первыми. */
   private journal: LearnJournalEntry[] = [];
+  /** Строки последнего сеанса перевода встречи (остаются и после остановки). */
+  private meetingLines: MeetingLine[] = [];
+  private meetingRun: MeetingRun | null = null;
+  /** Последнее предложение встречи без ответа (?suggest=1). */
+  private meetingSuggest: MeetingSuggest | null = null;
+  /** ?win10=1: уведомление «слушаю весь звук компьютера» уже было (как у ядра — раз за запуск). */
+  private loopbackFallbackTold = false;
+  /** Заметки последнего сеанса (MeetingNotes) и их разделы без «# название». */
+  private meetingNotes: MeetingNotes | null = null;
+  private notesBody: string | null = null;
+  private notesRun: NotesRun | null = null;
 
   constructor(opts: MockOptions) {
     this.opts = opts;
@@ -392,6 +626,8 @@ export class MockBackend implements Backend {
     this.draft = this.data.draft;
     this.vocabExcluded = new Set<string>((this.data.vocabExcluded as string[]).map((w) => w.toLowerCase()));
     this.settings = structuredClone(DEFAULT_SETTINGS);
+    // Демо-встреча английского набора — на немецком, перевод — на английский
+    if (this.sysLang === "en") this.settings.meeting_target_lang = "en";
     if (opts.firstRun) {
       this.settings.first_run_done = false;
       this.settings.ai_enabled = false;
@@ -415,10 +651,11 @@ export class MockBackend implements Backend {
       style: this.settings.default_style,
       ai_enabled: this.settings.ai_enabled,
       first_run_done: this.settings.first_run_done,
-      version: "0.4.0",
+      version: __APP_VERSION__, // демо-ядро той же версии, что и интерфейс
       elevated: false,
       hotkeys: this.hotkeys(),
       ui_language: this.uiLanguage(),
+      meeting: idleMeeting(this.settings.meeting_target_lang, this.settings.meeting_translate, !opts.win10),
     };
     if (opts.noGpu) this.state.device = "cpu";
     if (opts.firstRun || opts.noModel) {
@@ -446,6 +683,8 @@ export class MockBackend implements Backend {
       this.setStatus("open");
       this.hub.emit("hello", this.snapshot());
       if (this.opts.pill && this.opts.demo) void this.pillDemo();
+      if (this.opts.meeting && this.opts.demo && !this.opts.suggest) this.meetingDemo();
+      if (this.opts.suggest) setTimeout(() => this.emitMeetingSuggest(), 1100);
       if (this.opts.learn && this.opts.learn !== "off") setTimeout(() => this.emitLearn(true), 600);
       if (this.opts.lowBalance && this.settings.ai_enabled) {
         setTimeout(
@@ -569,7 +808,7 @@ export class MockBackend implements Backend {
   }
 
   private snapshot(): CoreState {
-    return { ...this.state, hotkeys: { ...this.state.hotkeys } };
+    return { ...this.state, hotkeys: { ...this.state.hotkeys }, meeting: structuredClone(this.state.meeting) };
   }
 
   private setState(name: CoreStateName): void {
@@ -805,8 +1044,13 @@ export class MockBackend implements Backend {
 
   private usageRow(ts: number, kind: AiUsageKind, model: string, words: number, rnd: () => number, ok = true): UsageRow {
     const [pin, pout] = PRICE[model] ?? [1e-6, 5e-6];
-    const tokens_in = Math.round((kind === "command" ? 520 : 430) + words * 2.2 + rnd() * 90);
-    const tokens_out = ok ? Math.round(words * (kind === "command" ? 3.4 : 2.1) + 8 + rnd() * 12) : 0;
+    // название записи встречи читает расшифровку целиком (до ~8000 символов), заметки — тоже,
+    // а пишут страницу
+    const base =
+      kind === "command" ? 520 : kind === "translate" ? 230 : kind === "title" ? 2400 : kind === "notes" ? 1400 : 430;
+    const outPerWord = kind === "command" ? 3.4 : kind === "translate" ? 2.6 : 2.1;
+    const tokens_in = Math.round(base + words * 2.2 + rnd() * 90);
+    const tokens_out = ok ? Math.round((kind === "notes" ? 1600 : words * outPerWord) + 8 + rnd() * 12) : 0;
     const cost = ok ? tokens_in * pin + tokens_out * pout : 0;
     return { ts, kind, model, tokens_in: ok ? tokens_in : Math.round(tokens_in * 0.1), tokens_out, cost, ok };
   }
@@ -824,15 +1068,29 @@ export class MockBackend implements Backend {
       this.usage.push(this.usageRow(h.ts, kind, model, h.words, rnd, rnd() > 0.02));
       if (rnd() < 0.03) this.usage.push(this.usageRow(h.ts + 30, "test", main, 40, rnd));
     }
+    // Три созвона с переводом за месяц: фраза раз в несколько секунд, около получаса
+    const now = Date.now() / 1000;
+    for (const ago of [2, 6, 13]) {
+      const start = Math.floor(now / DAY - ago) * DAY + 10 * 3600 + rnd() * 3600;
+      for (let i = 0; i < 260; i++) {
+        this.usage.push(this.usageRow(start + i * 7, "translate", main, 6 + Math.round(rnd() * 14), rnd, rnd() > 0.01));
+      }
+      // название записи: раннее (8 строк, 90 с) и после «Стоп»
+      this.usage.push(this.usageRow(start + 95, "title", main, 9, rnd));
+      // после «Стоп» — заметки (их название и стало последним названием записи)
+      this.usage.push(this.usageRow(start + 260 * 7 + 40, "notes", "anthropic/claude-sonnet-5.5", 2600, rnd));
+    }
   }
 
   private recordUsage(kind: AiUsageKind, words: number): void {
     const model =
-      this.settings.ai_provider === "anthropic"
-        ? this.settings.anthropic_model
-        : this.settings.ai_provider === "ollama"
-          ? this.settings.ollama_model
-          : this.settings.ai_model;
+      kind === "notes"
+        ? notesModelId(this.settings)
+        : this.settings.ai_provider === "anthropic"
+          ? this.settings.anthropic_model
+          : this.settings.ai_provider === "ollama"
+            ? this.settings.ollama_model
+            : this.settings.ai_model;
     const row = this.usageRow(Date.now() / 1000, kind, model, words, Math.random);
     if (this.settings.ai_provider === "ollama") row.cost = 0;
     this.usage.push(row);
@@ -1038,6 +1296,629 @@ export class MockBackend implements Backend {
     return rows.slice(0, limit).map((w) => ({ ...w, excluded: this.vocabExcluded.has(w.word.toLowerCase()) }));
   }
 
+  // ——— Перевод встречи ———
+
+  private get meetingData(): {
+    sources: MeetingSourceData[];
+    lines: MeetingPhrase[];
+    suggest: MeetingSuggestData;
+    title: string;
+  } {
+    return this.data.meeting as unknown as {
+      title: string;
+      sources: MeetingSourceData[];
+      lines: MeetingPhrase[];
+      suggest: MeetingSuggestData;
+    };
+  }
+
+  /**
+   * Как list_sources ядра: встречи, потом играющие, потом по имени; в конце — весь звук. В
+   * ?win10=1 звук программ захватить нельзя (available=false).
+   */
+  private meetingSources(): AudioSource[] {
+    const procs: AudioSource[] = this.meetingData.sources.map((s) => ({
+      ...s,
+      id: `proc:${s.pid}`,
+      kind: "process",
+      available: !this.opts.win10,
+    }));
+    const system: AudioSource = {
+      id: "system",
+      kind: "system",
+      pid: null,
+      exe: "",
+      name: this.tx.meetingSystem,
+      title: "",
+      meeting: false,
+      active: true,
+      available: true,
+    };
+    const rank = (s: AudioSource) => (s.meeting ? 0 : s.active ? 1 : 2);
+    return [...procs.sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name)), system];
+  }
+
+  private setMeeting(patch: Partial<MeetingStatus>): void {
+    this.state = { ...this.state, meeting: { ...this.state.meeting, ...patch } };
+    this.hub.emit("meeting", structuredClone(this.state.meeting));
+  }
+
+  /** Перевод нужен: включён и фраза не на языке перевода. */
+  private needsTranslation(lang: string): boolean {
+    return this.settings.meeting_translate && lang !== this.settings.meeting_target_lang;
+  }
+
+  private meetingStart(sourceId: string | undefined, cmd: string, backdateMs = 0): MeetingStatus {
+    const sources = this.meetingSources();
+    const id = sourceId && sourceId !== "auto" ? sourceId : undefined;
+    let src = id
+      ? sources.find((s) => s.id === id)
+      : (sources.find((s) => s.meeting) ?? sources.find((s) => s.kind === "process" && s.active));
+    if (!src) {
+      throw new BackendError(id ? fill(this.tx.meetingUnknownSource, { id }) : this.tx.meetingNoSource, cmd);
+    }
+    // звук программы захватить нельзя (?win10=1) — как ядро: весь звук компьютера и один раз
+    // за запуск — уведомление
+    let fallback = false;
+    if (src.kind === "process" && src.available === false) {
+      src = sources.find((s) => s.kind === "system") ?? src;
+      fallback = true;
+    }
+    if (this.meetingRun && this.state.meeting.source?.id === src.id) return structuredClone(this.state.meeting);
+    this.meetingHalt();
+    this.notesHalt();
+    this.meetingNotes = null;
+    this.notesBody = null;
+    const startedMs = Date.now() - backdateMs;
+    const title = fallbackTitle(src, this.tx.meetingTitleGeneric);
+    this.meetingLines = [];
+    this.meetingSuggest = null;
+    this.meetingRun = {
+      lineTimer: null,
+      levelTimer: setInterval(() => this.meetingLevelTick(), 250),
+      streamTimers: new Set(),
+      next: 0,
+      startedMs,
+      gpuUntil: 0,
+      levelPhase: Math.random() * 10,
+      lat: { asr: [], first: [], done: [] },
+      finals: 0,
+      titled: false,
+    };
+    this.setMeeting({
+      running: true,
+      source: src,
+      started_at: localIso(startedMs),
+      lines: 0,
+      level: 0,
+      state: "listening",
+      error: null,
+      translate: this.settings.meeting_translate,
+      target_lang: this.settings.meeting_target_lang,
+      file: this.meetingFile(startedMs, title),
+      title,
+      latency: { asr_ms: null, first_token_ms: null, done_ms: null },
+      hint: null,
+      ending_in_s: null,
+      notes: null,
+    });
+    this.scheduleMeetingLine(1200);
+    if (fallback && !this.loopbackFallbackTold) {
+      this.loopbackFallbackTold = true;
+      // info без toast — как notice ядра по умолчанию
+      this.hub.emit("notice", { text: this.tx.meetingLoopbackFallback, level: "info", action: null, toast: false, data: null });
+    }
+    return structuredClone(this.state.meeting);
+  }
+
+  /** Файл записи, как у ядра: «<папка>\YYYY-MM-DD HH-MM — <название>.md» (meeting_save). */
+  private meetingFile(startedMs: number, title: string): string | null {
+    if (!this.settings.meeting_save) return null;
+    const stamp = `${dateKey(new Date(startedMs))} ${clockOf(startedMs).slice(0, 5).replace(":", "-")}`;
+    return `${this.settings.meeting_dir || MEETING_DIR}\\${stamp} — ${safeFilePart(title)}.md`;
+  }
+
+  /**
+   * Название по содержанию (meeting_ai_title), как у ядра: когда готовых строк 8 и с начала
+   * прошло 90 с, а нет — после «Стоп», если строк хотя бы 3. «Ответ ИИ» — через 0,7 с: расход
+   * вида title, новое название и имя файла (событие meeting).
+   */
+  private meetingTitleTick(run: MeetingRun, final: boolean): void {
+    if (!this.settings.meeting_ai_title || run.titled) return;
+    const early = run.finals >= 8 && Date.now() - run.startedMs >= 90_000;
+    if (!early && !(final && run.finals >= 3)) return;
+    run.titled = true;
+    const startedAt = this.state.meeting.started_at;
+    const title = this.meetingData.title;
+    setTimeout(() => {
+      if (this.state.meeting.started_at !== startedAt) return;
+      this.recordUsage("title", 9);
+      if (title === this.state.meeting.title) return;
+      this.setMeeting({ title, file: this.state.meeting.file ? this.meetingFile(run.startedMs, title) : null });
+    }, 700);
+  }
+
+  /** Остановить таймеры сеанса (строки остаются — их можно скопировать и после остановки). */
+  private meetingHalt(): void {
+    const run = this.meetingRun;
+    if (!run) return;
+    if (run.lineTimer) clearTimeout(run.lineTimer);
+    clearInterval(run.levelTimer);
+    for (const tm of run.streamTimers) clearTimeout(tm);
+    run.streamTimers.clear();
+    this.meetingRun = null;
+  }
+
+  private meetingStop(): MeetingStatus {
+    const run = this.meetingRun;
+    // заметки сами (их название — последнее название записи), иначе — последнее название отдельно
+    const notesDue = Boolean(run) && this.settings.meeting_notes && (run?.finals ?? 0) >= NOTES_MIN_LINES;
+    if (run && !notesDue) this.meetingTitleTick(run, true);
+    this.meetingHalt();
+    // недоговорённая фраза — как у ядра после «Стоп»: дораспознана, хвост подтверждён
+    for (const l of this.meetingLines) {
+      if (l.final) continue;
+      const done: MeetingLine = { ...l, text: [l.text, l.partial].filter(Boolean).join(" "), partial: "", final: true };
+      if (l.status === "pending" || l.status === "streaming") {
+        if (l.translation) done.status = "done";
+        else Object.assign(done, { status: "error", error: this.meetingLineError() });
+      }
+      this.meetingLines = this.meetingLines.map((x) => (x.id === l.id ? done : x));
+      this.hub.emit("meeting_line", structuredClone(done));
+    }
+    this.meetingEndingStop();
+    this.setMeeting({ running: false, state: "idle", level: 0, error: null, hint: null, ending_in_s: null });
+    if (notesDue) this.startNotes(true);
+    return structuredClone(this.state.meeting);
+  }
+
+  // ——— Заметки к встрече ———
+
+  /** Заметки демо-встречи: время ключевых моментов — время её строк ({t3} — строка №3 сценария). */
+  private notesMarkdown(): string {
+    const md = (this.meetingData as unknown as { notes: string }).notes;
+    const last = this.meetingLines[this.meetingLines.length - 1]?.ts ?? "00:00:00";
+    return md.replace(/\{t(\d+)\}/g, (_m, n: string) => this.meetingLines[Number(n)]?.ts ?? last);
+  }
+
+  private setNotes(n: MeetingNotes | null): void {
+    this.meetingNotes = n;
+    if (n) this.hub.emit("meeting_notes", structuredClone(n));
+    this.setMeeting({ notes: notesInfo(n) });
+  }
+
+  /** Заметки с «# <название записи>» (название могло смениться и после них — как у ядра). */
+  private notesView(): MeetingNotes | null {
+    const n = this.meetingNotes;
+    if (!n) return null;
+    if (n.status === "running" || this.notesBody === null) return structuredClone(n);
+    return { ...n, markdown: `# ${this.state.meeting.title ?? ""}\n\n${this.notesBody}` };
+  }
+
+  private notesHalt(): void {
+    for (const tm of this.notesRun?.timers ?? []) clearTimeout(tm);
+    this.notesRun = null;
+  }
+
+  /**
+   * «Модель пишет заметки»: текст по ходу кусками (NOTES_STEPS за NOTES_WRITE_MS), потом готовы:
+   * их название — название записи (meeting_ai_title), расход вида notes. Нет ключа — ошибка
+   * с текстом ядра (сами после «Стоп» — и уведомление). Уже пишутся — как есть.
+   */
+  private startNotes(auto: boolean): MeetingNotes {
+    if (this.notesRun && this.meetingNotes?.status === "running") return structuredClone(this.meetingNotes);
+    const startedAt = this.state.meeting.started_at;
+    const good = this.notesBody !== null ? this.meetingNotes : null;
+    const base: MeetingNotes = {
+      status: "running",
+      markdown: null,
+      generated_at: null,
+      model: null,
+      cost_usd: null,
+      error: null,
+      auto,
+    };
+    this.setNotes(base);
+    const run: NotesRun = { timers: [], startedAt };
+    this.notesRun = run;
+    const alive = () => this.notesRun === run && this.state.meeting.started_at === startedAt;
+    // как ai.meeting_provider в ядре: «по списку ключей» — провайдер первого ключа
+    const first = this.chain()[0];
+    const provider = this.settings.ai_provider === "keys" ? (first?.provider ?? "openrouter") : this.settings.ai_provider;
+    if (provider !== "ollama" && !this.chain(provider).some((e) => this.secrets[e.id])) {
+      const error = fill(this.tx.aiNoKey, { name: provider === "anthropic" ? "Anthropic" : "OpenRouter" });
+      run.timers.push(
+        setTimeout(() => {
+          if (!alive()) return;
+          this.notesRun = null;
+          this.setNotes({
+            ...base,
+            status: "error",
+            generated_at: good?.generated_at ?? null,
+            model: good?.model ?? null,
+            cost_usd: good?.cost_usd ?? null,
+            error,
+          });
+          if (auto) {
+            this.hub.emit("notice", {
+              text: fill(this.tx.meetingNotesFailed, { error: error.replace(/[ .]+$/, "") }),
+              level: "warn",
+              action: "open_settings_ai",
+              toast: true,
+              data: null,
+            });
+          }
+        }, 500),
+      );
+      return structuredClone(base);
+    }
+    const md = this.notesMarkdown();
+    for (let i = 1; i <= NOTES_STEPS; i++) {
+      run.timers.push(
+        setTimeout(
+          () => {
+            if (!alive() || !this.meetingNotes) return;
+            const part = md.slice(0, Math.round((md.length * i) / NOTES_STEPS));
+            this.meetingNotes = { ...this.meetingNotes, markdown: part };
+            this.hub.emit("meeting_notes", structuredClone(this.meetingNotes));
+          },
+          600 + ((NOTES_WRITE_MS - 600) * i) / NOTES_STEPS,
+        ),
+      );
+    }
+    run.timers.push(
+      setTimeout(() => {
+        if (!alive()) return;
+        this.notesRun = null;
+        const [first = "", ...rest] = md.split("\n");
+        const title = first.replace(/^#\s*/, "").trim();
+        this.notesBody = rest.join("\n").replace(/^\n+/, "");
+        if (title && this.settings.meeting_ai_title && title !== this.state.meeting.title) {
+          const startedMs = this.meetingRun?.startedMs ?? (Date.parse(this.state.meeting.started_at ?? "") || Date.now());
+          this.setMeeting({ title, file: this.state.meeting.file ? this.meetingFile(startedMs, title) : null });
+        }
+        this.recordUsage("notes", countWords(this.meetingLines.map((l) => l.translation ?? l.text).join(" ")));
+        const row = this.usage[this.usage.length - 1];
+        const done: MeetingNotes = {
+          status: "done",
+          markdown: null,
+          generated_at: new Date().toISOString(),
+          model: notesModelId(this.settings),
+          cost_usd: row ? Math.round(row.cost * 1e6) / 1e6 : null,
+          error: null,
+          auto,
+        };
+        this.meetingNotes = done;
+        const view = this.notesView();
+        if (view) this.hub.emit("meeting_notes", view);
+        this.setMeeting({ notes: notesInfo(done) });
+      }, NOTES_WRITE_MS + 200),
+    );
+    return structuredClone(base);
+  }
+
+  /** Уровень звука 4 раза в секунду: речь фразами с паузами; «диктовка» — ждём видеокарту. */
+  private meetingLevelTick(): void {
+    const run = this.meetingRun;
+    if (!run) return;
+    run.levelPhase += 0.25;
+    const t = run.levelPhase;
+    const speaking = Math.sin(t * 0.9) + Math.sin(t * 0.37) > -0.7;
+    const level = speaking
+      ? Math.min(1, 0.28 + Math.abs(Math.sin(t * 5.3)) * 0.45 + Math.random() * 0.15)
+      : Math.random() * 0.04;
+    const waiting = this.busy || Date.now() < run.gpuUntil;
+    this.setMeeting({ level: Math.round(level * 100) / 100, state: waiting ? "waiting_gpu" : "listening" });
+  }
+
+  /** Следующая фраза — через ms; она звучит, сколько звучит, потом пауза 0,7–1,5 с. */
+  private scheduleMeetingLine(ms: number): void {
+    const run = this.meetingRun;
+    if (!run) return;
+    run.lineTimer = setTimeout(() => {
+      const speakMs = this.streamMeetingLine(Date.now());
+      // раз в ~15 фраз — «диктовка» на 3 с: распознавание встречи ждёт видеокарту
+      if (run.next % 15 === 9) run.gpuUntil = Date.now() + 3000;
+      this.scheduleMeetingLine(speakMs + 700 + Math.random() * 800);
+    }, ms);
+  }
+
+  /** Перевод «не успел» — текст ошибки ядра. */
+  private meetingLineError(): string {
+    return fill(this.tx.meetingTranslateError, { seconds: this.settings.translate_timeout_s });
+  }
+
+  /**
+   * Фраза по ходу речи, как у ядра. Распознавание (LocalAgreement-2): проход раз в STEP_MS по
+   * уже сказанному — гипотеза; подтверждено (text) то, в чём сошлись два прохода подряд,
+   * остальное — хвост (partial). Пауза после фразы — финальный проход: text из сценария
+   * (heard исправлен), final. Перевод — кусками по мере подтверждения (≥ CHUNK_WORDS слов или
+   * конец фразы): первые слова через ~0,5 с после запроса, дальше по 2 слова раз в 100 мс
+   * (status streaming), между кусками — pending, всё — done. draft — пословный перевод; если
+   * meeting_refine и фраза длиннее 6 слов, его заменяет перевод целиком (refined). Обновления
+   * одной строки — не чаще раза в LINE_UPDATE_MS. Возвращает, сколько мс звучит фраза.
+   */
+  private streamMeetingLine(atMs: number): number {
+    const run = this.meetingRun;
+    const script = this.meetingData.lines;
+    if (!run || !script.length) return 0;
+    const p = script[run.next % script.length];
+    run.next++;
+    if (!p) return 0;
+    const id = (this.meetingLines[this.meetingLines.length - 1]?.id ?? 0) + 1;
+    const heard = (p.heard ?? p.text).split(/\s+/).filter(Boolean);
+    const n = heard.length;
+    const speakMs = n * WORD_MS;
+    const translate = this.needsTranslation(p.lang);
+    const events: { at: number; patch: Partial<MeetingLine> }[] = [];
+
+    // распознавание по ходу речи
+    let prevHyp = 0;
+    let committed = 0;
+    let asrAt: number | null = null;
+    const commits: { at: number; words: number }[] = [];
+    for (let at = STEP_MS; at < speakMs + VAD_END_MS; at += STEP_MS) {
+      const hyp = Math.min(n, Math.floor(Math.max(0, at - DECODE_MS) / WORD_MS));
+      const c = Math.max(committed, Math.min(prevHyp, hyp));
+      prevHyp = hyp;
+      if (c > committed) commits.push({ at, words: c });
+      committed = c;
+      if (hyp === n && asrAt === null) asrAt = at;
+      if (hyp > 0) events.push({ at, patch: { text: heard.slice(0, c).join(" "), partial: heard.slice(c, hyp).join(" ") } });
+    }
+    const finalAt = speakMs + VAD_END_MS + FINAL_DECODE_MS;
+    events.push({ at: finalAt, patch: { text: p.text, partial: "", final: true } });
+    commits.push({ at: finalAt, words: n });
+    run.lat.asr.push((asrAt ?? finalAt) - speakMs);
+
+    // перевод кусками
+    let doneAt = finalAt;
+    if (translate && p.error) {
+      events.push({ at: finalAt + 1400, patch: { status: "error", error: this.meetingLineError() } });
+    } else if (translate) {
+      const draft = (p.draft ?? p.translation ?? p.text).split(/\s+/).filter(Boolean);
+      const m = draft.length;
+      let srcDone = 0;
+      let dstDone = 0;
+      let free = 0;
+      let chunks = 0;
+      let lastFirst = finalAt;
+      for (const c of commits) {
+        const last = c.words >= n;
+        // кусок — на границе фразы или предложения (знак препинания) или с CHUNK_WORDS слов
+        const boundary = /[.?!;:,—]$/.test(heard[c.words - 1] ?? "");
+        if (!last && !boundary && c.words - srcDone < CHUNK_WORDS) continue;
+        const to = last ? m : Math.min(m - 1, Math.round((m * c.words) / n));
+        srcDone = c.words;
+        if (to <= dstDone) continue;
+        let t = Math.max(c.at, free) + TTFT_MS + Math.random() * 250;
+        lastFirst = t;
+        chunks++;
+        for (let w = dstDone + 2; ; w += 2) {
+          const k = Math.min(w, to);
+          events.push({ at: t, patch: { translation: draft.slice(0, k).join(" "), status: "streaming" } });
+          if (k >= to) break;
+          t += LINE_UPDATE_MS;
+        }
+        dstDone = to;
+        free = t + 60;
+        if (!last) events.push({ at: free, patch: { status: "pending" } });
+      }
+      doneAt = Math.max(free, finalAt);
+      events.push({ at: doneAt, patch: { status: "done" } });
+      run.lat.first.push(lastFirst - speakMs);
+      run.lat.done.push(doneAt - speakMs);
+      if (this.settings.meeting_refine && p.draft && n > 6 && chunks > 1) {
+        events.push({ at: doneAt + 500 + Math.random() * 400, patch: { translation: p.translation ?? p.text, refined: true } });
+      }
+    }
+
+    // не чаще раза в LINE_UPDATE_MS: близкие обновления — одним
+    events.sort((a, b) => a.at - b.at);
+    const groups: { at: number; patch: Partial<MeetingLine> }[] = [];
+    for (const e of events) {
+      const g = groups[groups.length - 1];
+      if (g && e.at - g.at < LINE_UPDATE_MS) g.patch = { ...g.patch, ...e.patch };
+      else groups.push({ at: e.at, patch: { ...e.patch } });
+    }
+
+    const base: MeetingLine = {
+      id,
+      t: Math.round((atMs - run.startedMs) / 100) / 10,
+      ts: clockOf(atMs),
+      lang: p.lang,
+      text: "",
+      partial: "",
+      final: false,
+      refined: false,
+      translation: null,
+      status: translate ? "pending" : "original",
+    };
+    for (const g of groups) {
+      const tm = setTimeout(() => {
+        run.streamTimers.delete(tm);
+        if (this.meetingRun !== run) return;
+        const cur = this.meetingLines.find((l) => l.id === id);
+        const next: MeetingLine = { ...(cur ?? base), ...g.patch };
+        if (cur) {
+          this.meetingLines = this.meetingLines.map((l) => (l.id === id ? next : l));
+        } else {
+          this.meetingLines = [...this.meetingLines, next].slice(-MEETING_LINES_MAX);
+        }
+        this.hub.emit("meeting_line", structuredClone(next));
+        if (!cur) this.setMeeting({ lines: this.meetingLines.length });
+        if (g.patch.status === "done" || g.patch.refined) {
+          this.recordUsage("translate", countWords(p.text));
+        }
+        if (g.patch.final && !cur?.final) {
+          run.finals++;
+          this.meetingTitleTick(run, false);
+        }
+        if (g.patch.final || g.patch.status === "done") {
+          this.setMeeting({
+            latency: { asr_ms: avgMs(run.lat.asr), first_token_ms: avgMs(run.lat.first), done_ms: avgMs(run.lat.done) },
+          });
+        }
+      }, g.at);
+      run.streamTimers.add(tm);
+    }
+    return speakMs;
+  }
+
+  /**
+   * Уже прозвучавшая фраза (начало демо-сеанса): подтверждена, переведена (длинная с draft —
+   * уточнена), одна — с ошибкой перевода.
+   */
+  private emitMeetingLineDone(atMs: number): void {
+    const run = this.meetingRun;
+    const script = this.meetingData.lines;
+    if (!run || !script.length) return;
+    const p = script[run.next % script.length];
+    run.next++;
+    if (!p) return;
+    const id = (this.meetingLines[this.meetingLines.length - 1]?.id ?? 0) + 1;
+    const translate = this.needsTranslation(p.lang);
+    const refined = translate && !p.error && this.settings.meeting_refine && Boolean(p.draft) && countWords(p.text) > 6;
+    const line: MeetingLine = {
+      id,
+      t: Math.round((atMs - run.startedMs) / 100) / 10,
+      ts: clockOf(atMs),
+      lang: p.lang,
+      text: p.text,
+      partial: "",
+      final: true,
+      refined,
+      translation: translate && !p.error ? (p.translation ?? p.text) : null,
+      status: !translate ? "original" : p.error ? "error" : "done",
+      ...(translate && p.error ? { error: this.meetingLineError() } : {}),
+    };
+    this.meetingLines = [...this.meetingLines, line].slice(-MEETING_LINES_MAX);
+    this.hub.emit("meeting_line", structuredClone(line));
+    run.finals++;
+    this.meetingTitleTick(run, false);
+    // задержки «прошлых» фраз — как у живых
+    run.lat.asr.push(650 + Math.round(Math.random() * 300));
+    if (translate && !p.error) {
+      run.lat.first.push(1350 + Math.round(Math.random() * 400));
+      run.lat.done.push(2050 + Math.round(Math.random() * 600));
+    }
+    this.setMeeting({
+      lines: this.meetingLines.length,
+      latency: { asr_ms: avgMs(run.lat.asr), first_token_ms: avgMs(run.lat.first), done_ms: avgMs(run.lat.done) },
+    });
+  }
+
+  /** Демо окна перевода: сеанс идёт уже пару минут, первые фразы уже есть. */
+  private meetingDemo(): void {
+    try {
+      this.meetingStart(undefined, "meeting_start", 130_000);
+    } catch {
+      return;
+    }
+    const start = this.meetingRun?.startedMs ?? Date.now();
+    // ?scene=meeting_notes — прозвучала вся встреча, «Стоп»: заметки пишутся сами
+    const all = this.opts.scene === "meeting_notes";
+    const n = all ? this.meetingData.lines.length : 7;
+    for (let i = 0; i < n; i++) this.emitMeetingLineDone(start + 6000 + i * (all ? 7_500 : 17_000));
+    if (all) {
+      setTimeout(() => {
+        if (this.meetingRun) this.meetingStop();
+      }, 700);
+      return;
+    }
+    // ?scene=meeting_ending — автоостановка: отсчёт 10 с, потом «Стоп» и уведомление
+    if (this.opts.scene === "meeting_ending") {
+      const run = this.meetingRun;
+      setTimeout(() => {
+        if (this.meetingRun !== run || !run) return;
+        if (run.lineTimer) clearTimeout(run.lineTimer);
+        run.lineTimer = null;
+        this.meetingEndingStart(10);
+      }, 2500);
+    }
+    // ?scene=meeting_ended — встреча «закончилась»: микрофон свободен, звука нет (MeetingStatus.hint)
+    if (this.opts.scene === "meeting_ended") {
+      const run = this.meetingRun;
+      setTimeout(() => {
+        if (this.meetingRun !== run || !run) return;
+        if (run.lineTimer) clearTimeout(run.lineTimer);
+        run.lineTimer = null;
+        this.setMeeting({ hint: "ended" });
+      }, 2500);
+    }
+  }
+
+  /** Отсчёт автоостановки (как MeetingSession.autostop_tick): статус раз в секунду, на нуле — «Стоп». */
+  private meetingEndingTimer: ReturnType<typeof setInterval> | null = null;
+  private meetingEndingStart(seconds: number): void {
+    this.meetingEndingStop();
+    const until = Date.now() + seconds * 1000;
+    const tick = () => {
+      const left = Math.max(0, Math.ceil((until - Date.now()) / 1000));
+      if (left > 0) {
+        this.setMeeting({ hint: "ending", ending_in_s: left });
+        return;
+      }
+      this.meetingEndingStop();
+      const run = this.meetingRun;
+      const notes = Boolean(run) && this.settings.meeting_notes && (run?.finals ?? 0) >= NOTES_MIN_LINES;
+      this.meetingStop();
+      this.hub.emit("notice", {
+        text: notes ? this.tx.meetingAutostoppedNotes : this.tx.meetingAutostopped,
+        level: "info",
+        action: null,
+        toast: true,
+        data: null,
+      });
+    };
+    tick();
+    this.meetingEndingTimer = setInterval(tick, 1000);
+  }
+
+  private meetingEndingStop(): void {
+    if (this.meetingEndingTimer) clearInterval(this.meetingEndingTimer);
+    this.meetingEndingTimer = null;
+  }
+
+  /** Демо «ядро заметило встречу» (?suggest=1): Brave держит микрофон и играет звук. */
+  private emitMeetingSuggest(): void {
+    if (this.meetingRun || !this.settings.meeting_autosuggest) return;
+    const d = this.meetingData.suggest;
+    const source = this.meetingSources().find((s) => s.pid === d.pid);
+    if (!source) return;
+    if (this.settings.meeting_ignore_apps.some((x) => x.toLowerCase() === source.exe.toLowerCase())) return;
+    const now = Date.now();
+    this.meetingSuggest = { id: `sg-${now.toString(36)}`, source, app: d.app, title: d.title, detected_at: localIso(now) };
+    this.hub.emit("meeting_suggest", structuredClone(this.meetingSuggest));
+  }
+
+  /**
+   * Ответ на предложение, как у ядра: start — перевод начинается с источником предложения
+   * (MeetingStatus); later — до конца разговора не предлагать (null); never — exe в
+   * meeting_ignore_apps (null). Предложение неизвестно (уже ответили, ядро перезапускалось) —
+   * ошибка «уже неактуально», для later — просто null.
+   */
+  private meetingSuggestAnswer(
+    a: CommandArgs<"meeting_suggest_answer">,
+    cmd: string,
+  ): MeetingStatus | null | Promise<MeetingStatus> {
+    if (!["start", "later", "never"].includes(a.answer)) throw new BackendError(this.tx.suggestAnswer, cmd);
+    const sg = this.meetingSuggest;
+    if (!sg || sg.id !== a.id) {
+      if (a.answer === "later") return null;
+      throw new BackendError(this.tx.meetingSuggestExpired, cmd);
+    }
+    this.meetingSuggest = null;
+    if (a.answer === "start") return sleep(350).then(() => this.meetingStart(sg.source.id, cmd));
+    if (a.answer === "never" && sg.source.exe) {
+      const exe = normalizeExe(sg.source.exe);
+      if (!this.settings.meeting_ignore_apps.includes(exe)) {
+        this.applySettings({ meeting_ignore_apps: [...this.settings.meeting_ignore_apps, exe] });
+      }
+    }
+    return null;
+  }
+
   private async pillDemo(): Promise<void> {
     // Сценарии — заново на каждом шаге: тексты уведомлений на текущем языке интерфейса
     const scenarios = (t: MockData["texts"]): Scenario[] => {
@@ -1048,6 +1929,7 @@ export class MockBackend implements Backend {
         { kind: "dictation", dur: 4200, ai: true, hands_free: true },
         { kind: "dictation", dur: 3000, broadcast: true, broadcastAtStart: true },
         { kind: "notice", notice: n.admin },
+        // подсказку о встрече ядро больше не шлёт (её заменило meeting_suggest) — только ?scene=notice_meeting
         { kind: "dictation", dur: 2400, ai: true, command: true },
         { kind: "notice", notice: n.ai },
         { kind: "notice", notice: n.insert },
@@ -1452,10 +2334,45 @@ export class MockBackend implements Backend {
         if (a.patch.dictation_language !== undefined && !["auto", "ru", "en"].includes(a.patch.dictation_language)) {
           throw bad("dictation_language", a.patch.dictation_language);
         }
-        if (a.patch.model_dir !== undefined) {
-          return this.applySettings({ ...a.patch, model_dir: this.checkModelDir(a.patch.model_dir, cmd) });
+        let p = a.patch;
+        if (p.meeting_target_lang !== undefined && !MEETING_LANG_CODES.includes(p.meeting_target_lang)) {
+          throw bad("meeting_target_lang", p.meeting_target_lang);
         }
-        return this.applySettings(a.patch);
+        if (p.meeting_source_lang !== undefined && p.meeting_source_lang !== "auto" && !MEETING_LANG_CODES.includes(p.meeting_source_lang)) {
+          throw bad("meeting_source_lang", p.meeting_source_lang);
+        }
+        if (p.meeting_font_size !== undefined && !(Number.isInteger(p.meeting_font_size) && p.meeting_font_size >= 12 && p.meeting_font_size <= 28)) {
+          throw bad("meeting_font_size", p.meeting_font_size);
+        }
+        if (p.translate_timeout_s !== undefined && !(p.translate_timeout_s >= 1 && p.translate_timeout_s <= 30)) {
+          throw bad("translate_timeout_s", p.translate_timeout_s);
+        }
+        // как ядро: имена exe (путь — до имени, нижний регистр, «.exe»), без повторов, ≤ 100 по ≤ 100 символов
+        const ignore = p.meeting_ignore_apps;
+        if (ignore !== undefined) {
+          const names = Array.isArray(ignore) && ignore.every((x) => typeof x === "string") ? ignore.map(normalizeExe) : null;
+          if (!names || names.some((x) => !x || x.length > 100) || new Set(names).size > 100) {
+            throw bad("meeting_ignore_apps", JSON.stringify(ignore));
+          }
+          p = { ...p, meeting_ignore_apps: [...new Set(names)] };
+        }
+        const mp = p.meeting_mini_pos;
+        if (mp && !(Array.isArray(mp) && mp.length === 2 && mp.every((v) => Number.isFinite(v) && Math.abs(v) < 1e6))) {
+          throw bad("meeting_mini_pos", JSON.stringify(mp));
+        }
+        if (p.meeting_autostop !== undefined && typeof p.meeting_autostop !== "boolean") {
+          throw bad("meeting_autostop", String(p.meeting_autostop));
+        }
+        const r = p.meeting_rect;
+        if (r && !(r.length === 4 && r.every((v) => Number.isInteger(v) && Math.abs(v) < 1e6) && r[2] >= 200 && r[3] >= 200)) {
+          throw bad("meeting_rect", JSON.stringify(r));
+        }
+        const next =
+          p.model_dir !== undefined ? this.applySettings({ ...p, model_dir: this.checkModelDir(p.model_dir, cmd) }) : this.applySettings(p);
+        if (p.meeting_translate !== undefined || p.meeting_target_lang !== undefined) {
+          this.setMeeting({ translate: this.settings.meeting_translate, target_lang: this.settings.meeting_target_lang });
+        }
+        return next;
       }
       case "pause": {
         const a = rawArgs as CommandArgs<"pause">;
@@ -1676,6 +2593,16 @@ export class MockBackend implements Backend {
         }
         return { dictionary: nd, snippets: ns };
       }
+      case "fillers_stats":
+      case "fillers_config":
+      case "fillers_config_set":
+      case "fillers_defaults":
+      case "fillers_rebuild":
+      case "fillers_reset":
+      case "fillers_ai_suggest":
+        return sleep(cmd === "fillers_ai_suggest" ? 900 : 150).then(() =>
+          fillersMock(cmd, rawArgs, this.history, [...DATA.ru.fillers, ...DATA.en.fillers]),
+        );
       case "stats_get":
         return sleep(180).then(() => this.stats());
       case "draft_get":
@@ -1873,6 +2800,62 @@ export class MockBackend implements Backend {
         const a = (rawArgs ?? {}) as CommandArgs<"ai_balance">;
         return sleep(a.force ? 650 : 60).then(() => this.aiBalance(Boolean(a.force)));
       }
+      case "meeting_sources":
+        return sleep(80).then(() => this.meetingSources());
+      case "meeting_start": {
+        const a = (rawArgs ?? {}) as CommandArgs<"meeting_start">;
+        // модель уже загружена — старт почти мгновенный (иначе ядро сначала её загружает)
+        return sleep(350).then(() => this.meetingStart(a.source_id, cmd));
+      }
+      case "meeting_stop":
+        return this.meetingStop();
+      case "meeting_autostop_cancel":
+        // как ядро: отсчёт снят, сеанс идёт; встречи нет — просто статус
+        if (this.meetingEndingTimer) {
+          this.meetingEndingStop();
+          this.setMeeting({ hint: null, ending_in_s: null });
+        }
+        return structuredClone(this.state.meeting);
+      case "meeting_status":
+        return structuredClone(this.state.meeting);
+      case "meeting_lines": {
+        const a = (rawArgs ?? {}) as CommandArgs<"meeting_lines">;
+        const limit = a.limit ?? 200;
+        if (!Number.isInteger(limit) || limit < 1 || limit > 500) throw new BackendError(this.tx.meetingBadLimit, cmd);
+        // как ядро: after_id — следующие за ним по порядку, без него — последние limit
+        const pick =
+          a.after_id === undefined
+            ? this.meetingLines.slice(-limit)
+            : this.meetingLines.filter((l) => l.id > (a.after_id ?? 0)).slice(0, limit);
+        return pick.map((l) => ({ ...l }));
+      }
+      case "meeting_copy": {
+        const a = (rawArgs ?? {}) as CommandArgs<"meeting_copy">;
+        const what = a.what ?? "transcript";
+        if (!["transcript", "notes", "all"].includes(what)) throw new BackendError(this.tx.copyWhat, cmd);
+        // как ядро: время, перевод и под ним оригинал; заметки — Markdown
+        const lines = this.meetingLines
+          .map((l) => (l.translation ? `${l.ts} ${l.translation}\n         ${l.text}` : `${l.ts} ${l.text}`))
+          .join("\n");
+        const notes = this.notesBody !== null ? (this.notesView()?.markdown ?? "") : "";
+        if (what === "notes" && !notes) throw new BackendError(this.tx.meetingNotesNothing, cmd);
+        const text = what === "notes" ? notes : what === "all" && notes ? `${notes}\n\n${lines}` : lines;
+        if (!text.trim()) throw new BackendError(this.tx.meetingNothingToCopy, cmd);
+        // настоящее ядро кладёт текст в буфер само; в браузере — если страница разрешает
+        void navigator.clipboard?.writeText(text).catch(() => undefined);
+        return { chars: text.length };
+      }
+      case "meeting_open_folder":
+        return null;
+      case "meeting_suggest_answer":
+        return this.meetingSuggestAnswer((rawArgs ?? {}) as CommandArgs<"meeting_suggest_answer">, cmd);
+      case "meeting_notes": {
+        if (!this.state.meeting.started_at) throw new BackendError(this.tx.meetingNotesNoMeeting, cmd);
+        if (!this.meetingLines.some((l) => l.text || l.partial)) throw new BackendError(this.tx.meetingNotesEmpty, cmd);
+        return this.startNotes(false);
+      }
+      case "meeting_notes_get":
+        return this.notesView();
       case "ai_keys_list":
         return this.settings.ai_keys.map((e) => this.keyItem(e));
       case "ai_key_add": {

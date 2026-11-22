@@ -13,10 +13,13 @@ import copy
 import logging
 import math
 import os
+import subprocess
 import time
+from pathlib import Path
 from typing import Any, Callable
 
 from . import ai, broadcast, config, credman, fetch, keys, recordings, winutil
+from . import fillers
 from .config import app_dir
 from .engine import Engine, history_display, styles_localized
 from .i18n import tr
@@ -26,6 +29,10 @@ log = logging.getLogger(__name__)
 
 KEY_PROVIDERS = tuple(credman.TARGETS)  # openrouter, anthropic
 _PROVIDER_NAMES = {"openrouter": "OpenRouter", "anthropic": "Anthropic"}
+MEETING_LINES_MAX = 500
+MEETING_LINES_DEFAULT = 200
+SUGGEST_ANSWERS = ("start", "later", "never")   # meeting_suggest_answer
+COPY_WHAT = ("transcript", "notes", "all")      # meeting_copy
 
 
 class ApiError(Exception):
@@ -143,6 +150,14 @@ class Api:
             "export_data": lambda a: self.storage.export_data(),
             "import_data": self._import_data,
             "stats_get": lambda a: self.storage.stats(),
+            "fillers_stats": lambda a: fillers.stats(self.storage, _int(a, "days", 30)),
+            "fillers_config": lambda a: fillers.config_out(self.storage),
+            "fillers_config_set": lambda a: fillers.set_config(
+                self.storage, a.get("phrases"), a.get("enabled")),
+            "fillers_defaults": lambda a: fillers.restore_defaults(self.storage),
+            "fillers_rebuild": lambda a: fillers.rebuild(self.storage),
+            "fillers_reset": lambda a: fillers.reset(self.storage),
+            "fillers_ai_suggest": lambda a: fillers.ai_suggest(self.e),
             "draft_get": lambda a: {"text": self.storage.kv_get("draft", "")},
             "draft_set": self._draft_set,
             "styles_list": lambda a: styles_localized(),
@@ -174,6 +189,17 @@ class Api:
             "vocab_exclude": self._vocab_exclude,
             "open_logs": self._open_logs,
             "relaunch_admin": self._relaunch_admin,
+            "meeting_sources": lambda a: self.e.meeting_sources(),
+            "meeting_start": self._meeting_start,
+            "meeting_stop": lambda a: self.e.meeting_stop(),
+            "meeting_autostop_cancel": lambda a: self.e.meeting_autostop_cancel(),
+            "meeting_status": lambda a: self.e.meeting_status(),
+            "meeting_lines": self._meeting_lines,
+            "meeting_copy": self._meeting_copy,
+            "meeting_open_folder": self._meeting_open_folder,
+            "meeting_suggest_answer": self._meeting_suggest_answer,
+            "meeting_notes": lambda a: self.e.meeting_notes(),
+            "meeting_notes_get": lambda a: self.e.meeting_notes_get(),
         }
 
     @property
@@ -681,6 +707,47 @@ class Api:
         self.storage.vocab_exclude(_str(a, "word"), _bool(a, "excluded"))
         return None
 
+    # ---------- перевод встречи ----------
+
+    def _meeting_start(self, a: dict[str, Any]) -> dict[str, Any]:
+        sid = a.get("source_id")
+        if sid is not None and not isinstance(sid, str):
+            raise ApiError(tr("api.arg_str", name="source_id"))
+        return self.e.meeting_start((sid or "").strip() or None)
+
+    def _meeting_lines(self, a: dict[str, Any]) -> list[dict[str, Any]]:
+        after = _opt_int(a, "after_id")
+        limit = _int(a, "limit", MEETING_LINES_DEFAULT)
+        if not 1 <= limit <= MEETING_LINES_MAX:
+            raise ApiError(tr("api.limit_range", lo=1, hi=MEETING_LINES_MAX))
+        return self.e.meeting_lines(after, limit)
+
+    def _meeting_copy(self, a: dict[str, Any]) -> dict[str, int]:
+        """В буфер обмена: what — transcript (по умолчанию), notes или all."""
+        what = _str(a, "what", "transcript")
+        if what not in COPY_WHAT:
+            raise ApiError(tr("api.copy_what"))
+        return self.e.meeting_copy(what)
+
+    def _meeting_suggest_answer(self, a: dict[str, Any]) -> dict[str, Any] | None:
+        """Ответ на meeting_suggest: start → MeetingStatus (встреча начата), later/never → null."""
+        sid = _str(a, "id")
+        answer = _str(a, "answer")
+        if answer not in SUGGEST_ANSWERS:
+            raise ApiError(tr("api.suggest_answer"))
+        return self.e.meeting_suggest_answer(sid, answer)
+
+    def _meeting_open_folder(self, a: dict[str, Any]) -> None:
+        """Папка расшифровок в проводнике; файл идущей (последней) встречи — выделенным."""
+        f = self.e.meeting_file()
+        if f is not None and f.is_file():
+            _reveal_file(f)
+            return None
+        d = config.meeting_dir(self.e.s)
+        d.mkdir(parents=True, exist_ok=True)
+        os.startfile(d)
+        return None
+
     # ---------- прочее ----------
 
     def _open_logs(self, a: dict[str, Any]) -> None:
@@ -691,6 +758,12 @@ class Api:
 
     def _relaunch_admin(self, a: dict[str, Any]) -> None:
         raise ApiError(tr("api.relaunch_by_ui"))
+
+
+def _reveal_file(path: Path) -> None:
+    """Проводник с выделенным файлом (explorer /select — командной строкой целиком: так
+    explorer понимает путь с пробелами)."""
+    subprocess.Popen(f'explorer.exe /select,"{path}"')
 
 
 def _scrub(text: str) -> str:

@@ -51,6 +51,9 @@ class FakeDucker:
         self._add("close")
         return True
 
+    def set_excluded(self, pids: frozenset[int], everything: bool = False) -> None:
+        self._add("exclude", pids, everything)
+
     def ops(self) -> list[tuple[Any, ...]]:
         with self.lock:
             return [c for c in self.calls if c[0] in ("duck", "restore")]

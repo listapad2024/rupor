@@ -11,6 +11,7 @@ import {
   Settings,
   ShieldCheck,
   Sparkles,
+  Speech,
   TextQuote,
   WandSparkles,
   Zap,
@@ -31,6 +32,7 @@ import { useToast } from "./ui/toast";
 const NAV: { route: Route; label: TKey; icon: ReactNode }[] = [
   { route: "home", label: "nav.home", icon: <House /> },
   { route: "history", label: "nav.history", icon: <Clock /> },
+  { route: "speech", label: "nav.speech", icon: <Speech /> },
   { route: "dictionary", label: "nav.dictionary", icon: <BookA /> },
   { route: "snippets", label: "nav.snippets", icon: <TextQuote /> },
   { route: "styles", label: "nav.styles", icon: <WandSparkles /> },
@@ -205,6 +207,19 @@ export function Sidebar({ route, onNavigate }: { route: Route; onNavigate: (r: R
             </div>
           )}
         </div>
+        {/* Какая версия запущена: интерфейс, а если ядро обновлено отдельно — и ядро */}
+        <button
+          type="button"
+          onClick={() => {
+            window.location.hash = "#/settings/about";
+          }}
+          className="block w-full truncate px-2 text-left text-[11.5px] text-subtle transition-colors hover:text-muted"
+        >
+          {t("status.version", { v: __APP_VERSION__ })}
+          {state?.version && state.version !== __APP_VERSION__
+            ? ` · ${t("status.coreVersion", { v: state.version })}`
+            : ""}
+        </button>
       </div>
     </aside>
   );

@@ -54,7 +54,8 @@ LEARN_JOURNAL_KEY = "learn_journal"   # kv: журнал выученных пр
 LEARN_JOURNAL_MAX = 300
 LEARN_SOURCES = ("auto", "accepted")  # кто добавил правку: Рупор сам / пользователь «Добавить»
 MONTH_DAYS = 30          # расход ИИ «за месяц» = последние 30 дней, включая сегодня
-AI_KINDS = ("cleanup", "command", "test")
+# translate — перевод встречи, title — название записи встречи, notes — заметки к ней (meeting.py)
+AI_KINDS = ("cleanup", "command", "test", "translate", "title", "notes")
 VOCAB_VERSION_KEY = "vocab_version"   # kv: версия отбора слов, по которой собран vocab
 VOCAB_LIST_MAX = 500
 VOCAB_FETCH_ROWS = 2000     # строк vocab на процесс (самые частые) — из них слияние форм и топ
@@ -1010,7 +1011,8 @@ class Storage:
     # ---------- расход ИИ ----------
 
     def add_ai_usage(self, rec: dict[str, Any]) -> dict[str, Any]:
-        """Записать один вызов ИИ (ai_usage). Ошибка вызова (ok=false) — стоимость 0.
+        """Записать один вызов ИИ (ai_usage). Ошибка вызова (ok=false) — стоимость, если
+        ответ всё же пришёл и оплачен (обрезан, не подошёл — ai.AIError.result), иначе 0.
         Неизвестные токены/стоимость (claude -p) — NULL, в суммах считаются нулём."""
         kind = _str(rec.get("kind"))
         if kind not in AI_KINDS:
@@ -1025,7 +1027,7 @@ class Storage:
             "upstream": _str(rec.get("upstream")) or None,
             "tokens_in": _opt_int(rec.get("tokens_in")),
             "tokens_out": _opt_int(rec.get("tokens_out")),
-            "cost_usd": (max(0.0, _num(cost)) if cost is not None else None) if ok else 0.0,
+            "cost_usd": (max(0.0, _num(cost)) if cost is not None else (None if ok else 0.0)),
             "ms": max(0, _int(rec.get("ms"))),
             "ok": ok,
             "error_kind": None if ok else (_str(rec.get("error_kind")) or "error"),

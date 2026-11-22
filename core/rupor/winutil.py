@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import ctypes
+import functools
 import logging
 import ntpath
 import os
@@ -11,7 +12,7 @@ import threading
 import time
 from ctypes import wintypes as wt
 from dataclasses import dataclass
-from typing import Callable
+from typing import Callable, Collection
 
 from . import _win as w
 from .i18n import tr
@@ -74,6 +75,159 @@ def window_info(hwnd: int) -> WindowInfo:
     pid = _pid(hwnd)
     return WindowInfo(hwnd, _class_name(hwnd), _title(hwnd), pid,
                       os.path.basename(process_path(pid)))
+
+
+# ---------- процессы: дерево, описание exe, заголовки окон (захват звука встречи) ----------
+
+TH32CS_SNAPPROCESS = 0x00000002
+_INVALID_HANDLE = ctypes.c_void_p(-1).value
+
+
+class PROCESSENTRY32W(ctypes.Structure):
+    _fields_ = [
+        ("dwSize", wt.DWORD), ("cntUsage", wt.DWORD), ("th32ProcessID", wt.DWORD),
+        ("th32DefaultHeapID", ctypes.c_void_p), ("th32ModuleID", wt.DWORD),
+        ("cntThreads", wt.DWORD), ("th32ParentProcessID", wt.DWORD),
+        ("pcPriClassBase", ctypes.c_long), ("dwFlags", wt.DWORD),
+        ("szExeFile", ctypes.c_wchar * 260),
+    ]
+
+
+w.kernel32.CreateToolhelp32Snapshot.argtypes = [wt.DWORD, wt.DWORD]
+w.kernel32.CreateToolhelp32Snapshot.restype = wt.HANDLE
+w.kernel32.Process32FirstW.argtypes = [wt.HANDLE, ctypes.POINTER(PROCESSENTRY32W)]
+w.kernel32.Process32FirstW.restype = wt.BOOL
+w.kernel32.Process32NextW.argtypes = [wt.HANDLE, ctypes.POINTER(PROCESSENTRY32W)]
+w.kernel32.Process32NextW.restype = wt.BOOL
+
+
+def process_table() -> dict[int, tuple[int, str]]:
+    """pid → (pid родителя, имя exe) для всех процессов — снимок Toolhelp32 (прав не нужно;
+    pid родителя может оказаться уже чужим: Windows переиспользует pid завершившихся)."""
+    snap = w.kernel32.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
+    if not snap or snap == _INVALID_HANDLE:
+        return {}
+    out: dict[int, tuple[int, str]] = {}
+    e = PROCESSENTRY32W()
+    e.dwSize = ctypes.sizeof(PROCESSENTRY32W)
+    try:
+        ok = w.kernel32.Process32FirstW(snap, ctypes.byref(e))
+        while ok:
+            out[int(e.th32ProcessID)] = (int(e.th32ParentProcessID), e.szExeFile)
+            ok = w.kernel32.Process32NextW(snap, ctypes.byref(e))
+    finally:
+        w.kernel32.CloseHandle(snap)
+    return out
+
+
+def parent_map() -> dict[int, int]:
+    """pid → pid родителя (снимок Toolhelp32)."""
+    return {pid: ppid for pid, (ppid, _exe) in process_table().items()}
+
+
+class _PROCESS_BASIC_INFORMATION(ctypes.Structure):
+    _fields_ = [
+        ("ExitStatus", ctypes.c_void_p), ("PebBaseAddress", ctypes.c_void_p),
+        ("AffinityMask", ctypes.c_size_t), ("BasePriority", ctypes.c_void_p),
+        ("UniqueProcessId", ctypes.c_size_t), ("InheritedFromUniqueProcessId", ctypes.c_size_t),
+    ]
+
+
+_ntdll: ctypes.WinDLL | None = None
+
+
+def parent_pid(pid: int) -> int | None:
+    """pid родителя одного процесса (NtQueryInformationProcess — микросекунды, а снимок
+    Toolhelp32 — десятки мс); None — процесса нет или к нему не пускают."""
+    global _ntdll
+    if _ntdll is None:
+        nt = ctypes.WinDLL("ntdll")
+        nt.NtQueryInformationProcess.argtypes = [wt.HANDLE, ctypes.c_int, ctypes.c_void_p,
+                                                 wt.ULONG, ctypes.POINTER(wt.ULONG)]
+        nt.NtQueryInformationProcess.restype = ctypes.c_long
+        _ntdll = nt
+    h = w.kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    if not h:
+        return None
+    try:
+        pbi = _PROCESS_BASIC_INFORMATION()
+        st = _ntdll.NtQueryInformationProcess(h, 0, ctypes.byref(pbi), ctypes.sizeof(pbi), None)
+        return int(pbi.InheritedFromUniqueProcessId) if st == 0 else None
+    finally:
+        w.kernel32.CloseHandle(h)
+
+
+_version: ctypes.WinDLL | None = None
+
+
+def _version_dll() -> ctypes.WinDLL:
+    global _version
+    if _version is None:
+        dll = ctypes.WinDLL("version", use_last_error=True)
+        dll.GetFileVersionInfoSizeW.argtypes = [wt.LPCWSTR, ctypes.POINTER(wt.DWORD)]
+        dll.GetFileVersionInfoSizeW.restype = wt.DWORD
+        dll.GetFileVersionInfoW.argtypes = [wt.LPCWSTR, wt.DWORD, wt.DWORD, ctypes.c_void_p]
+        dll.GetFileVersionInfoW.restype = wt.BOOL
+        dll.VerQueryValueW.argtypes = [ctypes.c_void_p, wt.LPCWSTR,
+                                       ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(wt.UINT)]
+        dll.VerQueryValueW.restype = wt.BOOL
+        _version = dll
+    return _version
+
+
+@functools.lru_cache(maxsize=256)
+def file_description(path: str) -> str:
+    """Описание файла из ресурса версии exe (FileDescription: «Brave Browser», «Google
+    Chrome», «Telegram Desktop»); "" — нет ресурса или описания."""
+    if not path:
+        return ""
+    try:
+        dll = _version_dll()
+        size = int(dll.GetFileVersionInfoSizeW(path, None))
+        if not size:
+            return ""
+        data = ctypes.create_string_buffer(size)
+        if not dll.GetFileVersionInfoW(path, 0, size, data):
+            return ""
+        ptr = ctypes.c_void_p()
+        n = wt.UINT()
+        langs: list[str] = []
+        if dll.VerQueryValueW(data, "\\VarFileInfo\\Translation", ctypes.byref(ptr),
+                              ctypes.byref(n)) and ptr.value and n.value >= 4:
+            pairs = (wt.WORD * (n.value // 2)).from_address(ptr.value)
+            langs = [f"{pairs[i]:04x}{pairs[i + 1]:04x}" for i in range(0, len(pairs) - 1, 2)]
+        for lang in [*langs, "040904b0", "040904e4", "000004b0"]:
+            key = f"\\StringFileInfo\\{lang}\\FileDescription"
+            if dll.VerQueryValueW(data, key, ctypes.byref(ptr), ctypes.byref(n)) \
+                    and ptr.value and n.value > 1:
+                text = ctypes.wstring_at(ptr.value, n.value).split("\0", 1)[0].strip()
+                if text:
+                    return text
+    except (OSError, ValueError) as e:
+        log.debug("Описание файла не прочитано (%s)", type(e).__name__)
+    return ""
+
+
+def window_titles(pids: Collection[int]) -> dict[int, list[str]]:
+    """Заголовки видимых окон верхнего уровня (без владельца, с текстом) процессов pids — по
+    pid, в z-порядке (сверху вниз). Свёрнутые окна и окна на других рабочих столах — тоже."""
+    want = frozenset(pids)
+    found: dict[int, list[str]] = {}
+    if not want:
+        return found
+
+    def _cb(hwnd: int, _lp: int) -> bool:
+        if not w.user32.IsWindowVisible(hwnd) or w.user32.GetWindow(hwnd, GW_OWNER):
+            return True
+        pid = _pid(hwnd)
+        if pid in want:
+            title = _title(hwnd).strip()
+            if title:
+                found.setdefault(pid, []).append(title)
+        return True
+
+    w.user32.EnumWindows(w.WNDENUMPROC(_cb), 0)
+    return found
 
 
 def foreground() -> WindowInfo | None:

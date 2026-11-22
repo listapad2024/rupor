@@ -29,9 +29,19 @@
 возвращается, когда запись кончилась (стоп, отмена, выброс, лимит, пауза, смена микрофона
 или хоткеев), при смене duck_mode/duck_level, при выходе (сразу по команде quit — до
 завершения ядра) и в конце сеанса Windows (session_ending, WM_QUERYENDSESSION).
+Голосовые чаты (app_mute_*, appmute.py): у приложений из списка (live chat Codex, ChatGPT)
+Рупор нажимает кнопку «Отключить микрофон» сразу при нажатии клавиши диктовки (не ждёт
+подтверждения — первые слова не уходят в чат) и включает микрофон там же, где возвращается
+звук компьютера.
 
 Вставка только туда, где диктовали: если к моменту вставки активно другое окно (или фокус
 ушёл посреди печати), текст не вставляется, а остаётся в «Вставить последнее» и истории.
+
+Перевод встречи (meeting.py, команды meeting_*): движок владеет сеансом встречи и отдаёт ему
+модель только на низком приоритете — диктовка всегда первая (``_meeting_yield``: идёт запись,
+проверочная запись или диктовка ждёт распознавания). Встреча не ставит заданий в очередь
+диктовки, не трогает ``_busy``/``_ai_busy`` и не шлёт ``result``; пока она идёт, модель не
+выгружается, а браузер со встречей не приглушается во время диктовки (``Ducker.set_excluded``).
 
 Тексты уведомлений и ошибок — на языке интерфейса (i18n.tr, настройка language); смена
 языка применяется сразу (State.ui_language, событие state).
@@ -54,12 +64,16 @@ from typing import Any, Callable, Protocol
 
 import numpy as np
 
-from . import (ai, audio, broadcast, config, credman, duck, fetch, fuzzy, i18n, inject, keys,
+from . import (ai, appmute, audio, broadcast, config, credman, duck, fetch, fuzzy, i18n, inject, keys,
                layout, learn, recommend, sounds, spell, textproc, uia, vocab, winutil)
 from . import _win
+from . import fillers
+from . import speaker
+from . import meeting as mtg
+from . import meeting_detect as mdet
 from ._win import VK_RIGHT
-from .asr import (SAMPLE_RATE, ModelMissing, Recognizer, Result, cuda_compute_types,
-                  cuda_device_count, gpu_info)
+from .asr import (SAMPLE_RATE, ChunkResult, ModelMissing, Recognizer, Result,
+                  cuda_compute_types, cuda_device_count, gpu_info)
 from .config import MODE_AUTO, MODE_CLIPBOARD, MODE_TYPE, Settings
 from .hotkeys import (Action, Chord, GestureMachine, KeyboardHook, KeyGroup, Kind, key_group,
                       parse_chord, parse_ptt)
@@ -118,7 +132,8 @@ IDLE, LOADING, RECORDING, HANDS_FREE, PROCESSING, AI, PAUSED, ERROR = (
 
 # События, которые уходят в UI (остальные — внутренние, например "ready" для трея)
 PUBLIC_EVENTS = frozenset({"hello", "state", "level", "recording", "broadcast", "result",
-                           "history", "notice", "progress", "settings", "ai_usage"})
+                           "history", "notice", "progress", "settings", "ai_usage",
+                           "meeting", "meeting_line", "meeting_suggest", "meeting_notes"})
 
 
 def _version() -> str:
@@ -413,9 +428,40 @@ class RecognizerLike(Protocol):
     def unload(self) -> None: ...
     def detect_language(self, audio: np.ndarray) -> str: ...
     def transcribe(self, audio: np.ndarray, language: str | None = None) -> Result: ...
+    def transcribe_background(self, audio: np.ndarray, *, language: str | None,
+                              prompt: str | None, yield_to: Callable[[], bool] | None,
+                              timeout: float | None = None, beam_size: int = 1,
+                              temperature: float | tuple[float, ...] = (0.0, 0.2, 0.4)
+                              ) -> ChunkResult | None: ...
 
 
 RecorderFactory = Callable[[str | None, Callable[[float], None]], RecorderLike]
+# Источники звука встречи: (шаблоны заголовков, свои pid) → [AudioSource] (loopback.list_sources)
+SourceLister = Callable[[list[str], frozenset[int]], list[Any]]
+
+
+def _default_sources(patterns: list[str], own_pids: frozenset[int]) -> list[Any]:
+    from . import loopback
+    return list(loopback.list_sources(patterns, own_pids))
+
+
+def _default_loopback_available() -> bool:
+    from . import loopback
+    return bool(loopback.available())
+
+
+def _source_dict(src: Any, loopback_ok: bool = True) -> dict[str, Any]:
+    """AudioSource (dataclass loopback или словарь) → словарь для WS. ``available`` — этот
+    источник можно захватить: «весь звук» — всегда, программу — только с process loopback
+    (loopback_ok; Windows 11 / Server 2022)."""
+    d: dict[str, Any] = (dataclasses.asdict(src) if dataclasses.is_dataclass(src)
+                         and not isinstance(src, type) else dict(src))
+    kind = str(d.get("kind") or "process")
+    return {"id": str(d.get("id") or ""), "kind": kind,
+            "pid": d.get("pid"), "exe": str(d.get("exe") or ""),
+            "name": str(d.get("name") or ""), "title": str(d.get("title") or ""),
+            "meeting": bool(d.get("meeting")), "active": bool(d.get("active")),
+            "available": kind == "system" or bool(loopback_ok)}
 
 
 class FieldLike(Protocol):
@@ -430,12 +476,15 @@ class FieldLike(Protocol):
 class DuckerLike(Protocol):
     """Приглушение звука компьютера (duck.Ducker или фейк в тестах). duck/restore не
     блокируют; flush — дождаться выполненного (не дольше timeout); close — вернуть звук при
-    выходе (ждёт не дольше timeout)."""
+    выходе (ждёт не дольше timeout); set_excluded — не приглушать эти деревья процессов
+    (перевод встречи захватывает их звук; frozenset() — снять исключение; everything — не
+    приглушать ничего: встреча слушает весь звук), не блокирует."""
     def start(self) -> None: ...
     def duck(self, mode: str, level: int) -> None: ...
     def restore(self) -> None: ...
     def flush(self, timeout: float = ...) -> bool: ...
     def close(self, timeout: float = ...) -> bool: ...
+    def set_excluded(self, pids: frozenset[int], everything: bool = ...) -> None: ...
 
 
 FieldReader = Callable[[], FieldLike | None]
@@ -501,6 +550,12 @@ class Engine:
                  field_reader: FieldReader | None = None,
                  context_reader: ContextReader | None = None,
                  ducker: DuckerLike | None = None,
+                 app_muter: Any = None,
+                 meeting_sources: SourceLister | None = None,
+                 meeting_stream: mtg.StreamFactory | None = None,
+                 meeting_vad: Callable[[], mtg.ProbFn] | None = None,
+                 loopback_available: Callable[[], bool] | None = None,
+                 meeting_detector: mdet.MeetingDetector | None = None,
                  recordings: Recordings | None = None) -> None:
         self.s = settings
         # Язык сообщений ядра — из настроек (system → язык Windows); меняется на лету
@@ -517,6 +572,11 @@ class Engine:
         db_path = getattr(self.storage, "path", None)
         self.recordings = recordings if recordings is not None else Recordings(
             (Path(db_path).parent if db_path else config.app_dir()) / "recordings")
+        # Счёт «свой / чужой» по голосу (теневой режим, speaker_shadow): профиль и журнал —
+        # там же, рядом с базой
+        self.speaker = speaker.Shadow(
+            (Path(db_path).parent if db_path else config.app_dir()) / "speaker",
+            lambda: (self.s.speaker_own_score, self.s.speaker_alien_score))
         self.auto_download_model = auto_download_model
         self.rec: RecognizerLike = recognizer or Recognizer(settings, on_notice=self._rec_notice)
         self.rec.prompt_provider = self._asr_prompt
@@ -579,6 +639,28 @@ class Engine:
         self.ducker: DuckerLike = (ducker if ducker is not None
                                    else duck.Ducker(own_pids=self.own_pids))
         self._ducked = False
+        # Голосовые чаты не слышат диктовку (appmute.py, поток rupor-appmute); _app_muted —
+        # выключение запрошено (под self._lock)
+        self.app_muter: Any = (app_muter if app_muter is not None
+                               else appmute.AppMuter(own_pids=self.own_pids))
+        self._app_muted = False
+        # Перевод встречи: диктовок ждут распознавания (от STOP до конца rec.transcribe) —
+        # встреча в это время модель не берёт; сеанс встречи (последний — и после «Стоп»)
+        self._asr_pending = 0
+        self._lb_fallback_told = False      # «звук одной программы не захватить» — уже сказали
+        self._meeting: mtg.MeetingSession | None = None
+        self._meeting_prev: list[mtg.MeetingSession] = []   # сменённые новыми, ещё не кончились
+        self._meeting_lock = threading.RLock()
+        self._meeting_sources: SourceLister = meeting_sources or _default_sources
+        self._meeting_stream = meeting_stream            # None — loopback.LoopbackStream
+        self._meeting_vad = meeting_vad                  # None — Silero (meeting.default_prob_fn)
+        self._loopback_available = loopback_available or _default_loopback_available
+        # Встреча замечается сама (meeting_detect.py): программа держит микрофон ≥ 10 с и
+        # играет звук → событие meeting_suggest; аудиосессии — напрямую из Core Audio (дешевле
+        # полного списка источников), если источники не подменены (тесты)
+        self._detector: mdet.MeetingDetector = meeting_detector or mdet.MeetingDetector(
+            sources=self.meeting_sources, own_pids=self.own_pids,
+            sessions=mdet.audio_sessions if meeting_sources is None else None)
 
     # ---------- жизненный цикл ----------
 
@@ -613,11 +695,19 @@ class Engine:
             self.ducker.start()
         except Exception:
             log.exception("Звук компьютера: приглушение не запустилось")
+        try:
+            self.app_muter.start()
+        except Exception:
+            log.exception("Голосовые чаты: выключение не запустилось")
         if track_focus:
             self.focus.start()
             fg = winutil.foreground()
             if fg:
                 self._on_foreground(fg.hwnd)
+            # встреча замечается сама (микрофон + звук, meeting_detect) — тоже только в
+            # настоящем ядре (тесты зовут _meeting_detect_tick сами)
+            threading.Thread(target=self._meeting_detect_loop, name="rupor-meeting-detect",
+                             daemon=True).start()
         self._refresh_state(force=True)
         self._jobs.put(("load", None))
         self._open_recorder()
@@ -642,6 +732,8 @@ class Engine:
         with self._lock:
             # звук — первым делом (поток rupor-duck): остальное завершение его не ждёт
             self._duck_off()
+        # встреча — до всего остального: захват прочь, недописанные строки — в файл
+        self._meeting_shutdown()
         self._learn_stop("выход", evaluate=False)
         self.hook.stop()
         self.focus.stop()
@@ -650,9 +742,14 @@ class Engine:
         except Exception:
             log.exception("Звук компьютера: не удалось вернуть громкость при выходе")
         try:
+            self.app_muter.close()
+        except Exception:
+            log.exception("Голосовые чаты: не удалось вернуть звук при выходе")
+        try:
             self.recorder.close()
         except Exception:
             log.exception("Не удалось закрыть микрофон")
+        self.speaker.stop()
         self._ctl.put(None)
         self._jobs.put(None)
 
@@ -677,7 +774,13 @@ class Engine:
         момент, а оболочка на Tauri — снять его раньше, чем ядро завершится само."""
         with self._lock:
             ducked = self._ducked
+            app_muted = self._app_muted
             self._duck_off()
+        if app_muted:
+            try:
+                self.app_muter.flush(timeout)
+            except Exception:
+                log.exception("Голосовые чаты: не удалось вернуть звук до конца сеанса")
         if not ducked:
             return
         try:
@@ -740,6 +843,7 @@ class Engine:
                         "command": s.command_modifier, "cancel": s.cancel_key,
                         "insert_last": s.insert_last_hotkey, "copy_last": s.copy_last_hotkey,
                         "convert_layout": s.convert_layout_hotkey},
+            "meeting": self.meeting_status(),
         }
 
     def notice(self, text: str, level: str = "info", action: str | None = None,
@@ -914,6 +1018,9 @@ class Engine:
                 self.notice(tr("eng.mic_unavailable", error=e), level="error")
                 return
             log.info("Жест: запись началась")
+            with self._lock:
+                if self._session is new:
+                    self._app_mute_on()
             self._start_context(new)
             t1 = threading.Timer(CONFIRM_MS / 1000, self._confirm, (new.id,))
             t2 = threading.Timer(LANG_PREFETCH_S, self._prefetch_lang, (new.id,))
@@ -957,50 +1064,68 @@ class Engine:
                 self.notice(tr("eng.cancelled"))
             self._refresh_state()
         elif k is Kind.STOP:
-            self._end_session()
-            audio_data = self.recorder.stop()
-            t_release = time.perf_counter()
-            held_s = time.monotonic() - sess.started
-            log.info("Жест: стоп, удержание %.1f с, аудио %.1f с", held_s,
-                     len(audio_data) / SAMPLE_RATE)
-            if sess.broadcast:
-                self.bus.emit("broadcast", on=False)
-            if self.s.sounds:
-                sounds.play("stop")
-            if (held_s >= MIC_DEAD_HOLD_S
-                    and len(audio_data) < held_s * SAMPLE_RATE * MIC_DEAD_RATIO):
-                # Поток микрофона молчит (гарнитуру переподключили, сменился профиль BT):
-                # вместо записи — только старый пре-буфер. Сказать и переоткрыть микрофон.
-                log.warning("Микрофон не дал звука: %.1f с удержания → %.2f с аудио", held_s,
-                            len(audio_data) / SAMPLE_RATE)
-                if self.s.sounds:
-                    sounds.play("error")
-                self.notice(tr("eng.mic_silent"), level="error")
-                self._reopen_recorder()
-                return
-            if len(audio_data) < self.s.min_record_ms * SAMPLE_RATE / 1000:
-                self._refresh_state()
-                return
-            target = winutil.foreground()
-            if target is not None and self._is_foreign(target):
-                self._remember_window(target)
-            # Запись — на диск до распознавания: сорвётся распознавание или вставка —
-            # голос не потерян, его можно распознать заново (История → Записи)
-            rec_id = self.recordings.save(audio_data, self._rec_limits(),
-                                          ts=sess.started_wall,
-                                          app=target.process if target is not None else "")
-            with self._lock:
-                self._busy += 1
-            self._refresh_state()
-            self._jobs.put(("transcribe", _Job(sess, audio_data, t_release, target, rec_id)))
+            # Место в очереди распознавания — в том же замке, где кончается запись: иначе в
+            # промежутке (_meeting_yield ложно) встреча успела бы взять модель раньше диктовки.
+            # Распознавание не поставлено (короткая запись, молчащий микрофон, ошибка) —
+            # место вернуть; поставлено — его вернёт _process.
+            self._end_session(pending=True)
+            queued = False
+            try:
+                queued = self._stop_recording(sess)
+            finally:
+                if not queued:
+                    with self._lock:
+                        self._asr_pending = max(0, self._asr_pending - 1)
 
-    def _end_session(self) -> None:
+    def _stop_recording(self, sess: _Session) -> bool:
+        """STOP: запись → задание transcribe. True — задание поставлено."""
+        audio_data = self.recorder.stop()
+        t_release = time.perf_counter()
+        held_s = time.monotonic() - sess.started
+        log.info("Жест: стоп, удержание %.1f с, аудио %.1f с", held_s,
+                 len(audio_data) / SAMPLE_RATE)
+        if sess.broadcast:
+            self.bus.emit("broadcast", on=False)
+        if self.s.sounds:
+            sounds.play("stop")
+        if (held_s >= MIC_DEAD_HOLD_S
+                and len(audio_data) < held_s * SAMPLE_RATE * MIC_DEAD_RATIO):
+            # Поток микрофона молчит (гарнитуру переподключили, сменился профиль BT):
+            # вместо записи — только старый пре-буфер. Сказать и переоткрыть микрофон.
+            log.warning("Микрофон не дал звука: %.1f с удержания → %.2f с аудио", held_s,
+                        len(audio_data) / SAMPLE_RATE)
+            if self.s.sounds:
+                sounds.play("error")
+            self.notice(tr("eng.mic_silent"), level="error")
+            self._reopen_recorder()
+            return False
+        if len(audio_data) < self.s.min_record_ms * SAMPLE_RATE / 1000:
+            self._refresh_state()
+            return False
+        target = winutil.foreground()
+        if target is not None and self._is_foreign(target):
+            self._remember_window(target)
+        # Запись — на диск до распознавания: сорвётся распознавание или вставка —
+        # голос не потерян, его можно распознать заново (История → Записи)
+        rec_id = self.recordings.save(audio_data, self._rec_limits(),
+                                      ts=sess.started_wall,
+                                      app=target.process if target is not None else "")
+        with self._lock:
+            self._busy += 1             # _asr_pending взят в STOP: встреча ждёт распознавания
+        self._refresh_state()
+        self._jobs.put(("transcribe", _Job(sess, audio_data, t_release, target, rec_id)))
+        return True
+
+    def _end_session(self, pending: bool = False) -> None:
         """Запись кончилась (стоп, отмена, выброс, лимит, пауза, смена микрофона): таймеры
-        сессии — прочь, звук компьютера — вернуть."""
+        сессии — прочь, звук компьютера — вернуть. ``pending`` (STOP) — в том же замке занять
+        место распознавания (``_asr_pending``): встреча не возьмёт модель раньше диктовки."""
         with self._lock:
             if self._session:
                 for t in self._session.timers:
                     t.cancel()
+            if pending:
+                self._asr_pending += 1
             self._session = None
             self._duck_off()
 
@@ -1010,6 +1135,7 @@ class Engine:
         """Запись подтверждена — приглушить звук компьютера (duck_mode, duck_level). Не
         блокирует: Core Audio работает в потоке rupor-duck. Звать под self._lock — тогда
         приглушение не переживёт запись, закончившуюся в другом потоке."""
+        self._app_mute_on()
         mode = self.s.duck_mode
         if mode == duck.OFF:
             return
@@ -1021,6 +1147,7 @@ class Engine:
 
     def _duck_off(self) -> None:
         """Вернуть звук компьютера, если приглушали (звать под self._lock)."""
+        self._app_mute_off()
         if not self._ducked:
             return
         self._ducked = False
@@ -1028,6 +1155,29 @@ class Engine:
             self.ducker.restore()
         except Exception:
             log.exception("Звук компьютера: не удалось вернуть громкость")
+
+    def _app_mute_on(self) -> None:
+        """Голосовым чатам из списка выключить микрофон до конца записи (их же кнопкой;
+        звать под self._lock)."""
+        s = self.s
+        apps = s.app_mute_apps if s.app_mute_enabled else []
+        if not apps:
+            self._app_mute_off()
+            return
+        try:
+            self.app_muter.mute(apps)
+            self._app_muted = True
+        except Exception:
+            log.exception("Голосовые чаты: не удалось выключить")
+
+    def _app_mute_off(self) -> None:
+        if not self._app_muted:
+            return
+        self._app_muted = False
+        try:
+            self.app_muter.restore()
+        except Exception:
+            log.exception("Голосовые чаты: не удалось вернуть звук")
 
     def _recording_confirmed(self) -> bool:
         sess = self._session
@@ -1131,6 +1281,10 @@ class Engine:
                         log.debug("Раннее определение языка не удалось", exc_info=True)
                 elif kind == "transcribe":
                     self._process(payload)
+                    if self.s.speaker_shadow:
+                        # текст уже вставлен: счёт «свой / чужой» — в фоне, в журнал
+                        self.speaker.submit(payload.audio, payload.rec_id,
+                                            payload.sess.started_wall)
                 elif kind == "insert":
                     self._insert_to(*payload)
                 elif kind == "replace":
@@ -1802,7 +1956,9 @@ class Engine:
     # ---------- расход ИИ и баланс ----------
 
     def _ai_call(self, kind: str, app: str, fn: Callable[[], ai.AIResult]) -> ai.AIResult:
-        """Вызов ИИ с записью расхода (ai_usage) — и удачный, и с ошибкой (стоимость 0)."""
+        """Вызов ИИ с записью расхода (ai_usage) — и удачный, и с ошибкой. У ошибки стоимость
+        0, кроме ответа, который пришёл и оплачен, но не подошёл (обрезан, не название, не
+        заметки): ai.AIError.result — его настоящие стоимость и токены (_track_ai)."""
         t0 = time.perf_counter()
         try:
             r = fn()
@@ -1818,21 +1974,25 @@ class Engine:
         OpenRouter — обновить баланс в фоне, если кэш устарел. Ошибки базы вызов не срывают."""
         if r is not None and r.provider == "none":
             return                                   # «Как есть» — в сеть не ходили
-        if r is not None:
-            provider, model = r.provider, r.model
+        # ответ пришёл и оплачен, но не подошёл (обрезан, не название…) — вызов неудачный, но
+        # с настоящей стоимостью и токенами (ai.AIError.result)
+        paid = err.result if isinstance(err, ai.AIError) else None
+        src = r if r is not None else paid
+        if src is not None:
+            provider, model = src.provider, src.model
         else:
-            provider, model = ai.provider_model(self.s, command=kind == "command")
+            provider, model = ai.provider_model(self.s, kind=kind)
         rec: dict[str, Any] = {
             "ts": time.time(), "kind": kind, "provider": provider, "model": model,
-            "upstream": r.upstream if r is not None else None,
-            "tokens_in": r.tokens_in if r is not None else None,
-            "tokens_out": r.tokens_out if r is not None else None,
-            "cost_usd": r.cost_usd if r is not None else 0.0,
-            "ms": round(r.ms if r is not None and r.ms else ms), "ok": err is None,
+            "upstream": src.upstream if src is not None else None,
+            "tokens_in": src.tokens_in if src is not None else None,
+            "tokens_out": src.tokens_out if src is not None else None,
+            "cost_usd": src.cost_usd if src is not None else 0.0,
+            "ms": round(src.ms if src is not None and src.ms else ms), "ok": err is None,
             "error_kind": None if err is None else (
                 err.kind if isinstance(err, ai.AIError) else type(err).__name__),
             "app": app,
-            "key_id": r.key_id if r is not None else None,
+            "key_id": src.key_id if src is not None else None,
         }
         try:
             saved = self.storage.add_ai_usage(rec)
@@ -1843,8 +2003,8 @@ class Engine:
         self.bus.emit("ai_usage", kind=kind, cost_usd=saved["cost_usd"] or 0.0,
                       tokens_in=saved["tokens_in"] or 0, tokens_out=saved["tokens_out"] or 0,
                       today_cost_usd=today)
-        if err is None and provider == "openrouter" and r is not None:
-            kid = r.key_id
+        if (err is None or paid is not None) and provider == "openrouter" and src is not None:
+            kid = src.key_id
             if kid is None:                          # ключ передан мимо списка — активный
                 active = self._active_key()
                 kid = str(active["id"]) if active else None
@@ -2043,6 +2203,8 @@ class Engine:
             raise
         finally:
             self._prompt_local.job = None
+            with self._lock:
+                self._asr_pending = max(0, self._asr_pending - 1)
         self._model_phase = "ready"
         raw = res.text.strip()
         self.recordings.update(job.rec_id, status="ok" if raw else "empty", chars=len(raw))
@@ -2153,6 +2315,10 @@ class Engine:
                 self.storage.record_stats(words, res.audio_s)
             except Exception:
                 log.exception("Не удалось записать статистику")
+            try:
+                fillers.record(self.storage, raw)   # слова-паразиты — по сырому тексту ASR
+            except Exception:
+                log.exception("Не удалось записать статистику паразитов")
         if not self.s.history_enabled:
             return
         t = job.target
@@ -2379,6 +2545,7 @@ class Engine:
                 self._test_timer = None
             audio_data = self.recorder.stop()
             self._busy += 1
+            self._asr_pending += 1
         self._refresh_state()
         try:
             if len(audio_data) < 0.1 * SAMPLE_RATE:
@@ -2392,6 +2559,7 @@ class Engine:
         finally:
             with self._lock:
                 self._busy = max(0, self._busy - 1)
+                self._asr_pending = max(0, self._asr_pending - 1)
             self._refresh_state(force=True)
         text = self._dict_apply(res.text.strip(), self._dict_items())
         if text and self.s.history_enabled:
@@ -2418,6 +2586,11 @@ class Engine:
             return
         self._last_foreign = info
         self._remember_window(info)
+        try:
+            # заголовок вкладки встречи — для названия в предложении (meeting_suggest)
+            self._detector.title_hint(info.pid, info.title, self.s.meeting_title_patterns)
+        except Exception:
+            log.exception("Заголовок окна встречи не запомнен")
 
     def _remember_window(self, info: winutil.WindowInfo) -> None:
         """Недавние приложения: процесс в начало списка, его заголовок — в начало titles
@@ -2714,6 +2887,14 @@ class Engine:
                 log.exception("Не удалось подготовить звуки")
         if "ai_enabled" in changed or "ai_provider" in changed or "ai_keys" in changed:
             self._nokey_warned = False
+        if "ai_provider" in changed:
+            self._meeting_recheck_key()      # у нового провайдера ключ может быть
+        if any(k.startswith(("meeting_", "translate_")) for k in changed):
+            m = self._meeting
+            if m is not None and m.running:
+                m.settings_changed()
+            elif "meeting_translate" in changed or "meeting_target_lang" in changed:
+                self.bus.emit("meeting", self.meeting_status())
         if "duck_mode" in changed or "duck_level" in changed:
             # Во время записи: «Не трогать» — вернуть звук; другой режим или уровень — вернуть
             # и приглушить заново (Ducker делает это сам); из «Не трогать» — приглушить
@@ -2722,6 +2903,10 @@ class Engine:
                     self._duck_off()
                 elif self._ducked or self._recording_confirmed():
                     self._duck_on()
+        if {"app_mute_enabled", "app_mute_apps"} & set(changed):
+            with self._lock:
+                if self._app_muted:
+                    self._app_mute_on()   # выключено или список пуст — вернёт звук
         if ("first_run_done" in changed and s.first_run_done and not self.rec.loaded
                 and self._model_phase == "error"):
             self._jobs.put(("load", None))
@@ -2738,6 +2923,361 @@ class Engine:
                 self._key_checks.clear()
             else:
                 self._key_checks.pop(kid, None)
+        self._meeting_recheck_key()
+
+    # ---------- перевод встречи (meeting.py) ----------
+
+    def _meeting_yield(self) -> bool:
+        """Встреча уступает модель: идёт запись (с START — кусок встречи успевает
+        распознаться, пока пользователь говорит), проверочная запись или диктовка ждёт
+        распознавания. Зовётся под замком ModelGate — только чтение атрибутов."""
+        return (self._session is not None or self._test_started is not None
+                or self._asr_pending > 0)
+
+    def _meeting_running(self) -> bool:
+        m = self._meeting
+        return m is not None and m.running
+
+    def meeting_status(self) -> dict[str, Any]:
+        """MeetingStatus: идущая встреча или последняя (после «Стоп»), иначе пустой."""
+        m = self._meeting
+        return (m.status() if m is not None
+                else mtg.idle_status(self.s, loopback_available=self._loopback_ok()))
+
+    def _loopback_ok(self) -> bool:
+        """Звук одной программы можно захватить (process loopback: сборка Windows ≥ 20348)."""
+        try:
+            return bool(self._loopback_available())
+        except Exception:
+            log.debug("Захват звука программы: доступность не узнать", exc_info=True)
+            return False
+
+    def meeting_sources(self) -> list[dict[str, Any]]:
+        """[AudioSource]: процессы со звуком (по корню дерева) и «весь звук компьютера».
+        Без process loopback (Windows старее сборки 20348) процессы — с ``available: false``:
+        начать с ними можно, но слушаться будет весь звук (meeting_start)."""
+        ok = self._loopback_ok()
+        return [_source_dict(x, ok) for x in self._meeting_sources(
+            list(self.s.meeting_title_patterns), frozenset(self.own_pids))]
+
+    def _system_source(self, sources: list[dict[str, Any]]) -> dict[str, Any]:
+        for x in sources:
+            if x["kind"] == "system":
+                return x
+        from . import loopback
+        return _source_dict(loopback.system_source())
+
+    def _pick_meeting_source(self, sources: list[dict[str, Any]],
+                             source_id: str | None) -> dict[str, Any]:
+        if source_id and source_id != "auto":
+            for src in sources:
+                if src["id"] == source_id:
+                    return self._detector.decorate(src)
+            raise ValueError(tr("meeting.source_not_found", id=source_id))
+        # программа, которая держит микрофон и играет звук (встреча), — раньше просто
+        # играющей звук (браузер с YouTube); затем окно со встречей, играющий браузер; потом
+        # программа с микрофоном, чей звук сейчас не играет (забытая вкладка или помощник не
+        # перебьют играющий браузер), последний браузер
+        for src in self._detector.auto_sources(self.s, sources):
+            return self._detector.decorate(src)
+        for src in sources:
+            if src["meeting"]:
+                return src
+        for src in sources:
+            if src["kind"] == "process" and src["active"] and mtg.is_browser(src["exe"]):
+                return src
+        for src in self._detector.auto_sources(self.s, sources, active_only=False):
+            return self._detector.decorate(src)
+        lf = self._last_foreign
+        if lf is not None and mtg.is_browser(lf.process):
+            for src in sources:
+                if src["kind"] == "process" and src["pid"] == lf.pid:
+                    return src
+        raise ValueError(tr("meeting.no_source"))
+
+    def meeting_start(self, source_id: str | None = None) -> dict[str, Any]:
+        """Начать перевод встречи (WS meeting_start). source_id нет или "auto" — программа,
+        которая держит микрофон, иначе источник со встречей, иначе играющий браузер, иначе
+        ошибка (_pick_meeting_source). Звук одной программы не захватить (Windows старее
+        сборки 20348) — весь звук компьютера вместо программы (и вместо выбора «auto»), с
+        уведомлением один раз за запуск ядра. Встреча уже идёт с этим источником —
+        ничего не делать, с другим — перезапустить на новом. Модель не загружена — она
+        грузится как обычно, куски ждут её (waiting_gpu)."""
+        sources = self.meeting_sources()
+        lb_ok = self._loopback_ok()
+        fallback = False
+        if not lb_ok and (not source_id or source_id == "auto"):
+            src, fallback = self._system_source(sources), True
+        else:
+            src = self._pick_meeting_source(sources, source_id)
+            if src["kind"] == "process" and not lb_ok:
+                src, fallback = self._system_source(sources), True
+        if fallback:
+            log.info("Встреча: звук одной программы не захватить (process loopback) — весь "
+                     "звук компьютера")
+        if not self.rec.loaded:
+            if self._model_phase == "error":
+                raise ValueError(tr("meeting.model_not_ready", error=str(
+                    self._model_error or tr("asr.model_unloaded")).rstrip(" .")))
+            if self._model_phase != "loading":
+                # как при запуске ядра (задание load): загрузка, а если модели нет на диске —
+                # скачивание; куски встречи ждут её в очереди
+                self._jobs.put(("load", None))
+        cpu = (self.rec.device == "cpu") if self.rec.loaded else self.s.device == "cpu"
+        has_key = self._has_key(ai.meeting_provider(self.s))
+        with self._meeting_lock:
+            old = self._meeting
+            if old is not None and old.running and old.source.get("id") == src["id"]:
+                return old.status()
+            if old is not None:
+                # события прежней встречи (она ещё может дораспознавать) больше не идут:
+                # номера строк новой начинаются с 1
+                old.detach()
+                if old.running:
+                    log.info("Встреча: перезапуск на другом источнике")
+                    old.stop(drain=True)
+            app = mtg.exe_name(src["exe"])
+            terms = self._meeting_terms()
+            sess = mtg.MeetingSession(
+                src, settings=self.s, rec=self.rec,
+                emit=lambda ev, d: self.bus.emit(ev, d), notice=self.notice,
+                translate=self._meeting_translator(app, terms),
+                yield_to=self._meeting_yield, ai_busy=lambda: self._ai_busy,
+                stream_factory=self._meeting_stream,
+                prob_fn=self._meeting_vad() if self._meeting_vad is not None else None,
+                translate_ok=has_key, cpu=cpu, terms=terms,
+                on_end=self._meeting_ended,
+                # соединение с провайдером перевода — заранее (старт и начало каждой фразы)
+                warm=lambda: ai.prewarm(self.s, connections=2),
+                loopback_available=lb_ok,
+                # название записи по содержанию (meeting_ai_title) — свой поток сеанса
+                title_fn=self._meeting_titler(app),
+                # заметки к встрече (meeting_notes) — тоже свой поток
+                notes_fn=self._meeting_notes_fn(app))
+            sess.start()                    # не запустился захват — ValueError
+            if old is not None:
+                # прежняя ещё может дораспознавать и переименовывать файл (название по
+                # содержанию): выход ядра остановит и её (_meeting_shutdown)
+                self._meeting_prev = [m for m in self._meeting_prev if m.busy] + [old]
+            self._meeting = sess
+        self._meeting_exclude(src)
+        if fallback and not self._lb_fallback_told:
+            self._lb_fallback_told = True
+            self.notice(tr("meeting.loopback_fallback"), level="info")
+        if cpu:
+            self.notice(tr("meeting.cpu_slow"), level="warn")
+        if self.s.meeting_translate and not has_key:
+            self.notice(tr("meeting.no_key"), level="warn", action="open_settings_ai")
+        return sess.status()
+
+    def meeting_stop(self) -> dict[str, Any]:
+        """Остановить встречу (WS meeting_stop); не идёт — просто статус."""
+        with self._meeting_lock:
+            m = self._meeting
+        if m is not None and m.running:
+            m.stop(drain=True)
+        return self.meeting_status()
+
+    def meeting_autostop_cancel(self) -> dict[str, Any]:
+        """«Не останавливать» (WS meeting_autostop_cancel): снять отсчёт автоостановки идущей
+        встречи — до нового использования микрофона или речи. Встречи нет — просто статус."""
+        m = self._meeting
+        if m is not None and m.running:
+            m.autostop_cancel()
+        return self.meeting_status()
+
+    def meeting_lines(self, after_id: int | None = None, limit: int = 200
+                      ) -> list[dict[str, Any]]:
+        m = self._meeting
+        return m.lines(after_id, limit) if m is not None else []
+
+    def meeting_copy(self, what: str = "transcript") -> dict[str, int]:
+        """В буфер обмена (окно перевода без фокуса, navigator.clipboard там не работает):
+        transcript — вся расшифровка (перевод и оригинал), notes — заметки (Markdown), all —
+        заметки и под ними расшифровка. Копировать нечего — ValueError."""
+        m = self._meeting
+        notes = m.notes_text() if m is not None else ""
+        text = m.transcript_text() if m is not None else ""
+        if what == "notes":
+            if not notes.strip():
+                raise ValueError(tr("meeting.notes_nothing_to_copy"))
+            text = notes
+        elif what == "all":
+            if not notes.strip() and not text.strip():
+                raise ValueError(tr("meeting.nothing_to_copy"))
+            if notes.strip():
+                text = (f"{notes}\n\n## {tr('meeting.file_transcript')}\n\n{text}"
+                        if text.strip() else notes)
+        if not text.strip():
+            raise ValueError(tr("meeting.nothing_to_copy"))
+        inject.clipboard_set_text(text)
+        return {"chars": len(text)}
+
+    def meeting_notes(self) -> dict[str, Any]:
+        """Заметки к встрече сейчас (WS meeting_notes): идущей или последней. Сразу — MeetingNotes
+        (status running), готовые — событием meeting_notes. Встречи не было, расшифровка пуста —
+        ValueError."""
+        m = self._meeting
+        if m is None:
+            raise ValueError(tr("meeting.notes_no_meeting"))
+        return m.request_notes()
+
+    def meeting_notes_get(self) -> dict[str, Any] | None:
+        """MeetingNotes идущей (или последней) встречи; заметок не было — None."""
+        m = self._meeting
+        return m.notes() if m is not None else None
+
+    def meeting_file(self) -> Path | None:
+        """Файл расшифровки идущей (или последней) встречи; None — его ещё нет."""
+        m = self._meeting
+        return m.file if m is not None else None
+
+    def _meeting_terms(self) -> list[str]:
+        """Термины для подсказки Whisper и промпта перевода: настройки + словарь."""
+        out: list[str] = []
+        seen: set[str] = set()
+        for t in (*self.s.terms, *(str(d.get("term") or "") for d in self._dict_items())):
+            t = t.strip()
+            if t and t.casefold() not in seen:
+                seen.add(t.casefold())
+                out.append(t)
+        return out
+
+    def _meeting_translator(self, app: str, terms: list[str]) -> mtg.TranslateFn:
+        """Перевод встречи (одна строка ai_usage на вызов): кусок фразы — потоком,
+        продолжением показанного перевода (ai.translate_stream); вся фраза после её конца
+        (refine) — разом (ai.translate)."""
+        def fn(req: mtg.TrRequest) -> ai.AIResult:
+            if req.refine:
+                return self._ai_call("translate", app, lambda: ai.translate(
+                    req.text, req.src, req.dst, self.s, req.context, terms=terms))
+            return self._ai_call("translate", app, lambda: ai.translate_stream(
+                req.text, req.src, req.dst, self.s, req.context, done_src=req.done_src,
+                done_tr=req.done_tr, terms=terms, on_delta=req.on_delta))
+        return fn
+
+    def _meeting_titler(self, app: str) -> mtg.TitleFn:
+        """Название записи встречи по содержанию (ai.meeting_title; зовёт поток названия
+        сеанса, _ai_busy не трогает): одна строка ai_usage вида title на вызов. Нет ключа
+        провайдера — без вызова и без строки расхода (запись остаётся с названием без ИИ)."""
+        def fn(transcript: str, lang: str) -> ai.AIResult:
+            if not self._has_key(ai.meeting_provider(self.s)):
+                raise ai.AIError(tr("eng.ai_no_key"), "no_key")
+            return self._ai_call("title", app, lambda: ai.meeting_title(transcript, lang, self.s))
+        return fn
+
+    def _meeting_notes_fn(self, app: str) -> mtg.NotesFn:
+        """Заметки к встрече (ai.meeting_notes; зовёт поток заметок сеанса, _ai_busy не
+        трогает): каждый вызов провайдера (у длинной встречи — части и сведение) — одна строка
+        ai_usage вида notes, и тот, чей ответ не подошёл, — с его стоимостью. Нет ключа
+        провайдера — без вызова и без строки расхода."""
+        def fn(req: mtg.NotesRequest) -> ai.AIResult:
+            provider = ai.meeting_provider(self.s)
+            if not self._has_key(provider):
+                name = keys.PROVIDER_NAMES.get(provider, provider)
+                raise ai.AIError(tr("ai.no_key", name=name), "no_key")
+            return ai.meeting_notes(
+                req.transcript, req.lang, self.s, meta=req.meta, title=req.title,
+                on_delta=req.on_delta, track=lambda call: self._ai_call("notes", app, call),
+                in_progress=req.in_progress)
+        return fn
+
+    def _meeting_exclude(self, src: dict[str, Any] | None) -> None:
+        """Браузер встречи не приглушать во время диктовки: захват идёт после громкости
+        сессии — приглушённая встреча не расшифровалась бы. «Весь звук компьютера» — не
+        приглушать ничего (любая приглушённая программа пропала бы из захвата); None —
+        снять исключение."""
+        kind = src.get("kind") if src is not None else None
+        pid = src.get("pid") if src is not None and kind == "process" else None
+        try:
+            self.ducker.set_excluded(
+                frozenset({pid}) if isinstance(pid, int) and pid > 0 else frozenset(),
+                everything=kind == "system")
+        except Exception:
+            log.exception("Звук компьютера: не удалось исключить браузер встречи")
+
+    def _meeting_ended(self, sess: mtg.MeetingSession) -> None:
+        """Встреча кончилась (Стоп, ошибка, источник закрыт): снять исключение приглушения,
+        не предлагать её снова сразу же (разговор, который ещё идёт, — тоже)."""
+        self._detector.session_over()
+        if self._meeting is sess or self._meeting is None or not self._meeting.running:
+            self._meeting_exclude(None)
+
+    def _meeting_recheck_key(self) -> None:
+        m = self._meeting
+        if m is not None and m.running:
+            m.set_translate_available(self._has_key(ai.meeting_provider(self.s)))
+
+    def _meeting_shutdown(self) -> None:
+        """Выход ядра: идущая встреча и сменённые ею (ещё дораспознают или переименовывают
+        файл) — abort: готовое — в файл, переименование в полёте доделается, новых нет."""
+        for m in (*self._meeting_prev, self._meeting):
+            if m is None:
+                continue
+            try:
+                m.abort()
+            except Exception:
+                log.exception("Встреча не остановилась при выходе")
+        self._meeting_prev = []
+
+    # ---------- встреча замечается сама (meeting_detect.py) ----------
+
+    def _meeting_detect_loop(self) -> None:
+        """Раз в POLL_S (2 с): встречи нет — кто держит микрофон (предложение
+        meeting_suggest); встреча идёт — не кончилась ли она (MeetingStatus.hint)."""
+        while not self._stop.wait(mdet.POLL_S):
+            try:
+                self._meeting_detect_tick()
+            except Exception:
+                log.debug("Обнаружение встречи: опрос не удался", exc_info=True)
+
+    def _meeting_detect_tick(self) -> None:
+        """Один опрос. Идёт встреча — реестр целиком не читается, только запись микрофона её
+        программы: подсказка «закончилась» (meeting_autosuggest) и автоостановка
+        (meeting_autostop; сама решает MeetingSession.autostop_tick). Встречи нет —
+        предложения (meeting_autosuggest)."""
+        s = self.s
+        m = self._meeting
+        if m is not None and m.running:
+            started = m.started_at or ""
+            hint = None
+            if s.meeting_autosuggest or s.meeting_autostop:
+                hint = self._detector.session_tick(s, m.source, started)
+            if not s.meeting_autosuggest:
+                hint = None
+            if hint != m.hint:
+                m.set_hint(hint)
+            mic = self._detector.session_mic(started)
+            m.autostop_tick(mic_tracked=mic.tracked, mic_free_s=mic.free_s,
+                            mic_in_use=mic.in_use)
+            return
+        if not s.first_run_done:
+            return                          # мастер первого запуска ещё не пройден
+        sugg = self._detector.poll(s)
+        if sugg is not None and not self._meeting_running():
+            self.bus.emit("meeting_suggest", sugg.payload())
+
+    def meeting_suggest_answer(self, sid: str, answer: str) -> dict[str, Any] | None:
+        """Ответ на meeting_suggest: ``start`` — начать перевод с источником предложения
+        (MeetingStatus); ``later`` — «Не сейчас» (этот разговор больше не предлагается, а у
+        браузера без заголовка встречи — и такие предложения 30 мин: MeetingDetector.snooze);
+        ``never`` — exe программы в meeting_ignore_apps. Предложение неизвестно или устарело —
+        ValueError (``later`` — молча)."""
+        sugg = self._detector.take(sid)
+        if sugg is None:
+            if answer == "later":
+                return None
+            raise ValueError(tr("meeting.suggest_expired"))
+        log.info("Предложение встречи (%s): ответ %s", sugg.exe, answer)
+        if answer == "later":
+            self._detector.snooze(sugg)
+        if answer == "start":
+            return self.meeting_start(str(sugg.source.get("id") or "") or None)
+        if answer == "never" and sugg.exe:
+            exe = sugg.exe
+            self.modify_settings(lambda s: None if exe in s.meeting_ignore_apps
+                                 else {"meeting_ignore_apps": [*s.meeting_ignore_apps, exe]})
+        return None
 
     # ---------- фон: выгрузка модели, срок хранения истории ----------
 
@@ -2754,8 +3294,17 @@ class Engine:
         except Exception:
             log.exception("Не удалось удалить старую историю")
 
+    def _idle_unload_due(self) -> bool:
+        """Пора выгрузить модель (unload_after_min): ничего не записывается и не
+        распознаётся, встреча не идёт, модель не нужна дольше заданного."""
+        n = self.s.unload_after_min
+        return (n > 0 and self.rec.loaded and self._session is None and self._busy == 0
+                and self._test_started is None and not self._meeting_running()
+                and time.monotonic() - self.rec.last_used > n * 60)
+
     def _idle_loop(self) -> None:
         self._purge(force=True)
+        self.recordings.items()            # сведения о записях голоса — до первой диктовки
         if self.s.dict_fuzzy:
             spell.warm_up()                # словари Windows — до первой диктовки
         try:
@@ -2766,10 +3315,7 @@ class Engine:
         except Exception:
             log.exception("Не удалось запустить пересборку словаря частот")
         while not self._stop.wait(30):
-            n = self.s.unload_after_min
-            if (n > 0 and self.rec.loaded and self._session is None and self._busy == 0
-                    and self._test_started is None
-                    and time.monotonic() - self.rec.last_used > n * 60):
+            if self._idle_unload_due():
                 self.rec.unload()
                 self._model_phase = "unloaded"
                 self._refresh_state(force=True)

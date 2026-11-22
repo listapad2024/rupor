@@ -10,6 +10,7 @@ import {
   Languages,
   Laptop,
   LogOut,
+  MessagesSquare,
   Mic,
   Monitor,
   MonitorOff,
@@ -30,6 +31,7 @@ import {
 } from "lucide-react";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { DuckSection } from "../components/Duck";
+import { AppMuteSection } from "../components/AppMute";
 import { CommitInput, Stepper } from "../components/fields";
 import { ChordCapture, HotkeyCapture } from "../components/HotkeyCapture";
 import { KeyChain } from "../components/KeyChain";
@@ -47,7 +49,7 @@ import type { MouseButton } from "../lib/types";
 const MOUSE_OPTIONS: MouseButton[] = ["", "middle", "x1", "x2"];
 import { Tabs } from "../components/ui/tabs";
 import { useToast } from "../components/ui/toast";
-import { languageName, NATIVE_NAMES, systemLocale, t, tp, type TKey } from "../i18n";
+import { formatNumber, languageName, NATIVE_NAMES, systemLocale, t, tp, type TKey } from "../i18n";
 import { cn } from "../lib/cn";
 import { fmtMb } from "../lib/format";
 import { useLoad, useMicMonitor } from "../lib/hooks";
@@ -56,13 +58,33 @@ import { comboParts, keyLabel } from "../lib/keys";
 import { reloadRdp, sameKey, toggleRdp, useRdpWindows } from "../lib/rdp";
 import { navigate, useHashAnchor } from "../lib/router";
 import { useCore } from "../lib/store";
-import { autostartEnabled, inTauri, quitApp, relaunchAdmin, setAutostart } from "../lib/tauri";
+import { fmtSpend } from "../lib/format";
+import { MEETING_LANGS, meetingLangName, useMeetingStatus } from "../lib/meeting";
+import { NOTES_DEFAULT_MODEL, NOTES_PRESETS, meetingProvider, notesCostPerHour, notesModelId } from "../lib/notesModels";
+import {
+  autostartEnabled,
+  inTauri,
+  meetingWindowReset,
+  meetingWindowShow,
+  pickFolder,
+  quitApp,
+  relaunchAdmin,
+  setAutostart,
+} from "../lib/tauri";
 import { ACCENT_PRESETS, normalizeAccent } from "../lib/theme";
-import type { DictationLanguage, InsertMode, LanguagePref, Settings, SettingsPatch, ThemeMode } from "../lib/types";
+import type {
+  DictationLanguage,
+  InsertMode,
+  LanguagePref,
+  MeetingLang,
+  Settings,
+  SettingsPatch,
+  ThemeMode,
+} from "../lib/types";
 import { backend, call } from "../lib/ws";
 import { AiModePicker } from "./Styles";
 
-const SECTIONS = ["general", "dictation", "insert", "ai", "history", "about"] as const;
+const SECTIONS = ["general", "dictation", "insert", "ai", "meeting", "history", "about"] as const;
 type Section = (typeof SECTIONS)[number];
 
 export function SettingsPage({ section }: { section: string | null }) {
@@ -94,6 +116,7 @@ export function SettingsPage({ section }: { section: string | null }) {
             {current === "dictation" && <Dictation s={settings} set={updateSettings} />}
             {current === "insert" && <Insert s={settings} set={updateSettings} />}
             {current === "ai" && <Ai s={settings} set={updateSettings} />}
+            {current === "meeting" && <MeetingSection s={settings} set={updateSettings} />}
             {current === "history" && <HistorySection s={settings} set={updateSettings} />}
             {current === "about" && <About />}
           </motion.div>
@@ -415,6 +438,8 @@ function Dictation({ s, set }: SectionProps) {
       </section>
 
       <DuckSection s={s} set={set} />
+
+      <AppMuteSection s={s} set={set} />
 
       <section>
         <SectionTitle hint={t("settings.dictation.asrHint")}>{t("settings.dictation.asr")}</SectionTitle>
@@ -964,12 +989,353 @@ function Ai({ s, set }: SectionProps) {
   );
 }
 
+// ——— Встречи ———
+
+function MeetingSection({ s, set }: SectionProps) {
+  const toast = useToast();
+  const tauri = inTauri();
+  const [timeout, setTimeoutV] = useState(s.translate_timeout_s);
+  useEffect(() => setTimeoutV(s.translate_timeout_s), [s.translate_timeout_s]);
+  const fail = (e: unknown) => toast({ tone: "error", title: t("errors.generic"), description: errorText(e) });
+  const { state } = useCore();
+  const meeting = useMeetingStatus(state?.meeting);
+  const running = Boolean(meeting?.running);
+  const sourceName = meeting?.source ? [meeting.source.name, meeting.source.title].filter(Boolean).join(" — ") : "";
+
+  const langs: SelectOption<MeetingLang>[] = MEETING_LANGS.map((l) => ({ value: l, label: meetingLangName(l) }));
+  const sourceLangs: SelectOption<"auto" | MeetingLang>[] = [
+    { value: "auto", label: t("meeting.langAuto"), icon: <Languages /> },
+    ...langs,
+  ];
+  // модель перевода по умолчанию — модель очистки провайдера встречи (первого ключа списка)
+  const tProvider = meetingProvider(s);
+  const cleanupModel =
+    tProvider === "anthropic" ? s.anthropic_model : tProvider === "ollama" ? s.ollama_model : s.ai_model;
+
+  const browse = async () => {
+    try {
+      const picked = await pickFolder(s.meeting_dir || undefined, t("settings.meeting.dirPick"));
+      if (picked) await set({ meeting_dir: picked });
+    } catch (e) {
+      fail(e);
+    }
+  };
+
+  return (
+    <>
+      <Card padded={false} className={cn("overflow-hidden", running && "border-accent/40")}>
+        <div className="flex items-start gap-4 px-5 py-4">
+          <span
+            className={cn(
+              "flex size-10 shrink-0 items-center justify-center rounded-xl transition-colors",
+              running ? "bg-accent text-accent-fg" : "bg-accent-soft text-accent-text",
+            )}
+          >
+            <MessagesSquare className="size-5" />
+          </span>
+          <div className="min-w-0 flex-1">
+            <div className="text-[14.5px] font-semibold text-fg">{t("settings.meeting.windowTitle")}</div>
+            <div className="mt-0.5 text-[12.5px] leading-relaxed text-muted">
+              {running ? t("settings.meeting.running", { source: sourceName }) : t("settings.meeting.windowHint")}
+            </div>
+            <div className="mt-3 flex flex-wrap gap-2">
+              <Button
+                size="sm"
+                variant="primary"
+                icon={<MessagesSquare className="size-4" />}
+                onClick={() => meetingWindowShow().catch(fail)}
+              >
+                {t("settings.meeting.show")}
+              </Button>
+              <Button
+                size="sm"
+                variant="secondary"
+                icon={<FolderOpen className="size-4" />}
+                onClick={() => call("meeting_open_folder").catch(fail)}
+              >
+                {t("settings.meeting.openFolder")}
+              </Button>
+            </div>
+          </div>
+        </div>
+      </Card>
+
+      <section>
+        <SectionTitle hint={t("settings.meeting.translationHint")}>{t("settings.meeting.translation")}</SectionTitle>
+        <Card padded={false}>
+          <SettingRow title={t("settings.meeting.translate")} description={t("settings.meeting.translateHint")}>
+            <Switch
+              label={t("settings.meeting.translate")}
+              checked={s.meeting_translate}
+              onChange={(v) => void set({ meeting_translate: v })}
+            />
+          </SettingRow>
+          <SettingRow title={t("settings.meeting.refine")} description={t("settings.meeting.refineHint")}>
+            <Switch
+              label={t("settings.meeting.refine")}
+              checked={s.meeting_refine}
+              disabled={!s.meeting_translate}
+              onChange={(v) => void set({ meeting_refine: v })}
+            />
+          </SettingRow>
+          <SettingRow title={t("settings.meeting.targetLang")} description={t("settings.meeting.targetLangHint")}>
+            <Select<MeetingLang>
+              value={s.meeting_target_lang}
+              options={langs}
+              onChange={(v) => void set({ meeting_target_lang: v })}
+              className="w-[220px]"
+              align="right"
+            />
+          </SettingRow>
+          <SettingRow title={t("settings.meeting.sourceLang")} description={t("settings.meeting.sourceLangHint")}>
+            <Select<"auto" | MeetingLang>
+              value={s.meeting_source_lang}
+              options={sourceLangs}
+              onChange={(v) => void set({ meeting_source_lang: v })}
+              className="w-[220px]"
+              align="right"
+            />
+          </SettingRow>
+          <SettingRow title={t("settings.meeting.model")} description={t("settings.meeting.modelHint", { model: cleanupModel })}>
+            <CommitInput
+              mono
+              className="w-[300px]"
+              value={s.translate_model}
+              placeholder={cleanupModel}
+              onCommit={(v) => void set({ translate_model: v })}
+            />
+          </SettingRow>
+          <SettingRow title={t("settings.meeting.timeout")} description={t("settings.meeting.timeoutHint")}>
+            <Slider
+              className="w-[260px]"
+              value={timeout}
+              min={1}
+              max={30}
+              onChange={setTimeoutV}
+              onCommit={(v) => v !== s.translate_timeout_s && void set({ translate_timeout_s: v })}
+              format={(v) => t("time.sec", { n: v })}
+            />
+          </SettingRow>
+        </Card>
+      </section>
+
+      <section>
+        <SectionTitle>{t("settings.meeting.window")}</SectionTitle>
+        <Card padded={false}>
+          <SettingRow title={t("settings.meeting.showOriginal")} description={t("settings.meeting.showOriginalHint")}>
+            <Switch
+              label={t("settings.meeting.showOriginal")}
+              checked={s.meeting_show_original}
+              onChange={(v) => void set({ meeting_show_original: v })}
+            />
+          </SettingRow>
+          <SettingRow title={t("settings.meeting.fontSize")} description={t("settings.meeting.fontSizeHint")}>
+            <Stepper value={s.meeting_font_size} min={12} max={28} onChange={(v) => void set({ meeting_font_size: v })} suffix="px" />
+          </SettingRow>
+          <SettingRow title={t("settings.meeting.protect")} description={t("settings.meeting.protectHint")}>
+            <Switch
+              label={t("settings.meeting.protect")}
+              checked={s.meeting_protect}
+              onChange={(v) => void set({ meeting_protect: v })}
+            />
+          </SettingRow>
+          {s.meeting_rect && (
+            <SettingRow title={t("settings.meeting.position")} description={t("settings.meeting.positionHint")}>
+              <Button
+                size="sm"
+                variant="secondary"
+                onClick={() => {
+                  void set({ meeting_rect: null });
+                  meetingWindowReset().catch(fail);
+                }}
+              >
+                {t("settings.meeting.dock")}
+              </Button>
+            </SettingRow>
+          )}
+        </Card>
+      </section>
+
+      <section>
+        <SectionTitle>{t("settings.meeting.suggest")}</SectionTitle>
+        <Card padded={false}>
+          <SettingRow title={t("settings.meeting.autosuggest")} description={t("settings.meeting.autosuggestHint")}>
+            <Switch
+              label={t("settings.meeting.autosuggest")}
+              checked={s.meeting_autosuggest}
+              onChange={(v) => void set({ meeting_autosuggest: v })}
+            />
+          </SettingRow>
+          <SettingRow title={t("settings.meeting.desktopApps")} description={t("settings.meeting.desktopAppsHint")}>
+            <Switch
+              label={t("settings.meeting.desktopApps")}
+              checked={s.meeting_detect_desktop_apps}
+              disabled={!s.meeting_autosuggest}
+              onChange={(v) => void set({ meeting_detect_desktop_apps: v })}
+            />
+          </SettingRow>
+          <SettingRow title={t("settings.meeting.autostop")} description={t("settings.meeting.autostopHint")}>
+            <Switch
+              label={t("settings.meeting.autostop")}
+              checked={s.meeting_autostop}
+              onChange={(v) => void set({ meeting_autostop: v })}
+            />
+          </SettingRow>
+          <SettingRow stacked title={t("settings.meeting.ignoreApps")} description={t("settings.meeting.ignoreAppsHint")}>
+            <ChipInput
+              mono
+              values={s.meeting_ignore_apps}
+              onChange={(v) => void set({ meeting_ignore_apps: v })}
+              placeholder={t("settings.meeting.ignoreAppsPlaceholder")}
+            />
+          </SettingRow>
+          <SettingRow stacked title={t("settings.meeting.patterns")} description={t("settings.meeting.patternsHint")}>
+            <ChipInput
+              values={s.meeting_title_patterns}
+              onChange={(v) => void set({ meeting_title_patterns: v })}
+              placeholder={t("settings.meeting.patternsPlaceholder")}
+            />
+          </SettingRow>
+        </Card>
+      </section>
+
+      <section>
+        <SectionTitle>{t("settings.meeting.record")}</SectionTitle>
+        <Card padded={false}>
+          <SettingRow title={t("settings.meeting.save")} description={t("settings.meeting.saveHint")}>
+            <Switch label={t("settings.meeting.save")} checked={s.meeting_save} onChange={(v) => void set({ meeting_save: v })} />
+          </SettingRow>
+          <SettingRow title={t("settings.meeting.aiTitle")} description={t("settings.meeting.aiTitleHint")}>
+            <Switch
+              label={t("settings.meeting.aiTitle")}
+              checked={s.meeting_ai_title}
+              onChange={(v) => void set({ meeting_ai_title: v })}
+            />
+          </SettingRow>
+          <SettingRow stacked title={t("settings.meeting.dir")} description={t("settings.meeting.dirHint")}>
+            <div className="flex items-center gap-2">
+              <CommitInput
+                mono
+                className="min-w-0 flex-1"
+                value={s.meeting_dir}
+                placeholder={MEETING_DIR_PLACEHOLDER}
+                onCommit={(v) => void set({ meeting_dir: v })}
+              />
+              {tauri && (
+                <Button size="sm" variant="secondary" icon={<FolderOpen className="size-4" />} onClick={() => void browse()}>
+                  {t("settings.meeting.browse")}
+                </Button>
+              )}
+              {s.meeting_dir && (
+                <Button size="sm" variant="ghost" onClick={() => void set({ meeting_dir: "" })}>
+                  {t("settings.meeting.dirDefault")}
+                </Button>
+              )}
+            </div>
+          </SettingRow>
+        </Card>
+      </section>
+
+      <section>
+        <SectionTitle>{t("settings.meeting.notesSection")}</SectionTitle>
+        <Card padded={false}>
+          <SettingRow title={t("settings.meeting.notes")} description={t("settings.meeting.notesHint")}>
+            <Switch
+              label={t("settings.meeting.notes")}
+              checked={s.meeting_notes}
+              onChange={(v) => void set({ meeting_notes: v })}
+            />
+          </SettingRow>
+          <NotesModelRow s={s} set={set} />
+        </Card>
+      </section>
+    </>
+  );
+}
+
+/** Своя модель заметок (не из готовых) — значение выбора. */
+const NOTES_CUSTOM = "__custom";
+
+/**
+ * Модель заметок: готовые модели провайдера (по умолчанию — Claude Sonnet 5.5) с ценой часа
+ * встречи и «Своя модель» — поле для id. Модель по умолчанию — пустая настройка (ядро берёт
+ * сильную модель провайдера само); у Ollama готовых нет — локальная модель или своя.
+ */
+function NotesModelRow({ s, set }: SectionProps) {
+  const provider = meetingProvider(s);
+  const presets = NOTES_PRESETS[provider] ?? [];
+  const own = s.meeting_notes_model.trim();
+  const preset = own ? presets.find((p) => p.id === own) : presets[0];
+  const [custom, setCustom] = useState(Boolean(own) && !preset);
+  // другая модель (настройка сменилась снаружи, другой провайдер) — своя ли она
+  useEffect(() => {
+    const list = NOTES_PRESETS[provider] ?? [];
+    setCustom(Boolean(own) && !list.some((p) => p.id === own));
+  }, [own, provider]);
+  const options: SelectOption<string>[] = [
+    ...presets.map((p) => ({
+      value: p.id,
+      label: t(`settings.meeting.notesPresets.${p.label}`),
+      hint: t("settings.meeting.notesCost", { cost: fmtSpend(notesCostPerHour(p.price)) }),
+    })),
+    { value: NOTES_CUSTOM, label: t("settings.meeting.notesModelCustom"), hint: t("settings.meeting.notesModelCustomHint") },
+  ];
+  const pick = (v: string) => {
+    if (v === NOTES_CUSTOM) {
+      setCustom(true);
+      return;
+    }
+    setCustom(false);
+    void set({ meeting_notes_model: v === NOTES_DEFAULT_MODEL[provider] ? "" : v });
+  };
+  const price = preset && !custom ? notesCostPerHour(preset.price) : null;
+  const description =
+    s.ai_provider === "ollama"
+      ? t("settings.meeting.notesModelOllama", { model: notesModelId(s) })
+      : price !== null
+        ? t("settings.meeting.notesModelHint", { cost: fmtSpend(price) })
+        : t("settings.meeting.notesModelHintUnknown");
+  const showInput = custom || presets.length === 0;
+  return (
+    <SettingRow title={t("settings.meeting.notesModel")} description={description}>
+      <div className="flex flex-col items-end gap-2">
+        {presets.length > 0 && (
+          <Select<string>
+            value={custom || !preset ? NOTES_CUSTOM : preset.id}
+            options={options}
+            onChange={pick}
+            className="w-[300px]"
+            minWidth={320}
+            align="right"
+          />
+        )}
+        {showInput && (
+          <CommitInput
+            mono
+            className="w-[300px]"
+            value={s.meeting_notes_model}
+            placeholder={
+              presets.length
+                ? t("settings.meeting.notesModelPlaceholder", { provider: t(`settings.ai.providers.${s.ai_provider}`) })
+                : s.ollama_model
+            }
+            onCommit={(v) => void set({ meeting_notes_model: v })}
+          />
+        )}
+      </div>
+    </SettingRow>
+  );
+}
+
+/** Папка записей по умолчанию (settings.meeting_dir = ""). */
+const MEETING_DIR_PLACEHOLDER = String.raw`%APPDATA%\Rupor\meetings`;
+
 // ——— История ———
 
 function HistorySection({ s, set }: SectionProps) {
   const days = [0, 7, 30, 90, 180, 365];
-  const keeps = [0, 10, 30, 50, 100];
-  const limits = [100, 300, 500, 1000, 2000];
+  const keeps = [0, 10, 30, 50, 100, 500, 1000, 2000, 5000, 10000];
+  const limits = [100, 300, 500, 1000, 2000, 5000, 10000, 20000];
   return (
     <section>
       <SectionTitle>{t("settings.history.title")}</SectionTitle>
@@ -1000,7 +1366,7 @@ function HistorySection({ s, set }: SectionProps) {
             onChange={(v) => void set({ recordings_keep: v })}
             className="w-[200px]"
             align="right"
-            options={keeps.map((n) => ({ value: n, label: n === 0 ? t("settings.history.recOff") : String(n) }))}
+            options={keeps.map((n) => ({ value: n, label: n === 0 ? t("settings.history.recOff") : formatNumber(n) }))}
           />
         </SettingRow>
         <SettingRow title={t("settings.history.recLimit")} description={t("settings.history.recLimitHint")}>
@@ -1011,6 +1377,13 @@ function HistorySection({ s, set }: SectionProps) {
             align="right"
             disabled={s.recordings_keep === 0}
             options={limits.map((mb) => ({ value: mb, label: fmtMb(mb) }))}
+          />
+        </SettingRow>
+        <SettingRow title={t("settings.history.speaker")} description={t("settings.history.speakerHint")}>
+          <Switch
+            label={t("settings.history.speaker")}
+            checked={s.speaker_shadow}
+            onChange={(v) => void set({ speaker_shadow: v })}
           />
         </SettingRow>
         <SettingRow title={t("settings.history.clear")} description={t("settings.history.clearHint")}>

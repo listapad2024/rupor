@@ -1,0 +1,1225 @@
+/* Окно перевода встречи: непрозрачная панель у правого края экрана. Тема и акцент — общие
+   токены (app.css), размер текста — --mf (meeting_font_size). Читать её приходится на ходу,
+   во время разговора: перевод крупно и контрастно, оригинал мельче и тише, время — совсем мелко. */
+
+html.meeting-root,
+html.meeting-root body,
+#meeting-root {
+  height: 100%;
+}
+
+html.meeting-root body {
+  background: var(--c-surface);
+  overflow: hidden;
+}
+
+html.meeting-root {
+  /* фон ленты чуть мягче белого/чёрного — меньше бликов при долгом чтении */
+  --meeting-bg: color-mix(in oklab, var(--c-surface) 92%, var(--c-bg));
+  --meeting-head: var(--c-surface);
+}
+
+html.meeting-root.dark {
+  --meeting-bg: #141418;
+  --meeting-head: #19191e;
+}
+
+.meeting-shell {
+  display: flex;
+  height: 100%;
+  flex-direction: column;
+  background: var(--meeting-bg);
+  color: var(--c-fg);
+}
+
+/* ——— Шапка ——— */
+
+.meeting-head {
+  position: relative;
+  z-index: 2;
+  flex-shrink: 0;
+  background: var(--meeting-head);
+  border-bottom: 1px solid var(--c-line);
+  box-shadow: 0 1px 0 rgb(0 0 0 / 0.02);
+}
+
+.meeting-tone-ok {
+  color: var(--c-success);
+}
+.meeting-tone-warn {
+  color: var(--c-warn);
+}
+.meeting-tone-muted,
+.meeting-tone-idle {
+  color: var(--c-muted);
+}
+.meeting-tone-err {
+  color: var(--c-danger);
+}
+
+/* Точка состояния и индикатор звука */
+.meeting-mark {
+  display: flex;
+  height: 32px;
+  width: 32px;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  border-radius: 10px;
+  background: var(--c-surface-2);
+  color: var(--c-subtle);
+}
+.meeting-mark-ok {
+  color: var(--c-success);
+  background: color-mix(in oklab, var(--c-success) 12%, transparent);
+}
+.meeting-mark-warn {
+  color: var(--c-warn);
+  background: color-mix(in oklab, var(--c-warn) 13%, transparent);
+}
+.meeting-mark-err {
+  color: var(--c-danger);
+  background: color-mix(in oklab, var(--c-danger) 12%, transparent);
+}
+
+.meeting-dot {
+  display: none;
+}
+.meeting-mark-idle .meeting-dot,
+.meeting-mark-err .meeting-dot,
+.meeting-mark-muted .meeting-dot {
+  display: block;
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: currentColor;
+}
+.meeting-mark-idle .meeting-level,
+.meeting-mark-err .meeting-level,
+.meeting-mark-muted .meeting-level {
+  display: none;
+}
+
+.meeting-level {
+  display: flex;
+  height: 14px;
+  align-items: center;
+  gap: 2px;
+}
+.meeting-level i {
+  display: block;
+  width: 3px;
+  height: 14px;
+  border-radius: 2px;
+  background: currentColor;
+  transform-origin: center;
+  transition: transform 240ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.meeting-mark-warn .meeting-level i {
+  opacity: 0.7;
+}
+
+/* Кнопки шапки */
+.meeting-icon-btn {
+  display: flex;
+  height: 30px;
+  width: 30px;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  border-radius: 9px;
+  color: var(--c-muted);
+  transition:
+    background-color 150ms ease,
+    color 150ms ease;
+}
+.meeting-icon-btn:hover {
+  background: var(--c-surface-2);
+  color: var(--c-fg);
+}
+.meeting-icon-btn:disabled {
+  opacity: 0.4;
+  pointer-events: none;
+}
+.meeting-icon-btn-on {
+  background: var(--c-accent-soft);
+  color: var(--c-accent-text);
+}
+.meeting-icon-btn svg {
+  width: 16px;
+  height: 16px;
+}
+.meeting-icon-btn-danger:hover {
+  background: color-mix(in oklab, var(--c-danger) 12%, transparent);
+  color: var(--c-danger);
+}
+.meeting-icon-btn-danger.meeting-icon-btn-on {
+  background: color-mix(in oklab, var(--c-danger) 12%, transparent);
+  color: var(--c-danger);
+}
+/* «Свернуть» и «Закрыть» — отдельной парой справа, как кнопки окна */
+.meeting-head-sep {
+  width: 1px;
+  height: 18px;
+  flex-shrink: 0;
+  background: var(--c-line);
+}
+
+.meeting-btn {
+  display: inline-flex;
+  height: 32px;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 6px;
+  border-radius: 10px;
+  padding: 0 12px;
+  font-size: 13px;
+  font-weight: 600;
+  transition:
+    transform 120ms ease,
+    background-color 150ms ease,
+    opacity 150ms ease;
+}
+.meeting-btn:active {
+  transform: scale(0.97);
+}
+.meeting-btn:disabled {
+  opacity: 0.55;
+  pointer-events: none;
+}
+.meeting-btn svg {
+  width: 13px;
+  height: 13px;
+}
+.meeting-btn-start {
+  background: var(--c-accent);
+  color: var(--c-accent-fg);
+}
+.meeting-btn-start:hover {
+  background: color-mix(in oklab, var(--c-accent) 88%, black);
+}
+.meeting-btn-stop {
+  background: var(--c-surface-2);
+  color: var(--c-fg);
+  border: 1px solid var(--c-line-strong);
+}
+.meeting-btn-stop:hover {
+  background: color-mix(in oklab, var(--c-danger) 10%, var(--c-surface-2));
+  color: var(--c-danger);
+}
+.meeting-btn-stop svg {
+  color: var(--c-danger);
+}
+.meeting-btn-quiet {
+  background: var(--c-surface-2);
+  color: var(--c-fg);
+  border: 1px solid var(--c-line);
+  font-weight: 500;
+}
+.meeting-btn-quiet:hover {
+  background: var(--c-surface-3);
+}
+.meeting-btn-sm {
+  height: 28px;
+  border-radius: 8px;
+  padding: 0 10px;
+  font-size: 12.5px;
+}
+.meeting-btn-sm svg {
+  width: 12px;
+  height: 12px;
+}
+
+/* «Закрыть» во время перевода: свернуть или остановить и закрыть */
+.meeting-confirm {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 10px;
+  margin: 0 12px 10px;
+  border-radius: 10px;
+  padding: 8px 10px;
+  background: var(--c-surface-2);
+  border: 1px solid var(--c-line);
+  font-size: 12.5px;
+}
+.meeting-confirm-text {
+  min-width: 0;
+  flex: 1 1 auto;
+  font-weight: 600;
+}
+.meeting-confirm-actions {
+  display: flex;
+  flex-shrink: 0;
+  gap: 6px;
+}
+
+/* Подсказка под шапкой: ждём видеокарту, нет звука, ошибка, «скопировано» */
+.meeting-hint {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0 12px 10px;
+  border-radius: 10px;
+  padding: 8px 10px;
+  font-size: 12px;
+  line-height: 1.45;
+}
+.meeting-hint svg {
+  margin-top: 1px;
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+}
+.meeting-hint-warn {
+  background: color-mix(in oklab, var(--c-warn) 12%, transparent);
+  color: color-mix(in oklab, var(--c-warn) 75%, var(--c-fg));
+}
+.meeting-hint-muted {
+  background: var(--c-surface-2);
+  color: var(--c-muted);
+}
+.meeting-hint-err {
+  background: color-mix(in oklab, var(--c-danger) 11%, transparent);
+  color: var(--c-danger);
+}
+.meeting-hint-btn {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-self: center;
+  align-items: center;
+  gap: 5px;
+  margin: -3px -2px -3px 0;
+  border-radius: 8px;
+  padding: 4px 9px;
+  font-size: 12px;
+  font-weight: 600;
+  background: var(--c-surface);
+  color: var(--c-fg);
+  border: 1px solid var(--c-line-strong);
+}
+.meeting-hint-btn:hover {
+  color: var(--c-danger);
+}
+.meeting-hint-btn svg {
+  margin: 0;
+  width: 11px;
+  height: 11px;
+  color: var(--c-danger);
+}
+.meeting-hint-btn:disabled {
+  opacity: 0.5;
+  pointer-events: none;
+}
+.meeting-hint-btn-keep:hover {
+  color: var(--c-accent-text);
+}
+.meeting-hint-btn-keep svg {
+  color: var(--c-accent);
+}
+.meeting-hint-ok {
+  background: color-mix(in oklab, var(--c-success) 11%, transparent);
+  color: var(--c-success);
+}
+
+/* Панель настроек (шестерёнка) */
+.meeting-gear {
+  position: absolute;
+  top: 52px;
+  right: 10px;
+  z-index: 40;
+  width: min(344px, calc(100vw - 20px));
+  border-radius: 14px;
+  border: 1px solid var(--c-line-strong);
+  background: var(--c-surface);
+  padding: 8px 10px;
+  box-shadow: var(--sh-pop);
+  transform-origin: top right;
+}
+.meeting-gear-link {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border-radius: 8px;
+  padding: 7px 6px;
+  text-align: left;
+  font-size: 12.5px;
+  color: var(--c-muted);
+  transition:
+    background-color 120ms ease,
+    color 120ms ease;
+}
+.meeting-gear-link:hover {
+  background: var(--c-surface-2);
+  color: var(--c-fg);
+}
+.meeting-gear-link svg {
+  width: 14px;
+  height: 14px;
+}
+
+.meeting-stepper {
+  display: inline-flex;
+  height: 30px;
+  align-items: center;
+  border-radius: 9px;
+  border: 1px solid var(--c-line);
+  background: var(--c-surface-2);
+  font-size: 13px;
+  font-weight: 500;
+}
+.meeting-stepper span {
+  min-width: 30px;
+  text-align: center;
+}
+.meeting-stepper button {
+  display: flex;
+  height: 100%;
+  width: 28px;
+  align-items: center;
+  justify-content: center;
+  color: var(--c-muted);
+}
+.meeting-stepper button:hover {
+  color: var(--c-fg);
+}
+.meeting-stepper button:disabled {
+  opacity: 0.35;
+}
+.meeting-stepper svg {
+  width: 13px;
+  height: 13px;
+}
+
+/* ——— Лента ——— */
+
+.meeting-body {
+  height: 100%;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  /* строка выше видимого выросла или уточнилась — читаемое остаётся на месте */
+  overflow-anchor: auto;
+}
+
+.meeting-lines {
+  margin: 0 auto;
+  max-width: 760px;
+  padding: 14px 18px 22px;
+}
+
+.meeting-line {
+  padding: 10px 0 12px;
+  border-bottom: 1px solid color-mix(in oklab, var(--c-line) 70%, transparent);
+  /* длинная лента сеанса: невидимые строки браузер не раскладывает */
+  content-visibility: auto;
+  contain-intrinsic-size: auto 84px;
+}
+.meeting-line:last-child {
+  border-bottom: 0;
+}
+
+.meeting-meta {
+  display: flex;
+  min-height: 16px;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 3px;
+  font-size: 10.5px;
+  line-height: 16px;
+  color: var(--c-subtle);
+  letter-spacing: 0.01em;
+}
+.meeting-lang {
+  border-radius: 4px;
+  padding: 0 4px;
+  background: var(--c-surface-2);
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
+.meeting-main {
+  margin: 0;
+  font-size: var(--mf, 16px);
+  line-height: 1.55;
+  font-weight: 450;
+  color: var(--c-fg);
+  letter-spacing: -0.003em;
+  overflow-wrap: anywhere;
+  text-wrap: pretty;
+}
+.meeting-orig {
+  margin: 4px 0 0;
+  font-size: max(12px, calc(var(--mf, 16px) * 0.8));
+  line-height: 1.5;
+  color: var(--c-muted);
+  overflow-wrap: anywhere;
+  text-wrap: pretty;
+}
+
+/* Перевод ещё не пришёл, оригинал не показывается: текст виден сразу, но тише — перевод
+   встанет на его место */
+.meeting-main-wait {
+  color: color-mix(in oklab, var(--c-fg) 58%, transparent);
+}
+
+/* ——— Живая строка: слова растут, хвост ещё может поменяться ——— */
+
+/* Неподтверждённый хвост распознавания — тише и курсивом */
+.meeting-partial {
+  color: color-mix(in oklab, currentColor 62%, transparent);
+  font-style: italic;
+}
+/* Дописанные (и исправленные) слова проявляются. Только прозрачность: сдвиг переводил бы
+   текст в отдельный слой и размывал сглаживание */
+.meeting-fresh {
+  animation: meeting-fresh 260ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+@keyframes meeting-fresh {
+  from {
+    opacity: 0.15;
+  }
+  to {
+    opacity: 1;
+  }
+}
+/* Перевод ещё приходит: тонкая черта после последнего слова */
+.meeting-caret {
+  display: inline-block;
+  width: 2px;
+  height: 0.95em;
+  margin-left: 2px;
+  border-radius: 1px;
+  vertical-align: -0.12em;
+  background: var(--c-accent);
+  animation: meeting-caret 1s ease-in-out infinite;
+}
+@keyframes meeting-caret {
+  50% {
+    opacity: 0.25;
+  }
+}
+/* Перевода ещё нет: три точки высотой в строку перевода — первые слова встанут на их место */
+.meeting-typing {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 1em;
+  vertical-align: -0.1em;
+}
+.meeting-typing i {
+  width: 5px;
+  height: 5px;
+  border-radius: 999px;
+  background: var(--c-subtle);
+  animation: meeting-typing 1.2s ease-in-out infinite;
+}
+.meeting-typing i:nth-child(2) {
+  animation-delay: 0.15s;
+}
+.meeting-typing i:nth-child(3) {
+  animation-delay: 0.3s;
+}
+@keyframes meeting-typing {
+  0%,
+  70%,
+  100% {
+    opacity: 0.3;
+  }
+  35% {
+    opacity: 1;
+  }
+}
+/* Фраза ещё идёт: точка рядом со временем */
+.meeting-live {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--c-success);
+  animation: meeting-live 1.4s ease-in-out infinite;
+}
+@keyframes meeting-live {
+  50% {
+    opacity: 0.35;
+  }
+}
+.meeting-refined {
+  display: inline-flex;
+  color: var(--c-subtle);
+}
+.meeting-refined svg {
+  width: 12px;
+  height: 12px;
+}
+
+.meeting-wait {
+  background: linear-gradient(
+    90deg,
+    var(--c-subtle) 0%,
+    color-mix(in oklab, var(--c-accent) 70%, var(--c-fg)) 45%,
+    var(--c-subtle) 90%
+  );
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: meeting-shine 1.6s linear infinite;
+}
+@keyframes meeting-shine {
+  from {
+    background-position: 100% 0;
+  }
+  to {
+    background-position: -100% 0;
+  }
+}
+
+.meeting-err {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: var(--c-warn);
+}
+.meeting-err svg {
+  width: 11px;
+  height: 11px;
+}
+
+.meeting-earlier {
+  display: block;
+  margin: 0 auto 8px;
+  border-radius: 999px;
+  padding: 4px 12px;
+  font-size: 12px;
+  color: var(--c-muted);
+  background: var(--c-surface-2);
+  /* якорь прокрутки — строка ленты, а не эта кнопка: ранние строки встают под ней */
+  overflow-anchor: none;
+}
+.meeting-earlier:hover {
+  color: var(--c-fg);
+}
+
+.meeting-new {
+  position: absolute;
+  bottom: 12px;
+  left: 50%;
+  z-index: 3;
+  display: flex;
+  translate: -50% 0;
+  align-items: center;
+  gap: 6px;
+  border-radius: 999px;
+  padding: 6px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  background: var(--c-accent);
+  color: var(--c-accent-fg);
+  box-shadow: var(--sh-pop);
+}
+
+.meeting-empty {
+  display: flex;
+  min-height: 260px;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 40px 16px;
+  text-align: center;
+}
+.meeting-empty-icon {
+  display: flex;
+  height: 44px;
+  width: 44px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 14px;
+  margin-bottom: 4px;
+  background: var(--c-accent-soft);
+  color: var(--c-accent-text);
+}
+.meeting-empty-icon svg {
+  width: 22px;
+  height: 22px;
+}
+
+/* ——— Предложение встречи: карточка (окно целиком) или полоска в панели ——— */
+
+.meeting-card-shell {
+  height: 100%;
+  background: var(--c-surface);
+}
+/* Демо в браузере: «окно» карточки в правом верхнем углу вкладки */
+.meeting-card-demo {
+  position: fixed;
+  inset: 0;
+  background: color-mix(in oklab, var(--c-bg) 70%, var(--c-surface-3));
+}
+.meeting-card-frame {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  width: 372px;
+  height: 176px;
+  overflow: hidden;
+  border-radius: 8px;
+  background: var(--c-surface);
+  box-shadow: var(--sh-pop);
+  outline: 1px solid var(--c-line-strong);
+}
+
+/* ——— Полоска свёрнутого перевода (окно целиком; в демо — рамкой в правом нижнем углу) ——— */
+
+.meeting-mini {
+  display: flex;
+  height: 100%;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+  padding: 0 6px 0 10px;
+  background: var(--meeting-head);
+  color: var(--c-fg);
+  user-select: none;
+  cursor: default;
+}
+.meeting-mini .meeting-icon-btn {
+  height: 28px;
+  width: 28px;
+}
+.meeting-mini-body {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+}
+.meeting-mini-state {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 5px;
+  font-size: 11.5px;
+  line-height: 1.3;
+  white-space: nowrap;
+}
+.meeting-mini-state svg {
+  width: 12px;
+  height: 12px;
+  flex-shrink: 0;
+}
+.meeting-mini-notes {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 4px;
+  margin-left: 2px;
+  border-radius: 6px;
+  padding: 0 6px;
+  background: var(--c-accent-soft);
+  color: var(--c-accent-text);
+  font-weight: 600;
+}
+.meeting-mini-ticker {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  /* переполнение — слева (видны последние слова), короткая строка — по левому краю */
+  direction: rtl;
+  text-align: left;
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1.35;
+}
+.meeting-mini-ending {
+  background: color-mix(in oklab, var(--c-warn) 12%, var(--meeting-head));
+}
+.meeting-mini-ending-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12.5px;
+  font-weight: 600;
+  line-height: 1.35;
+  color: color-mix(in oklab, var(--c-warn) 75%, var(--c-fg));
+}
+.meeting-mini-ending-in {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  line-height: 1.35;
+  color: var(--c-muted);
+}
+.meeting-mini-frame {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  width: 340px;
+  height: 64px;
+  overflow: hidden;
+  border-radius: 8px;
+  box-shadow: var(--sh-pop);
+  outline: 1px solid var(--c-line-strong);
+}
+
+.meeting-suggest {
+  position: relative;
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 10px;
+}
+.meeting-suggest-card {
+  height: 100%;
+  justify-content: center;
+  padding: 12px 16px;
+}
+.meeting-suggest-banner {
+  margin: 0 12px 10px;
+  border-radius: 12px;
+  padding: 11px 12px 9px;
+  overflow: hidden;
+  background: var(--c-accent-soft);
+  border: 1px solid color-mix(in oklab, var(--c-accent) 22%, transparent);
+}
+.meeting-suggest-icon {
+  display: flex;
+  height: 34px;
+  width: 34px;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  border-radius: 10px;
+  background: var(--c-accent);
+  color: var(--c-accent-fg);
+}
+.meeting-suggest-banner .meeting-suggest-icon {
+  height: 30px;
+  width: 30px;
+}
+.meeting-suggest-icon svg {
+  width: 17px;
+  height: 17px;
+}
+.meeting-suggest-title {
+  font-size: 14px;
+  font-weight: 650;
+  line-height: 1.3;
+  letter-spacing: -0.01em;
+  color: var(--c-fg);
+}
+.meeting-suggest-where {
+  margin-top: 1px;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  font-size: 12.5px;
+  line-height: 1.35;
+  color: var(--c-muted);
+  overflow-wrap: anywhere;
+}
+.meeting-suggest-banner .meeting-suggest-where {
+  -webkit-line-clamp: 1;
+}
+.meeting-suggest-mode {
+  margin-top: 4px;
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 5px;
+  font-size: 11.5px;
+  line-height: 1.3;
+  color: var(--c-subtle);
+}
+.meeting-suggest-mode svg {
+  width: 12px;
+  height: 12px;
+  flex-shrink: 0;
+}
+.meeting-suggest-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.meeting-suggest-never {
+  align-self: flex-start;
+  margin: -4px 0 0 -2px;
+  border-radius: 6px;
+  padding: 2px;
+  font-size: 11.5px;
+  color: var(--c-subtle);
+  text-decoration: underline;
+  text-decoration-color: color-mix(in oklab, currentColor 35%, transparent);
+  text-underline-offset: 2px;
+}
+.meeting-suggest-never:hover {
+  color: var(--c-fg);
+}
+.meeting-suggest-never:disabled {
+  opacity: 0.5;
+  pointer-events: none;
+}
+/* Сколько осталось до того, как предложение скроется само */
+.meeting-suggest-timer {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 2px;
+  transform-origin: left center;
+  background: color-mix(in oklab, var(--c-accent) 55%, transparent);
+  animation-name: meeting-timer;
+  animation-timing-function: linear;
+  animation-fill-mode: forwards;
+}
+@keyframes meeting-timer {
+  from {
+    transform: scaleX(1);
+  }
+  to {
+    transform: scaleX(0);
+  }
+}
+
+/* ——— Переключатель «Расшифровка | Заметки» ——— */
+
+.meeting-tabs {
+  display: flex;
+  gap: 2px;
+  margin: 0 16px 10px;
+  border-radius: 10px;
+  padding: 2px;
+  background: var(--c-surface-2);
+}
+.meeting-tab {
+  position: relative;
+  display: inline-flex;
+  height: 26px;
+  flex: 1 1 0;
+  min-width: 0;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border-radius: 8px;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--c-muted);
+  transition:
+    background-color 150ms ease,
+    color 150ms ease,
+    box-shadow 150ms ease;
+}
+.meeting-tab:hover {
+  color: var(--c-fg);
+}
+.meeting-tab svg {
+  width: 13px;
+  height: 13px;
+  flex-shrink: 0;
+}
+.meeting-tab-on {
+  background: var(--meeting-head);
+  color: var(--c-fg);
+  font-weight: 600;
+  box-shadow:
+    0 0 0 1px var(--c-line),
+    0 1px 2px rgb(0 0 0 / 0.06);
+}
+.meeting-tab-spin {
+  color: var(--c-accent-text);
+}
+/* Заметки готовы, а смотрят расшифровку */
+.meeting-tab-badge {
+  width: 7px;
+  height: 7px;
+  flex-shrink: 0;
+  border-radius: 999px;
+  background: var(--c-accent);
+  box-shadow: 0 0 0 2px color-mix(in oklab, var(--c-accent) 25%, transparent);
+  animation: meeting-badge 1.6s ease-in-out 2;
+}
+@keyframes meeting-badge {
+  50% {
+    transform: scale(1.35);
+  }
+}
+
+/* Строка, к которой перешли из заметок (только фон: у строки — paint containment, тень бы обрезалась) */
+.meeting-line-flash {
+  animation: meeting-line-flash 1.8s ease-out;
+}
+@keyframes meeting-line-flash {
+  0%,
+  35% {
+    background: color-mix(in oklab, var(--c-accent) 14%, transparent);
+  }
+  100% {
+    background: transparent;
+  }
+}
+
+/* ——— Заметки ——— */
+
+.meeting-notes {
+  margin: 0 auto;
+  max-width: 760px;
+  padding: 12px 18px 24px;
+}
+.meeting-notes .meeting-hint {
+  margin: 0 0 12px;
+}
+.meeting-notes-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0 12px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--c-accent-text);
+}
+.meeting-notes-status svg {
+  width: 15px;
+  height: 15px;
+}
+.meeting-notes-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding-bottom: 10px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid color-mix(in oklab, var(--c-line) 70%, transparent);
+}
+.meeting-notes-bar .meeting-btn {
+  height: 28px;
+  padding: 0 10px;
+  font-size: 12px;
+}
+.meeting-notes-stale {
+  margin: 8px 0 2px;
+  border-radius: 8px;
+  padding: 6px 9px;
+  font-size: 11.5px;
+  line-height: 1.4;
+  background: var(--c-surface-2);
+  color: var(--c-muted);
+}
+.meeting-hint-btn-plain:hover {
+  color: var(--c-fg);
+}
+.meeting-hint-btn-plain svg {
+  color: currentColor;
+}
+
+/* Сами заметки: текст в размер ленты (--mf), заголовки разделов — небольшие и плотные */
+.meeting-md {
+  font-size: max(13px, calc(var(--mf, 16px) * 0.9));
+  line-height: 1.55;
+  color: var(--c-fg);
+  overflow-wrap: anywhere;
+  text-wrap: pretty;
+}
+.meeting-md-live {
+  color: color-mix(in oklab, var(--c-fg) 72%, transparent);
+}
+.meeting-md h2,
+.meeting-md h3,
+.meeting-md h4 {
+  margin: 18px 0 6px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  line-height: 1.3;
+}
+.meeting-md h2 {
+  font-size: 1.22em;
+}
+.meeting-md h3 {
+  font-size: 0.78em;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--c-muted);
+}
+.meeting-md h4 {
+  font-size: 1em;
+}
+.meeting-md > :first-child {
+  margin-top: 10px;
+}
+.meeting-md p {
+  margin: 0 0 8px;
+}
+.meeting-md ul {
+  margin: 0 0 8px;
+  padding: 0;
+  list-style: none;
+}
+.meeting-md li {
+  position: relative;
+  display: flex;
+  gap: 8px;
+  padding: 2px 0 2px 14px;
+}
+.meeting-md li::before {
+  content: "";
+  position: absolute;
+  left: 2px;
+  top: calc(0.775em + 2px);
+  width: 5px;
+  height: 5px;
+  border-radius: 999px;
+  background: var(--c-subtle);
+  translate: 0 -50%;
+}
+.meeting-md li.meeting-md-task {
+  padding-left: 0;
+}
+.meeting-md li.meeting-md-task::before {
+  display: none;
+}
+.meeting-md-done > span:last-child {
+  color: var(--c-muted);
+  text-decoration: line-through;
+}
+.meeting-md-box {
+  display: inline-flex;
+  width: 15px;
+  height: 15px;
+  flex-shrink: 0;
+  margin-top: calc(0.775em - 7.5px);
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  border: 1.5px solid var(--c-line-strong);
+  background: var(--c-surface);
+}
+.meeting-md-box-on {
+  border-color: var(--c-accent);
+  background: var(--c-accent);
+  color: var(--c-accent-fg);
+}
+.meeting-md-box svg {
+  width: 10px;
+  height: 10px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.meeting-md strong {
+  font-weight: 650;
+}
+.meeting-md code {
+  border-radius: 5px;
+  padding: 0 4px;
+  font-size: 0.9em;
+  background: var(--c-surface-2);
+}
+.meeting-md hr {
+  margin: 14px 0;
+  border: 0;
+  border-top: 1px solid var(--c-line);
+}
+/* Время строки — кнопка к строке в расшифровке */
+.meeting-md-time {
+  display: inline;
+  border-radius: 5px;
+  padding: 0 4px;
+  font-size: 0.88em;
+  font-weight: 600;
+  color: var(--c-accent-text);
+  background: var(--c-accent-soft);
+  transition: background-color 120ms ease;
+}
+.meeting-md-time:hover {
+  background: color-mix(in oklab, var(--c-accent) 22%, transparent);
+}
+
+/* ——— Подвал ——— */
+
+.meeting-foot {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 10px 7px 16px;
+  border-top: 1px solid var(--c-line);
+  background: var(--meeting-head);
+}
+.meeting-foot-btn {
+  display: inline-flex;
+  height: 28px;
+  align-items: center;
+  gap: 5px;
+  border-radius: 8px;
+  padding: 0 8px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--c-muted);
+  transition:
+    background-color 120ms ease,
+    color 120ms ease;
+}
+.meeting-foot-btn:hover {
+  background: var(--c-surface-2);
+  color: var(--c-fg);
+}
+.meeting-foot-btn:disabled {
+  opacity: 0.4;
+  pointer-events: none;
+}
+.meeting-foot-btn svg {
+  width: 13px;
+  height: 13px;
+}
+/* Средняя задержка сеанса: текст → перевод */
+.meeting-lat {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+  color: var(--c-subtle);
+}
+.meeting-lat svg {
+  width: 12px;
+  height: 12px;
+}
+.meeting-lat-tr {
+  color: var(--c-muted);
+}
+
+.meeting-chip {
+  white-space: nowrap;
+  border-radius: 999px;
+  padding: 1px 7px;
+  font-size: 11px;
+  background: var(--c-surface-2);
+  color: var(--c-muted);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .meeting-wait,
+  .meeting-fresh,
+  .meeting-caret,
+  .meeting-typing i,
+  .meeting-live,
+  .meeting-tab-badge {
+    animation: none;
+  }
+  .meeting-line-flash {
+    animation-duration: 0.01s;
+    background: color-mix(in oklab, var(--c-accent) 10%, transparent);
+  }
+  .meeting-suggest-timer {
+    display: none;
+  }
+  .meeting-level i {
+    transition: none;
+  }
+}

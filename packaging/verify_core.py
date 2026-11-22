@@ -15,8 +15,12 @@ UI и ядро выпускаются вместе: если в ui\src-tauri\res
 устройств вывода D, локализация: ok (ru K, en K)» (частотные списки личного словаря частот —
 rupor/data/*.txt — попали в сборку; интерфейсы Core Audio для приглушения звука во время
 записи работают — устройства вывода и сессии только перечисляются, ничего не меняется;
-каталоги сообщений rupor/locales/{ru,en}.json на месте и с одинаковыми ключами; ядро без
-любой из этих частей — старое), во временном TEMP ничего не
+каталоги сообщений rupor/locales/{ru,en}.json на месте и с одинаковыми ключами; проверка
+орфографии Windows работает; захват звука для перевода встреч работает — «захват звука: ok
+(…)»: обработчик активации на comtypes.COMObject, process loopback своего процесса, помощник
+``rupor-core.exe --loopback`` отдаёт звук по каналу и выходит на закрытый stdin; на Windows
+старее сборки 20348 годится и «захват звука: недоступен (…)»; ничего не играет и громкость
+не трогает; ядро без любой из этих частей — старое), во временном TEMP ничего не
 записано (обёртка UIAutomationCore для comtypes должна быть внутри сборки). Код выхода
 скрипта: 0 — годится, 1 — нет. В вывод идёт только строка самопроверки (тип элемента с
 фокусом и длина его текста — без самого текста; число аудиосессий — без имён)."""
@@ -69,6 +73,9 @@ def verify(exe: Path, runner: tuple[str, ...] = ()) -> tuple[bool, str]:
         if line and "орфография:" not in summary:
             return False, ("ядро без похожих написаний словаря (в самопроверке нет "
                            "«орфография») — это старая сборка; пересоберите: build.cmd core")
+        if line and "захват звука:" not in summary:
+            return False, ("ядро без перевода встреч (в самопроверке нет «захват звука») — "
+                           "это старая сборка; пересоберите: build.cmd core")
         if r.returncode != 0 or "своё поле: ok" not in summary:
             return False, f"самопроверка не прошла (код {r.returncode}): {summary or 'нет строки в логе'}"
         if "частотные списки: ok" not in summary:
@@ -82,6 +89,9 @@ def verify(exe: Path, runner: tuple[str, ...] = ()) -> tuple[bool, str]:
         if "орфография: ok" not in summary:
             return False, ("проверка орфографии Windows в сборке не работает (comtypes, "
                            f"rupor.spell): {summary}")
+        if "захват звука: ok" not in summary and "захват звука: недоступен (" not in summary:
+            return False, ("захват звука для перевода встреч в сборке не работает "
+                           f"(comtypes.COMObject, rupor.loopback, --loopback): {summary}")
         leftovers =[p for p in dirs["temp"].rglob("*") if p.is_file()]
         if leftovers:
             return False, (f"ядро записало {len(leftovers)} файл(ов) во временную папку — "

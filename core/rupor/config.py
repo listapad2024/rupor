@@ -64,6 +64,20 @@ LANGUAGES = i18n.LANGUAGES            # system | ru | en
 DICTATION_LANGUAGES = ("auto", "ru", "en")
 COMPUTE_TYPES = ("float16", "int8_float16", "int8", "int8_float32", "float32", "bfloat16",
                  "int8_bfloat16", "auto", "default")
+# Перевод встречи: языки строк (meeting_target_lang) и речи (meeting_source_lang, ещё "auto")
+MEETING_LANGS = ("ru", "en", "de", "fr", "es", "it", "pt", "pl", "uk", "zh", "ja", "ko", "tr")
+MEETING_SOURCE_LANGS = ("auto", *MEETING_LANGS)
+# Подстроки заголовков окон браузера, по которым узнаётся встреча (без учёта регистра)
+DEFAULT_MEETING_PATTERNS = ("Google Meet", "Meet –", "Meet -", "Zoom", "Microsoft Teams",
+                            "Teams", "Телемост", "Контур.Толк", "Jitsi Meet")
+MEETING_PATTERN_MAX = 60
+MEETING_PATTERNS_MAX = 30
+MEETING_RECT_MIN = 200          # окно перевода — не уже и не ниже (физические пиксели)
+# Встреча замечается сама (meeting_detect.py): эти программы держат микрофон, но не встречи
+DEFAULT_MEETING_IGNORE_APPS = ("obs64.exe", "natspeak.exe", "ffmpeg.exe", "python.exe",
+                               "pythonw.exe")
+MEETING_IGNORE_MAX = 100        # программ в списке «не предлагать»
+MEETING_EXE_MAX = 100           # имя exe — не длиннее
 
 # Стили по приложениям «из коробки» (ТЗ: Telegram — мессенджер, Outlook — деловой,
 # Cursor/VS Code — для кода). В файл этапов 1–2 дописываются при первой загрузке.
@@ -170,6 +184,11 @@ class Settings:
     # исходной громкости приглушать (режим duck)
     duck_mode: str = "duck"
     duck_level: int = 15
+    # Голосовые чаты (live chat Codex — его exe ChatGPT.exe, ChatGPT) не слышат диктовку: на
+    # время записи Рупор нажимает в их окне «Отключить микрофон», после — «Включить микрофон»
+    # (rupor.appmute, UI Automation). Имена exe без пути
+    app_mute_enabled: bool = True
+    app_mute_apps: list[str] = field(default_factory=lambda: ["codex.exe", "chatgpt.exe"])
 
     # Прочее
     sounds: bool = True
@@ -182,9 +201,17 @@ class Settings:
     history_enabled: bool = True
     history_retention_days: int = 0     # 0 — хранить всегда
     # Последние записи голоса на диске (recordings.py): сколько хранить (0 — не сохранять,
-    # сохранённые удаляются) и сколько места они могут занять всего, МБ (минута ≈ 1,9 МБ)
+    # сохранённые удаляются; до 10000) и сколько места они могут занять всего, МБ
+    # (минута ≈ 1,9 МБ; до 20000)
     recordings_keep: int = 30
     recordings_max_mb: int = 300
+    # Чей голос (speaker.py), теневой режим: для каждой диктовки считать счёт «свой / чужой»
+    # против голосового профиля и писать в журнал; на диктовку не влияет. Пороги меток
+    # журнала — в шкале AS-norm: от speaker_own_score — «свой», ниже speaker_alien_score —
+    # «чужой», между — «не уверен»
+    speaker_shadow: bool = False
+    speaker_own_score: float = 5.5
+    speaker_alien_score: float = 3.0
     pill_enabled: bool = True
     pill_position: list[int] | None = None  # [x, y] в физических пикселях; None — снизу по центру
     theme: str = "system"
@@ -211,6 +238,35 @@ class Settings:
     ai_timeout_s: float = 5
     command_provider: str = "keys"
     env_path: str = ""                  # путь к .env с openrouter_api_key (необязательно)
+
+    # Перевод встречи (meeting.py): звук браузера → распознавание → перевод в окне сбоку
+    meeting_target_lang: str = "ru"     # на какой язык переводить (MEETING_LANGS)
+    meeting_source_lang: str = "auto"   # язык речи: auto — определяет Whisper
+    meeting_translate: bool = True      # False — только расшифровка, перевод ИИ не вызывается
+    meeting_refine: bool = True         # конец фразы — перевести её целиком (точнее кусков)
+    meeting_show_original: bool = True  # под переводом — исходная строка
+    meeting_font_size: int = 16         # размер текста в окне перевода
+    meeting_autosuggest: bool = True    # замечать встречу (микрофон + звук) и предлагать перевод
+    meeting_autostop: bool = True       # встреча кончилась — остановить перевод самому (через 10 с)
+    meeting_title_patterns: list[str] = field(
+        default_factory=lambda: list(DEFAULT_MEETING_PATTERNS))
+    meeting_detect_desktop_apps: bool = True    # предлагать и для Zoom, Teams, Telegram…
+    # не предлагать для этих программ (имя exe в нижнем регистре; «Не предлагать для …»)
+    meeting_ignore_apps: list[str] = field(
+        default_factory=lambda: list(DEFAULT_MEETING_IGNORE_APPS))
+    meeting_save: bool = True           # сохранять расшифровку каждой встречи (Markdown)
+    meeting_ai_title: bool = True       # называть запись встречи по содержанию (ИИ, ключ ai_provider)
+    # заметки к встрече (ИИ посильнее: кратко, решения, задачи…) — сами после «Стоп»
+    meeting_notes: bool = True
+    meeting_notes_model: str = ""       # модель заметок; "" — сильная по умолчанию (ai.notes_model)
+    meeting_dir: str = ""               # папка расшифровок; "" — %APPDATA%\Rupor\meetings
+    meeting_protect: bool = True        # окно перевода не видно при показе экрана
+    # [x, y, ширина, высота] окна перевода в физических пикселях; None — у правого края
+    meeting_rect: list[int] | None = None
+    # [x, y] компактной полоски окна перевода в физических пикселях; None — справа внизу
+    meeting_mini_pos: list[int] | None = None
+    translate_model: str = ""           # модель перевода; "" — модель провайдера (ai_model …)
+    translate_timeout_s: float = 6.0    # перевод, который опоздал, бесполезен
 
     def validate(self) -> None:
         """Мягкая проверка (после загрузки файла): неверное → по умолчанию, с предупреждением."""
@@ -377,6 +433,67 @@ def _pill_position(v: Any) -> list[int] | None:
                     and math.isfinite(x) for x in v)):
         return [int(v[0]), int(v[1])]
     raise ValueError(tr("cfg.expect_xy"))
+
+
+def _meeting_rect(v: Any) -> list[int] | None:
+    """Окно перевода: [x, y, ширина, высота] (физические пиксели, |v| < 10⁶, ширина и
+    высота ≥ MEETING_RECT_MIN) или None — у правого края."""
+    if v is None:
+        return None
+    if (isinstance(v, (list, tuple)) and len(v) == 4
+            and all(isinstance(x, (int, float)) and not isinstance(x, bool)
+                    and math.isfinite(x) and abs(x) < 1e6 for x in v)):
+        out = [int(round(x)) for x in v]
+        if out[2] >= MEETING_RECT_MIN and out[3] >= MEETING_RECT_MIN:
+            return out
+    raise ValueError(tr("cfg.expect_rect", min=MEETING_RECT_MIN))
+
+
+def _meeting_patterns(v: Any) -> list[str]:
+    """Подстроки заголовков окон встреч: непустые строки до MEETING_PATTERN_MAX символов,
+    не больше MEETING_PATTERNS_MAX; повторы (без учёта регистра) убираются."""
+    if not isinstance(v, list):
+        raise ValueError(tr("cfg.expect_str_list"))
+    out: list[str] = []
+    seen: set[str] = set()
+    for x in v:
+        if not isinstance(x, str):
+            raise ValueError(tr("cfg.expect_str_list"))
+        x = " ".join(x.split())
+        if not x:
+            raise ValueError(tr("cfg.empty"))
+        if len(x) > MEETING_PATTERN_MAX:
+            raise ValueError(tr("cfg.too_long", max=MEETING_PATTERN_MAX))
+        if x.casefold() not in seen:
+            seen.add(x.casefold())
+            out.append(x)
+    if len(out) > MEETING_PATTERNS_MAX:
+        raise ValueError(tr("cfg.too_many", max=MEETING_PATTERNS_MAX))
+    return out
+
+
+def _exe_names(v: Any) -> list[str]:
+    """Программы «не предлагать встречу»: имена exe (путь — до имени файла, нижний регистр,
+    без расширения — «.exe»), не длиннее MEETING_EXE_MAX, не больше MEETING_IGNORE_MAX;
+    повторы убираются."""
+    if not isinstance(v, list):
+        raise ValueError(tr("cfg.expect_str_list"))
+    out: list[str] = []
+    for x in v:
+        if not isinstance(x, str):
+            raise ValueError(tr("cfg.expect_str_list"))
+        name = ntpath.basename(x.strip().replace("/", "\\")).strip().lower()
+        if not name:
+            raise ValueError(tr("cfg.empty"))
+        if "." not in name:
+            name += ".exe"
+        if len(name) > MEETING_EXE_MAX:
+            raise ValueError(tr("cfg.too_long", max=MEETING_EXE_MAX))
+        if name not in out:
+            out.append(name)
+    if len(out) > MEETING_IGNORE_MAX:
+        raise ValueError(tr("cfg.too_many", max=MEETING_IGNORE_MAX))
+    return out
 
 
 _ACCENT_RE = re.compile(r"^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$")
@@ -667,13 +784,18 @@ _VALIDATORS: dict[str, Callable[[Any], Any]] = {
     "context_enabled": _bool,
     "duck_mode": _choice(DUCK_MODES),
     "duck_level": _int(0, 100),
+    "app_mute_enabled": _bool,
+    "app_mute_apps": _str_list(50),
     "sounds": _bool,
     "autostart": _bool,
     "default_style": _style,
     "history_enabled": _bool,
     "history_retention_days": _int(0, 36500),
-    "recordings_keep": _int(0, 500),
+    "recordings_keep": _int(0, 10000),
     "recordings_max_mb": _int(20, 20000),
+    "speaker_shadow": _bool,
+    "speaker_own_score": _float(-50.0, 50.0),
+    "speaker_alien_score": _float(-50.0, 50.0),
     "pill_enabled": _bool,
     "pill_position": _pill_position,
     "theme": _choice(THEMES),
@@ -693,7 +815,34 @@ _VALIDATORS: dict[str, Callable[[Any], Any]] = {
     "ai_timeout_s": _float(1, 60),
     "command_provider": _choice(COMMAND_PROVIDERS),
     "env_path": _text(allow_empty=True, max_len=1000),
+    "meeting_target_lang": _choice(MEETING_LANGS),
+    "meeting_source_lang": _choice(MEETING_SOURCE_LANGS),
+    "meeting_translate": _bool,
+    "meeting_refine": _bool,
+    "meeting_show_original": _bool,
+    "meeting_font_size": _int(12, 28),
+    "meeting_autosuggest": _bool,
+    "meeting_autostop": _bool,
+    "meeting_title_patterns": _meeting_patterns,
+    "meeting_detect_desktop_apps": _bool,
+    "meeting_ignore_apps": _exe_names,
+    "meeting_save": _bool,
+    "meeting_ai_title": _bool,
+    "meeting_notes": _bool,
+    "meeting_notes_model": _text(allow_empty=True, max_len=200),
+    "meeting_dir": normalize_model_dir,     # та же проверка пути, что у папки модели
+    "meeting_protect": _bool,
+    "meeting_rect": _meeting_rect,
+    "meeting_mini_pos": _pill_position,
+    "translate_model": _text(allow_empty=True, max_len=200),
+    "translate_timeout_s": _float(1, 30),
 }
+
+
+def meeting_dir(s: Settings) -> Path:
+    """Папка расшифровок встреч: meeting_dir или %APPDATA%\\Rupor\\meetings."""
+    return Path(s.meeting_dir) if s.meeting_dir else app_dir() / "meetings"
+
 
 def label(name: str) -> str:
     """Название настройки для сообщений об ошибках (каталог: setting.<имя>)."""

@@ -281,6 +281,139 @@ def test_own_system_muted_and_quiet_sessions_untouched(tmp_path: Path) -> None:
     d.close()
 
 
+# ---------- исключённое дерево процессов (перевод встречи) ----------
+
+# brave(200) → brave(201, служба звука) → brave(202, вкладка); spotify(300) — сам по себе
+PARENTS = {201: 200, 202: 201, 200: 10, 300: 10, 10: 4}
+
+
+def test_excluded_tree_is_not_ducked(tmp_path: Path) -> None:
+    meet = FakeSession("brave", 201)             # звук браузера играет дочерний процесс
+    tab = FakeSession("brave", 202, vol=0.8)     # внук корня — тоже его дерево
+    music = FakeSession("spotify", 300)
+    d = make(tmp_path, FakeBackend(meet, tab, music), parent_of=PARENTS.get)
+    d.set_excluded(frozenset({200}))
+    d.duck("duck", 15)
+    assert d.flush()
+    assert meet.vol == 1.0 and approx(tab.vol, 0.8) and meet.sets == tab.sets == 0
+    assert approx(music.vol, 0.15)
+    assert [e["pid"] for e in entries(tmp_path)] == [300]
+    d.restore()
+    assert d.flush()
+    assert music.vol == 1.0 and meet.sets == 0
+    d.close()
+
+
+def test_exclusion_during_recording_restores_meeting_at_once(tmp_path: Path) -> None:
+    meet = FakeSession("brave", 201, vol=0.9)
+    music = FakeSession("spotify", 300)
+    d = make(tmp_path, FakeBackend(meet, music), parent_of=PARENTS.get)
+    d.duck("duck", 15)
+    assert d.flush()
+    assert approx(meet.vol, 0.135) and approx(music.vol, 0.15)
+    d.set_excluded({200, 0})                     # встреча началась посреди диктовки
+    assert d.flush()
+    assert approx(meet.vol, 0.9) and approx(music.vol, 0.15)
+    assert [e["pid"] for e in entries(tmp_path)] == [300] and d.changed == 1
+    d.duck("duck", 15)                           # переопрос: встречу снова не приглушаем
+    assert d.flush()
+    assert approx(meet.vol, 0.9)
+    d.set_excluded(frozenset())                  # встреча закончилась — как обычно
+    d.duck("duck", 15)
+    assert d.flush()
+    assert approx(meet.vol, 0.135)
+    d.restore()
+    assert d.flush()
+    assert approx(meet.vol, 0.9) and music.vol == 1.0
+    assert not (tmp_path / "duck.json").exists()
+    d.close()
+
+
+def test_exclude_everything_for_whole_sound_meeting(tmp_path: Path) -> None:
+    """Встреча слушает весь звук компьютера: во время диктовки не приглушается ничего, а
+    уже приглушённое (встреча началась посреди диктовки) возвращается сразу."""
+    meet = FakeSession("zoom", 400, vol=0.9)
+    music = FakeSession("spotify", 300)
+    d = make(tmp_path, FakeBackend(meet, music), parent_of=PARENTS.get)
+    d.duck("mute", 15)
+    assert d.flush()
+    assert meet.mute and music.mute
+    d.set_excluded(frozenset(), everything=True)    # встреча «весь звук» началась
+    assert d.flush()
+    assert not meet.mute and not music.mute and approx(meet.vol, 0.9)
+    assert entries(tmp_path) == [] and d.changed == 0
+    d.duck("duck", 15)                              # следующая диктовка — ничего не трогать
+    assert d.flush()
+    assert approx(meet.vol, 0.9) and music.vol == 1.0 and not music.mute
+    d.restore()
+    d.set_excluded(frozenset())                     # встреча кончилась — как обычно
+    d.duck("duck", 15)
+    assert d.flush()
+    assert approx(music.vol, 0.15) and approx(meet.vol, 0.135)
+    d.restore()
+    assert d.flush()
+    assert music.vol == 1.0 and approx(meet.vol, 0.9)
+    d.close()
+
+
+def test_exclusion_leaves_what_user_changed(tmp_path: Path) -> None:
+    meet = FakeSession("brave", 201)
+    d = make(tmp_path, FakeBackend(meet), parent_of=PARENTS.get)
+    d.duck("duck", 15)
+    assert d.flush()
+    meet.vol = duck._f32(0.4)                    # пользователь сам подвинул ползунок
+    d.set_excluded(frozenset({200}))
+    assert d.flush()
+    assert approx(meet.vol, 0.4) and entries(tmp_path) == []
+    d.restore()
+    assert d.flush()
+    assert approx(meet.vol, 0.4)
+    d.close()
+
+
+def test_exclusion_parent_lookup_errors_and_cache(tmp_path: Path,
+                                                  monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[int] = []
+
+    def parent_of(pid: int) -> int | None:
+        calls.append(pid)
+        if pid == 201:
+            raise OSError("нет доступа к процессу")
+        return PARENTS.get(pid)
+
+    tab = FakeSession("brave", 202)              # цепочка обрывается на 201 — не исключён
+    music = FakeSession("spotify", 300)
+    d = make(tmp_path, FakeBackend(tab, music), parent_of=parent_of)
+    d.set_excluded(frozenset({200}))
+    d.duck("duck", 15)
+    assert d.flush()
+    assert approx(tab.vol, 0.15) and approx(music.vol, 0.15)
+    d.restore()
+    assert d.flush()
+    n = len(calls)
+    d.duck("duck", 15)
+    assert d.flush()
+    assert len(calls) == n                       # решения по pid помнятся
+    monkeypatch.setattr(duck, "EXCLUDE_TTL_S", 0.0)
+    d.restore()
+    d.duck("duck", 15)
+    assert d.flush()
+    assert len(calls) > n
+    d.restore()
+    assert d.flush()
+    assert tab.vol == 1.0 and music.vol == 1.0
+    d.close()
+
+
+def test_exclusion_default_parent_lookup_is_real() -> None:
+    d = Ducker(path=Path(os.devnull))
+    d._excluded = frozenset({os.getppid()})
+    assert d._is_excluded(os.getpid())           # этот процесс — потомок своего родителя
+    assert not d._is_excluded(0xFFFFFFF0)        # такого процесса нет
+    d._excluded = frozenset()
+    assert not d._is_excluded(os.getpid())
+
+
 def test_user_changed_session_during_recording_is_left_alone(tmp_path: Path) -> None:
     music = FakeSession("music", 101, vol=1.0)
     call = FakeSession("teams", 102, vol=0.8)

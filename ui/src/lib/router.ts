@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState, type RefObject } from "react";
 export const ROUTES = [
   "home",
   "history",
+  "speech",
   "dictionary",
   "snippets",
   "styles",

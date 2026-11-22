@@ -19,10 +19,14 @@ comtypes входит (UI Automation для обучения словаря, rup
 кладётся в сборку как обычные модули: в замороженном ядре comtypes не пишет код в %TEMP%
 и не нуждается в своём генераторе. Приглушение звука во время записи (rupor.duck) тоже на
 comtypes, но интерфейсы Core Audio описаны в самом модуле — генерировать нечего, pycaw/psutil
-не нужны (rupor.duck входит через collect_submodules("rupor")). Проверка после сборки:
+не нужны (rupor.duck входит через collect_submodules("rupor")). Захват звука встречи
+(rupor.loopback) — тоже comtypes: обработчик активации — comtypes.COMObject (comtypes._comobject
+входит вместе с comtypes, генерировать нечего), а процесс захвата — этот же rupor-core.exe
+в режиме --loopback (отдельного exe нет). Проверка после сборки:
     rupor-core.exe --uia-selftest   → строка «Самопроверка UIA: …, Core Audio: ok, сессий N,
-                                      устройств вывода D, локализация: ok (ru K, en K)»
-                                      в %APPDATA%\Rupor\logs\rupor.log
+                                      устройств вывода D, локализация: ok (ru K, en K), …,
+                                      захват звука: ok (программы: да, весь звук: да,
+                                      помощник: да)» в %APPDATA%\Rupor\logs\rupor.log
 """
 import os
 from pathlib import Path

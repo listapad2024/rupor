@@ -93,7 +93,8 @@ def test_command_and_test_calls_are_recorded(env: Env) -> None:
     kinds = [(x["kind"], x["app"]) for x in usage_rows(env)]
     assert kinds == [("command", "notepad.exe"), ("test", "")]
     by_kind = {k["kind"]: k["calls"] for k in c.call("ai_usage_stats")["by_kind"]}
-    assert by_kind == {"cleanup": 0, "command": 1, "test": 1}
+    assert by_kind == {"cleanup": 0, "command": 1, "test": 1, "translate": 0, "title": 0,
+                       "notes": 0}
     c.close()
 
 

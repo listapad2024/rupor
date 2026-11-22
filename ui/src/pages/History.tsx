@@ -455,6 +455,26 @@ function HistoryRow({ item, recId, onDelete }: { item: HistoryItem; recId?: stri
     }
   };
 
+  // Распознать запись голоса этой диктовки заново (зациклилось, ослышалось): новый текст
+  // приходит событием history и встаёт в начало ленты, старую запись можно удалить
+  const [retranscribing, setRetranscribing] = useState(false);
+  const retranscribe = async () => {
+    if (!recId || retranscribing) return;
+    setRetranscribing(true);
+    try {
+      const r = await call("recording_transcribe", { id: recId });
+      toast(
+        r.text
+          ? { tone: "success", title: t("history.retranscribed") }
+          : { tone: "warn", title: t("history.rec.resultEmpty") },
+      );
+    } catch (e) {
+      toast({ tone: "error", title: t("errors.generic"), description: errorText(e) });
+    } finally {
+      setRetranscribing(false);
+    }
+  };
+
   const reinsert = async () => {
     try {
       await call("history_reinsert", { id: item.id });
@@ -550,6 +570,18 @@ function HistoryRow({ item, recId, onDelete }: { item: HistoryItem; recId?: stri
               </Badge>
             )}
             {item.target === "test" && <Badge>{t("history.badges.test")}</Badge>}
+            {recId && (
+              <Button
+                size="sm"
+                variant="ghost"
+                className="ml-auto"
+                icon={<Wand2 className="size-4" />}
+                loading={retranscribing}
+                onClick={() => void retranscribe()}
+              >
+                {retranscribing ? t("history.rec.transcribing") : t("history.actions.retranscribe")}
+              </Button>
+            )}
           </div>
         </div>
         <div className="flex shrink-0 flex-col gap-1 opacity-0 transition-opacity duration-150 group-hover:opacity-100 focus-within:opacity-100">
@@ -645,6 +677,20 @@ function Recordings() {
   const keep = settings?.recordings_keep ?? 30;
   const maxMb = settings?.recordings_max_mb ?? 300;
 
+  // Записей могут быть тысячи: на экране — первые, остальные дорисовываются при прокрутке
+  const [shown, setShown] = useState(PAGE);
+  const sentinel = useRef<HTMLDivElement>(null);
+  const hasMore = items.length > shown;
+  useEffect(() => {
+    const el = sentinel.current;
+    if (!el) return;
+    const io = new IntersectionObserver((entries) => {
+      if (entries.some((e) => e.isIntersecting)) setShown((n) => n + PAGE);
+    }, { rootMargin: "400px" });
+    io.observe(el);
+    return () => io.disconnect();
+  }, [hasMore, shown]);
+
   return (
     <div>
       <p className="mb-4 text-[13px] leading-relaxed text-muted">{t("history.rec.intro")}</p>
@@ -687,19 +733,23 @@ function Recordings() {
       ) : items.length === 0 ? (
         <EmptyState icon={<AudioWaveform />} title={t("history.rec.emptyTitle")} text={t("history.rec.emptyText")} />
       ) : (
-        <Card padded={false} className="overflow-hidden">
-          <AnimatePresence initial={false}>
-            {items.map((it) => (
-              <RecordingRow key={it.id} item={it} onDelete={() => void remove(it)} onChanged={reload} />
-            ))}
-          </AnimatePresence>
-        </Card>
+        <>
+          <Card padded={false} className="overflow-hidden">
+            <AnimatePresence initial={false}>
+              {items.slice(0, shown).map((it, i) => (
+                <RecordingRow key={it.id} item={it} enter={i < PAGE} onDelete={() => void remove(it)} onChanged={reload} />
+              ))}
+            </AnimatePresence>
+          </Card>
+          {hasMore && <div ref={sentinel} className="h-10" />}
+        </>
       )}
     </div>
   );
 }
 
-function RecordingRow({ item, onDelete, onChanged }: { item: RecordingItem; onDelete: () => void; onChanged: () => void }) {
+/** `enter` — появляться плавно (новая запись сверху); дорисованные при прокрутке — сразу. */
+function RecordingRow({ item, enter, onDelete, onChanged }: { item: RecordingItem; enter: boolean; onDelete: () => void; onChanged: () => void }) {
   const toast = useToast();
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<RetranscribeResult | null>(null);
@@ -744,7 +794,7 @@ function RecordingRow({ item, onDelete, onChanged }: { item: RecordingItem; onDe
   return (
     <motion.div
       layout
-      initial={{ opacity: 0, height: 0 }}
+      initial={enter ? { opacity: 0, height: 0 } : false}
       animate={{ opacity: 1, height: "auto" }}
       exit={{ opacity: 0, height: 0 }}
       transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}

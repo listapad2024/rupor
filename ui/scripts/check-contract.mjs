@@ -22,6 +22,15 @@
 // через WS нельзя); --no-ai-usage — пропустить шаг.
 // duck_mode/duck_level меняются только вне записи (ядро приглушает звук лишь во время
 // записи), так что громкость других приложений проверка не трогает.
+// Перевод встречи: звук не захватывается — meeting_start вызывается только с заведомо неверным
+// источником (ошибка), и только если сеанс не идёт (идущий не трогаем, meeting_stop тогда тоже не
+// зовётся); meeting_copy — только с неверным what (ошибка, буфер обмена не трогается),
+// meeting_open_folder (окно проводника) не вызывается; заметки (meeting_notes — вызов ИИ) —
+// только без встречи (ошибка), meeting_notes_get — как есть;
+// названия приложений и заголовки окон источников не печатаются (только количество).
+// Предложение встречи (meeting_suggest_answer) — только с неизвестным id и ответом later:
+// встреча не начинается, meeting_ignore_apps не меняется. «Не останавливать»
+// (meeting_autostop_cancel) — только без идущего сеанса (тогда это просто статус).
 // Папка моделей: model_dir_set вызывается только так, что ничего не переносится и не
 // качается (та же папка, неверные пути — ошибки; смена папки во временную и обратно — только
 // на ядре первого запуска без модели, которое ждёт setup_download); пути (в них имя
@@ -444,7 +453,8 @@ await step("ai_usage_stats: итоги, daily ровно 30 дней по пор
   assert(s.total.calls >= s.month.calls && s.month.calls >= s.week.calls && s.week.calls >= s.today.calls, "итоги не вложены (всё ≥ месяц ≥ неделя ≥ сегодня)");
   const todayDay = s.daily[29];
   assert(Math.abs(todayDay.cost_usd - s.today.cost_usd) < 1e-9 && todayDay.calls === s.today.calls, "сегодняшний день в daily ≠ today");
-  assert(s.by_kind.every((k) => ["cleanup", "command", "test"].includes(k.kind)), "неизвестный kind");
+  const kinds = ["cleanup", "command", "test", "translate", "title", "notes"];
+  assert(s.by_kind.every((k) => kinds.includes(k.kind)), `неизвестный kind: ${short(s.by_kind.map((k) => k.kind))}`);
   return `вызовов всего ${s.total.calls}, за 30 дней ${s.daily.reduce((a, d) => a + d.calls, 0)}, моделей ${s.by_model.length}`;
 });
 if (!hasKey) {
@@ -1138,6 +1148,216 @@ await step("dictation_language: auto/ru/en, неверное — ошибка", 
     await call("set_settings", { patch: { dictation_language: prev } });
   }
 });
+// Перевод встречи (окно перевода и «Настройки → Встречи»)
+let meetingRunning = false;
+/** Сеанс встречи на ядре был (идёт или остановлен): заметки по нему — вызов ИИ. */
+let meetingSession = false;
+/** MeetingStatus.loopback_available: можно ли захватить звук одной программы. */
+let meetingLoopback = true;
+await step("meeting_status → MeetingStatus, как State.meeting", async () => {
+  const m = await call("meeting_status");
+  const st = await call("get_state");
+  assert(st.meeting.running === m.running && st.meeting.state === m.state, `State.meeting ${short(st.meeting)} ≠ ${short(m)}`);
+  assert(m.running || m.state === "idle" || m.state === "error", `не идёт, а state=${m.state}`);
+  for (const k of ["asr_ms", "first_token_ms", "done_ms"]) {
+    const v = m.latency[k];
+    assert(v === null || (Number.isFinite(v) && v >= 0), `latency.${k}=${v}`);
+  }
+  meetingRunning = m.running;
+  // в types.ts поле необязательно (интерфейс без него считает «можно»), но ядро шлёт его всегда
+  assert(typeof m.loopback_available === "boolean", `loopback_available: ${short(m.loopback_available)}`);
+  assert(st.meeting.loopback_available === m.loopback_available, "State.meeting.loopback_available ≠ meeting_status");
+  meetingLoopback = m.loopback_available;
+  // заметки в статусе — без текста (он в событии meeting_notes и meeting_notes_get)
+  assert(m.notes === null || (typeof m.notes === "object" && !("markdown" in m.notes)), `notes: ${short(m.notes)}`);
+  meetingSession = m.started_at !== null;
+  return `running=${m.running}, state=${m.state}, строк ${m.lines}, заметки: ${m.notes?.status ?? "нет"}, звук одной программы: ${meetingLoopback ? "можно" : "нельзя (весь звук компьютера)"}`;
+});
+await step("meeting_notes_get → MeetingNotes | null, как MeetingStatus.notes", async () => {
+  const n = await call("meeting_notes_get");
+  const m = await call("meeting_status");
+  assert((n === null) === (m.notes === null), `meeting_notes_get ${short(n)} при notes=${short(m.notes)}`);
+  if (n) assert(n.status === m.notes.status, `status ${n.status} ≠ ${m.notes.status}`);
+  return n === null ? "null (заметок не было)" : `${n.status}, ${n.markdown ? n.markdown.length + " симв." : "без текста"}`;
+});
+if (meetingSession) {
+  unverified.push("meeting_notes (на ядре был сеанс встречи — заметки стали бы вызовом ИИ)");
+} else {
+  await step("meeting_notes без встречи — ошибка на языке интерфейса", async () => callErr("meeting_notes"));
+}
+await step("meeting_copy с неверным what — ошибка (буфер обмена не трогается)", async () =>
+  callErr("meeting_copy", { what: "bogus" }),
+);
+await step("meeting_sources → AudioSource[]: процессы proc:<pid> и в конце system", async () => {
+  const list = await call("meeting_sources");
+  const sys = list.filter((s) => s.kind === "system");
+  assert(sys.length === 1 && sys[0].id === "system" && sys[0].pid === null, `system: ${sys.length}`);
+  assert(list[list.length - 1].id === "system", "system не последний");
+  // available — у каждого источника (ядро шлёт всегда): весь звук компьютера — всегда true,
+  // программы — как loopback_available
+  assert(sys[0].available === true, `system: available=${short(sys[0].available)}`);
+  const procs = list.filter((x) => x.kind === "process");
+  for (const s of procs) {
+    assert(s.id === `proc:${s.pid}`, `id ${short(s.id)} ≠ proc:${s.pid}`);
+    assert(s.available === meetingLoopback, `${s.id}: available=${short(s.available)} при loopback_available=${meetingLoopback}`);
+  }
+  // встречи — первыми (сортировка ядра)
+  const firstNonMeeting = list.findIndex((s) => !s.meeting);
+  assert(list.slice(firstNonMeeting < 0 ? list.length : firstNonMeeting).every((s) => !s.meeting), "встречи не первыми");
+  const blocked = procs.filter((s) => s.available === false).length;
+  return `${list.length - 1} процессов со звуком (встреч ${list.filter((s) => s.meeting).length}, играют ${list.filter((s) => s.active && s.kind === "process").length}${blocked ? `, захватить нельзя ${blocked}` : ""})`;
+});
+await step("meeting_lines {after_id: 0, limit: 5} → MeetingLine[] по возрастанию id", async () => {
+  const lines = await call("meeting_lines", { after_id: 0, limit: 5 });
+  assert(lines.length <= 5, `строк ${lines.length}`);
+  for (let i = 0; i < lines.length; i++) {
+    assert(lines[i].id >= 1 && (i === 0 || lines[i].id > lines[i - 1].id), "id не по возрастанию");
+    // кончившаяся фраза — без неподтверждённого хвоста
+    assert(!lines[i].final || lines[i].partial === "", `строка ${lines[i].id}: final, а partial не пуст`);
+  }
+  const all = await call("meeting_lines");
+  assert(Array.isArray(all) && all.length <= 200, `без аргументов — ${all.length} строк`);
+  return `${lines.length} строк`;
+});
+await step("meeting_lines с неверным limit — ошибка на языке интерфейса", async () =>
+  callErr("meeting_lines", { limit: 0 }),
+);
+if (meetingRunning) {
+  unverified.push("meeting_start с неверным источником и meeting_stop (на ядре идёт перевод встречи — его не трогаем)");
+} else {
+  await step("meeting_start с несуществующим источником — ошибка, сеанс не начат", async () => {
+    try {
+      const err = await callErr("meeting_start", { source_id: "nope:0" });
+      const m = await call("meeting_status");
+      assert(!m.running, "сеанс начался");
+      return err;
+    } finally {
+      const m = await call("meeting_status");
+      if (m.running) await call("meeting_stop");
+    }
+  });
+  await step("meeting_stop без сеанса → MeetingStatus (running=false)", async () => {
+    const m = await call("meeting_stop");
+    assert(!m.running, "running=true");
+    return `state=${m.state}`;
+  });
+  await step("meeting_autostop_cancel без сеанса → MeetingStatus без отсчёта", async () => {
+    const m = await call("meeting_autostop_cancel");
+    assert(!m.running && m.ending_in_s === null && m.hint === null, short(m));
+    return `hint=${m.hint}, ending_in_s=${m.ending_in_s}`;
+  });
+}
+if (meetingRunning) {
+  unverified.push("meeting_autostop_cancel (на ядре идёт перевод встречи — его автоостановку не трогаем)");
+}
+// Предложение встречи: только неизвестный id и ответ «later» (ничего не начинает и ничего не
+// добавляет в meeting_ignore_apps); событие meeting_suggest без настоящей встречи не приходит.
+await step("meeting_suggest_answer: неизвестный id → null/MeetingStatus или ошибка; неверный ответ — ошибка", async () => {
+  called.add("meeting_suggest_answer");
+  const r = await c.raw("meeting_suggest_answer", { id: `check-${Date.now()}`, answer: "later" });
+  let note;
+  if (r.ok) {
+    const errs = check(r.result, resultType("meeting_suggest_answer"), "meeting_suggest_answer.result", extras);
+    assert(!errs.length, errs.slice(0, 4).join("; "));
+    assert(r.result === null || !r.result.running || meetingRunning, "ответ later начал встречу");
+    note = r.result === null ? "null" : `MeetingStatus (running=${r.result.running})`;
+  } else {
+    assert(humanText(r.error), `ошибка не на языке интерфейса (${UI_LANG}): ${short(r.error)}`);
+    note = `ошибка: ${r.error}`;
+  }
+  const err = await callErr("meeting_suggest_answer", { id: "check-0", answer: "bogus" });
+  return `${note}; неверный ответ — ${err}`;
+});
+await step("настройки встреч: языки, размер текста, место окна и полоски, автоостановка, шаблоны, уточнение, подсказка, название по содержанию, заметки, таймаут; неверные — ошибки", async () => {
+  const keys = [
+    "meeting_target_lang",
+    "meeting_source_lang",
+    "meeting_font_size",
+    "meeting_rect",
+    "meeting_mini_pos",
+    "meeting_autostop",
+    "meeting_title_patterns",
+    "meeting_refine",
+    "meeting_detect_desktop_apps",
+    "meeting_ignore_apps",
+    "meeting_ai_title",
+    "meeting_notes",
+    "meeting_notes_model",
+    "translate_timeout_s",
+  ];
+  const prev = Object.fromEntries(keys.map((k) => [k, settings[k]]));
+  try {
+    let s = await call("set_settings", {
+      patch: {
+        meeting_target_lang: "de",
+        meeting_source_lang: "en",
+        meeting_font_size: 20,
+        meeting_rect: [100, 50, 420, 800],
+        meeting_mini_pos: [1560.4, -8],
+        meeting_autostop: !settings.meeting_autostop,
+        meeting_title_patterns: ["Webex", "Google Meet"],
+        meeting_refine: !settings.meeting_refine,
+        meeting_detect_desktop_apps: !settings.meeting_detect_desktop_apps,
+        meeting_ignore_apps: ["obs64.exe", "check-contract.exe"],
+        meeting_ai_title: !settings.meeting_ai_title,
+        meeting_notes: !settings.meeting_notes,
+        meeting_notes_model: "anthropic/claude-opus-5.5",
+        translate_timeout_s: 8,
+      },
+    });
+    assert(s.meeting_target_lang === "de" && s.meeting_source_lang === "en", "языки не применились");
+    assert(
+      s.meeting_refine === !settings.meeting_refine && s.meeting_detect_desktop_apps === !settings.meeting_detect_desktop_apps,
+      "meeting_refine / meeting_detect_desktop_apps не применились",
+    );
+    assert(
+      Array.isArray(s.meeting_ignore_apps) && s.meeting_ignore_apps.some((x) => x.toLowerCase() === "check-contract.exe"),
+      `meeting_ignore_apps: ${short(s.meeting_ignore_apps)}`,
+    );
+    assert(s.meeting_font_size === 20 && s.translate_timeout_s === 8, "размер/таймаут не применились");
+    assert(s.meeting_ai_title === !settings.meeting_ai_title, "meeting_ai_title не применилось");
+    assert(
+      s.meeting_notes === !settings.meeting_notes && s.meeting_notes_model === "anthropic/claude-opus-5.5",
+      "meeting_notes / meeting_notes_model не применились",
+    );
+    assert(Array.isArray(s.meeting_rect) && s.meeting_rect[2] === 420, short(s.meeting_rect));
+    assert(
+      Array.isArray(s.meeting_mini_pos) && s.meeting_mini_pos[0] === 1560 && s.meeting_mini_pos[1] === -8,
+      `meeting_mini_pos: ${short(s.meeting_mini_pos)}`,
+    );
+    assert(s.meeting_autostop === !settings.meeting_autostop, "meeting_autostop не применилось");
+    s = await call("set_settings", { patch: { meeting_rect: null, meeting_mini_pos: null, meeting_source_lang: "auto" } });
+    assert(
+      s.meeting_rect === null && s.meeting_mini_pos === null && s.meeting_source_lang === "auto",
+      "null/auto не применились",
+    );
+    const errs = [];
+    for (const patch of [
+      { meeting_target_lang: "xx" },
+      { meeting_source_lang: "klingon" },
+      { meeting_font_size: 40 },
+      { meeting_rect: [0, 0, 100, 100] },
+      { meeting_mini_pos: [1, 2, 3] },
+      { meeting_autostop: "yes" },
+      { meeting_title_patterns: [""] },
+      { meeting_ignore_apps: [""] },
+      { meeting_refine: "yes" },
+      { meeting_ai_title: "yes" },
+      { meeting_notes: "yes" },
+      { meeting_notes_model: "x".repeat(201) },
+      { translate_timeout_s: 0 },
+      { meeting_dir: "meetings" },
+    ]) {
+      errs.push(await callErr("set_settings", { patch }));
+    }
+    const now = await call("get_settings");
+    assert(now.meeting_target_lang === "de" && now.meeting_font_size === 20, "неверное значение применилось");
+    return `${errs.length} ошибок, например: ${errs[0]}`;
+  } finally {
+    await call("set_settings", { patch: prev });
+  }
+});
+
 await step("set_settings с неверным значением — ошибка, настройки не меняются", async () => {
   const err = await callErr("set_settings", { patch: { insert_mode: "bogus", theme: "light" } });
   const s = await call("get_settings");
@@ -1231,7 +1451,9 @@ if (extras.size) {
 } else {
   console.log("Лишних полей нет: ответы и события ядра совпадают с types.ts");
 }
-console.log(`Не вызывались (намеренно — вставка, микрофонная запись, загрузки, запись ключей, окно проводника): ${notCalled.join(", ")}`);
+console.log(
+  `Не вызывались (намеренно — вставка, микрофонная запись, загрузки, запись ключей, окно проводника, буфер обмена): ${notCalled.join(", ")}`,
+);
 if (unverified.length) {
   console.log(`Не сверено с живым ядром в этом прогоне (${unverified.length}):`);
   for (const u of unverified) console.log(`  ${u}`);
